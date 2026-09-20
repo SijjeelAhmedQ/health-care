@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+httpx>=0.27
+# --- pick ONE speech runtime for omi-health/omi-med-stt-v1 ---
+# pywhispercpp>=1.2        # GGUF via whisper.cpp (any platform)  -> CAREFLOW_STT_ENGINE=gguf
+# mlx-whisper>=0.4         # MLX (Apple Silicon)                   -> CAREFLOW_STT_ENGINE=mlx
