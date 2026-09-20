@@ -78,9 +78,16 @@ const providerRepo = createMockRepository<Provider>(db.providers, { persistKey: 
 export const providerService = {
   ...providerRepo,
   async resolveByName(name: string) {
-    const q = name.trim().toLowerCase().replace(/^dr\.?\s+/, '');
+    const q = name.trim().toLowerCase().replace(/^(?:dr\.?|doctor)\s+/, '');
     const all = await providerRepo.all();
-    return all.filter((p) => `${p.firstName} ${p.lastName}`.toLowerCase().includes(q) || p.lastName.toLowerCase() === q);
+    const exact = all.filter((p) => `${p.firstName} ${p.lastName}`.toLowerCase() === q || p.fullName.toLowerCase() === name.trim().toLowerCase());
+    if (exact.length) return exact;
+    // Order-independent token match so "Ahmed Sarah" / "Sarah" / "Dr Ahmed" all find Dr. Sarah Ahmed.
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return all.filter((p) => {
+      const hay = `${p.firstName} ${p.lastName}`.toLowerCase();
+      return tokens.every((t) => hay.split(' ').some((w) => w === t || w.startsWith(t)));
+    });
   },
 };
 export const credentialService = createMockRepository<Credential>(db.credentials);

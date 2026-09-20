@@ -164,6 +164,15 @@ describe('CommandExecutor', () => {
     unregister();
   });
 
+  it('splits a full medication phrase that a model put into the name field', async () => {
+    const { deps } = makeDeps();
+    const form = fakeForm('medication');
+    const unregister = FormRegistry.register(form.controller);
+    await new CommandExecutor(deps).execute({ action: 'fill_field', formId: 'medication', field: 'medicationName', value: 'amoxicillin 500 milligrams orally twice daily for seven days' });
+    expect(form.values).toMatchObject({ medicationName: 'Amoxicillin', dosage: '500 mg', route: 'Oral', frequency: 'Twice daily', duration: '7 days' });
+    unregister();
+  });
+
   it('unknown and invalid commands stop the batch', async () => {
     const { deps } = makeDeps();
     const ex = new CommandExecutor(deps);

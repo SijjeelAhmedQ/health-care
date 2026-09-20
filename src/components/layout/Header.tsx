@@ -14,7 +14,7 @@ export function Header({ isMobile }: { isMobile: boolean }) {
   const navigate = useNavigate();
   const collapsed = useAppSelector((s) => s.ui.sidebarCollapsed);
   const user = useAppSelector((s) => s.auth.user);
-  const voiceStatus = useAppSelector((s) => s.voice.status);
+  const micOn = useAppSelector((s) => s.voice.micActive);
   const debugOpen = useAppSelector((s) => s.ui.debugPanelOpen);
 
   return (
@@ -33,11 +33,11 @@ export function Header({ isMobile }: { isMobile: boolean }) {
         <Tooltip title="Command palette (Ctrl+K)">
           <Button type="text" className="app-header-icon-btn" icon={<Command size={17} />} onClick={() => dispatch(uiActions.setCommandPaletteOpen(true))} aria-label="Open command palette" />
         </Tooltip>
-        <Tooltip title={voiceStatus === 'listening' ? 'Listening…' : 'Voice assistant (Ctrl+Shift+V)'}>
+        <Tooltip title={micOn ? 'Microphone on — listening' : 'Voice assistant (Ctrl+Shift+V)'}>
           <Button
             type="text"
             className="app-header-icon-btn"
-            style={voiceStatus === 'listening' ? { color: '#d64545' } : undefined}
+            style={micOn ? { color: '#d64545' } : undefined}
             icon={<Mic size={17} />}
             onClick={() => dispatch(voiceActions.setPanelOpen(true))}
             aria-label="Voice assistant"

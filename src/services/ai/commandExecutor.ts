@@ -13,6 +13,8 @@ import { FormRegistry, type FormController } from '@/registry/formRegistry';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
 import { PageRegistry, type PageDefinition } from '@/registry/pageRegistry';
 import type { PendingSlot } from '@/store/slices/voiceSlice';
+import { parseMedicationPhrase } from './ruleBasedInterpreter';
+import { ageToDob } from './dateParser';
 
 export interface ExecutorState {
   currentPageId: string | null;
@@ -147,7 +149,7 @@ export class CommandExecutor {
         case 'respond':
           return ok('respond', command.message);
         case 'unknown':
-          return { ok: false, tool: 'unknown', message: command.reason ?? "Sorry, I didn't understand that.", stop: true };
+          return { ok: false, tool: 'unknown', message: `${command.reason ?? "Sorry, I didn't understand that."} Try a full command, e.g. "go to patient search" or "add medication".`, stop: true };
         default:
           return { ok: false, tool: 'unknown', message: 'Unsupported command.', stop: true };
       }
@@ -322,10 +324,25 @@ export class CommandExecutor {
     }
     this.deps.setOpenForm(def.id);
 
+    // Safety net: if a whole medication phrase landed in the name field ("amoxicillin 500 mg twice daily"),
+    // split it into its structured fields so no spoken information is lost, whichever model produced it.
+    const incoming: FieldValues = { ...fields };
+    const nameValue = incoming.medicationName;
+    if (typeof nameValue === 'string' && /\d+\s*(mg|mcg|g|ml|units?|milligrams?|micrograms?)\b/i.test(nameValue) && FieldRegistry.resolveField(def.id, 'medicationName')) {
+      const parsed = parseMedicationPhrase(nameValue);
+      if (parsed.medicationName) Object.assign(incoming, parsed, Object.fromEntries(Object.entries(fields).filter(([k]) => k !== 'medicationName')));
+    }
+
+    // Patient form: a spoken age is enough to satisfy the required date of birth (approximate, editable before saving).
+    if (def.id === 'patient' && incoming.age !== undefined && incoming.dateOfBirth === undefined && !controller.getValues().dateOfBirth) {
+      const age = Number(String(incoming.age).replace(/\D/g, ''));
+      if (age > 0 && age < 130) incoming.dateOfBirth = ageToDob(age);
+    }
+
     const values: Record<string, string | number | boolean> = {};
     const modified: ExecutionResult['fieldsModified'] = [];
     const unknown: string[] = [];
-    for (const [rawField, rawValue] of Object.entries(fields)) {
+    for (const [rawField, rawValue] of Object.entries(incoming)) {
       if (rawValue === undefined || rawValue === null || rawValue === '') continue;
       const field = FieldRegistry.resolveField(def.id, rawField);
       if (!field) {

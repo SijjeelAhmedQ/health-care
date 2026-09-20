@@ -33,6 +33,7 @@ export function Sidebar({ collapsed, onCollapse, mobile, onNavigate }: Props) {
   const location = useLocation();
   const [query, setQuery] = useState('');
   const voiceStatus = useAppSelector((s) => s.voice.status);
+  const micOn = useAppSelector((s) => s.voice.micActive);
   const currentPage = PageRegistry.matchPath(location.pathname);
   const activeKey = currentPage?.parentId ?? currentPage?.id;
 
@@ -111,8 +112,8 @@ export function Sidebar({ collapsed, onCollapse, mobile, onNavigate }: Props) {
       />
       {!collapsed && (
         <div className="app-sider-footer">
-          <Mic size={13} color={voiceStatus === 'listening' ? '#ff7a7a' : '#4fc3f7'} />
-          <span>Voice assistant {voiceStatus === 'idle' ? 'ready' : voiceStatus.replace('_', ' ')}</span>
+          <Mic size={13} color={micOn ? '#ff7a7a' : '#4fc3f7'} />
+          <span>{micOn ? 'Microphone on' : 'Voice assistant'} · {voiceStatus === 'idle' ? (micOn ? 'listening' : 'ready') : voiceStatus.replace('_', ' ')}</span>
         </div>
       )}
     </Layout.Sider>

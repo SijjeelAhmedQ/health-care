@@ -6,7 +6,7 @@ export type LLMProviderKind = 'mock' | 'ollama' | 'openai-compatible' | 'http';
 export interface AIConfig {
   mode: AIMode;
   stt: { provider: STTProviderKind; apiUrl: string };
-  llm: { provider: LLMProviderKind; apiUrl: string; model: string; timeoutMs: number };
+  llm: { provider: LLMProviderKind; apiUrl: string; model: string; timeoutMs: number; numGpu: number; numCtx: number };
   fallbackToRules: boolean;
   enableVoice: boolean;
   enableDebugPanel: boolean;
@@ -27,6 +27,10 @@ export const aiConfig: AIConfig = {
     apiUrl: env.VITE_LLM_API_URL || 'http://127.0.0.1:11434',
     model: env.VITE_LLM_MODEL || 'qwen3.5:4b',
     timeoutMs: Number(env.VITE_LLM_TIMEOUT_MS || 20000),
+    /** Layers to offload to the GPU (99 = all). qwen3.5:4b Q4 fits entirely in 4 GB VRAM at num_ctx 4096. */
+    numGpu: Number(env.VITE_LLM_NUM_GPU || 99),
+    /** Context window; must hold the ~1k-token system prompt + output. Keep small to save VRAM. */
+    numCtx: Number(env.VITE_LLM_NUM_CTX || 4096),
   },
   fallbackToRules: bool(env.VITE_AI_FALLBACK_TO_RULES, true),
   enableVoice: bool(env.VITE_ENABLE_VOICE, true),

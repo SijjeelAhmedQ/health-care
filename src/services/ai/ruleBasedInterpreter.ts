@@ -16,6 +16,9 @@ const NAV_VERBS = '(?:go to|goto|open|navigate to|take me to|show me|show|i want
 const OTHER_FORM_WORDS = /^(?:patient|appointment|allergy|diagnosis|problem|referral|user|provider|shift|leave|lab|imaging|prescription|note|roster|room|location)\b/;
 const ACTION_VERB_START = /^(go|goto|open|add|create|fill|search|find|navigate|show|start|save|submit|book|schedule|register|select|set|check|uncheck|scroll|close|cancel|order|prescribe|look|take|switch|new|refer)\b/;
 
+/** True when an utterance starts with an application verb (i.e. is a command, not a plain value). */
+export const looksLikeCommand = (text: string): boolean => ACTION_VERB_START.test(normalizeTranscript(text)) || CONFIRM_RE.test(normalizeTranscript(text)) || CANCEL_RE.test(normalizeTranscript(text));
+
 export const normalizeTranscript = (raw: string): string =>
   raw
     .toLowerCase()

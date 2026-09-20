@@ -1,0 +1,174 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { configureStore } from '@reduxjs/toolkit';
+import authReducer from '@/store/slices/authSlice';
+import patientReducer from '@/store/slices/patientSlice';
+import appointmentReducer from '@/store/slices/appointmentSlice';
+import providerReducer from '@/store/slices/providerSlice';
+import medicationReducer from '@/store/slices/medicationSlice';
+import uiReducer from '@/store/slices/uiSlice';
+import voiceReducer from '@/store/slices/voiceSlice';
+import navigationReducer from '@/store/slices/navigationSlice';
+import { VoiceController } from '../voiceController';
+import { MockLLMProvider } from '../providers/llmProviders';
+import type { ListeningCallbacks, ListeningSession, MicrophoneRecognizer } from '../providers/sttProviders';
+import { NavigationRegistry } from '@/registry/navigationRegistry';
+
+/** A scripted microphone: the test decides when segments, engine restarts and errors happen. */
+class FakeRecognizer implements MicrophoneRecognizer {
+  readonly providerName = 'fake';
+  sessions: Array<{ callbacks: ListeningCallbacks; stopped: boolean; cancelled: boolean }> = [];
+  isSupported() {
+    return true;
+  }
+  start(callbacks: ListeningCallbacks): ListeningSession {
+    const entry = { callbacks, stopped: false, cancelled: false };
+    this.sessions.push(entry);
+    return {
+      stop: () => {
+        entry.stopped = true;
+        callbacks.onEnd?.();
+      },
+      cancel: () => {
+        entry.cancelled = true;
+        callbacks.onEnd?.();
+      },
+    };
+  }
+  get current() {
+    return this.sessions[this.sessions.length - 1];
+  }
+}
+
+const makeStore = () =>
+  configureStore({
+    reducer: { auth: authReducer, patients: patientReducer, appointments: appointmentReducer, providers: providerReducer, medications: medicationReducer, ui: uiReducer, voice: voiceReducer, navigation: navigationReducer },
+    middleware: (g) => g({ serializableCheck: false }),
+  });
+
+const flush = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+describe('microphone lifecycle — stays on until the user turns it off', () => {
+  let store: ReturnType<typeof makeStore>;
+  let mic: FakeRecognizer;
+  let controller: VoiceController;
+
+  beforeEach(() => {
+    store = makeStore();
+    mic = new FakeRecognizer();
+    NavigationRegistry.install((to) => NavigationRegistry.setPathname(String(to)));
+    controller = new VoiceController(store as never, { stt: mic, llm: new MockLLMProvider() });
+  });
+
+  it('turns on with startListening and reports micActive', () => {
+    controller.startListening();
+    expect(controller.isMicActive).toBe(true);
+    expect(store.getState().voice.micActive).toBe(true);
+    expect(store.getState().voice.status).toBe('listening');
+    expect(mic.sessions).toHaveLength(1);
+  });
+
+  it('does NOT stop after a transcription segment is processed; returns to listening', async () => {
+    controller.startListening();
+    mic.current.callbacks.onFinal('go to patient search');
+    await flush(1000); // mock LLM latency + navigation/execution waits
+    expect(controller.isMicActive).toBe(true);
+    expect(mic.current.stopped).toBe(false);
+    expect(mic.current.cancelled).toBe(false);
+    expect(store.getState().voice.history[0].transcript).toBe('go to patient search');
+    // status goes completed -> listening (not idle) because the mic is still on
+    await flush(2600);
+    expect(store.getState().voice.status).toBe('listening');
+    expect(store.getState().voice.micActive).toBe(true);
+  });
+
+  it('keeps capturing consecutive segments across pauses and queues them in order', async () => {
+    controller.startListening();
+    mic.current.callbacks.onFinal('go to patient search');
+    mic.current.callbacks.onFinal('go to page 30');
+    await flush(900);
+    const transcripts = store.getState().voice.history.map((h) => h.transcript).reverse();
+    expect(transcripts).toEqual(['go to patient search', 'go to page 30']);
+    expect(controller.isMicActive).toBe(true);
+    expect(mic.sessions).toHaveLength(1); // same session, never re-armed by the user
+  });
+
+  it('re-opens the session automatically if the engine ends on its own while the mic is on', async () => {
+    controller.startListening();
+    mic.current.callbacks.onEnd?.(); // engine-side end (e.g. silence timeout) — not a user action
+    await flush(400);
+    expect(controller.isMicActive).toBe(true);
+    expect(mic.sessions).toHaveLength(2);
+  });
+
+  it('stops ONLY on explicit Mic Off', () => {
+    controller.startListening();
+    controller.stopListening();
+    expect(controller.isMicActive).toBe(false);
+    expect(store.getState().voice.micActive).toBe(false);
+    expect(mic.current.stopped).toBe(true);
+    expect(store.getState().voice.status).toBe('idle');
+  });
+
+  it('stops on explicit Cancel', () => {
+    controller.startListening();
+    controller.cancel();
+    expect(controller.isMicActive).toBe(false);
+    expect(mic.current.cancelled).toBe(true);
+    expect(store.getState().voice.status).toBe('cancelled');
+  });
+
+  it('does not re-open after the user stopped it, even if the engine fires onEnd later', async () => {
+    controller.startListening();
+    controller.stopListening();
+    mic.current.callbacks.onEnd?.();
+    await flush(400);
+    expect(mic.sessions).toHaveLength(1);
+    expect(controller.isMicActive).toBe(false);
+  });
+
+  it('a non-fatal STT error keeps the mic on; a fatal one (permission denied) turns it off', async () => {
+    controller.startListening();
+    mic.current.callbacks.onError(new Error('STT service responded 503'), false);
+    expect(controller.isMicActive).toBe(true);
+    expect(store.getState().voice.error).toContain('503');
+    mic.current.callbacks.onError(new Error('Microphone access was denied'), true);
+    expect(controller.isMicActive).toBe(false);
+    expect(store.getState().voice.micActive).toBe(false);
+  });
+
+  it('merges a short mid-sentence fragment with the next segment instead of executing it', async () => {
+    controller.startListening();
+    mic.current.callbacks.onFinal('I am');            // pause mid-sentence
+    await flush(300);
+    expect(store.getState().voice.history).toHaveLength(0);      // held, not executed
+    expect(store.getState().voice.interimTranscript).toBe('I am …');
+    mic.current.callbacks.onFinal('going to patient search');
+    await flush(1200);
+    expect(store.getState().voice.history[0].transcript).toBe('I am going to patient search');
+    expect(store.getState().voice.history).toHaveLength(1);
+  });
+
+  it('processes a held fragment on its own after the hold period', async () => {
+    controller.startListening();
+    mic.current.callbacks.onFinal('hello');
+    await flush(2600 + 900);
+    expect(store.getState().voice.history[0]?.transcript).toBe('hello');
+  });
+
+  it('short answers to a pending question are processed immediately', async () => {
+    controller.startListening();
+    store.dispatch({ type: 'voice/setPendingSlot', payload: { formId: 'medication', field: 'dosage', label: 'Dosage', question: 'What dosage?' } });
+    mic.current.callbacks.onFinal('500 mg');
+    await flush(300);
+    // not held as a fragment: processing started right away
+    expect(store.getState().voice.interimTranscript).not.toBe('500 mg …');
+    expect(store.getState().voice.transcript).toBe('500 mg');
+  });
+
+  it('toggleListening flips the user switch', () => {
+    controller.toggleListening();
+    expect(controller.isMicActive).toBe(true);
+    controller.toggleListening();
+    expect(controller.isMicActive).toBe(false);
+  });
+});

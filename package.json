@@ -11,7 +11,9 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint . --ext .ts,.tsx"
+    "lint": "eslint . --ext .ts,.tsx",
+    "bridge": "powershell -NoProfile -ExecutionPolicy Bypass -File python/start.ps1",
+    "bridge:health": "curl -s http://127.0.0.1:8765/api/health"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.5.0",

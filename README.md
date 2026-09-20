@@ -124,10 +124,28 @@ python/             FastAPI bridge for omi-med-stt + Qwen (optional)
 
 ## 4. Installation
 
+### Quick start with the local models (Windows, NVIDIA GPU)
+
+```powershell
+.\start-all.ps1
+```
+
+That single script: checks/starts Ollama and pulls `qwen3.5:4b` if missing, warms it onto the GPU, creates the Python venv, installs `omi-med-stt` + the parakeet.cpp runtime + the omi-med-stt GGUF (first run only, ~1 GB), starts the STT bridge on `:8765`, and runs the Vite dev server on `http://localhost:5173`. Sign in with any credentials and press `Ctrl+Shift+V`.
+
+Manual equivalent (three terminals):
+
+```powershell
+ollama serve                                   # terminal 1 — Ollama (qwen3.5:4b, pulled once with: ollama pull qwen3.5:4b)
+npm run bridge                                 # terminal 2 — omi-med-stt bridge  (first time: see §8)
+npm run dev                                    # terminal 3 — frontend
+```
+
+Frontend-only / no models:
+
 ```bash
 npm install
-cp .env.example .env      # defaults to mock AI mode — no models needed
-npm run dev               # http://localhost:5173
+cp .env.example .env && sed -i 's/VITE_AI_MODE=local/VITE_AI_MODE=mock/' .env
+npm run dev
 ```
 
 Sign in with any credentials (e.g. `mreed` / anything). The app is fully functional in mock mode.
@@ -175,6 +193,8 @@ CommandExecutor.execute(command)  — one deterministic tool per action:
 Redux + React Router + FormRegistry controllers → UI
 ```
 
+**Microphone lifecycle.** The mic switch is owned by the user (`voice.micActive`), not by the recognition engine. Once turned on it stays on across sentences, pauses, transcription results, command execution and AI responses. End-of-utterance from the STT engine only closes a *segment* (one `onFinal`); the session keeps running and segments are queued and processed in order. If the engine stops by itself (Chrome's silence timeout, `no-speech`) the adapter re-arms automatically. The mic turns off **only** on **Mic Off**, **Cancel**, or a fatal device error (permission denied / no microphone). The HTTP adapter (omi-med-stt) uses an energy-based voice-activity detector to delimit segments so no re-arming is ever needed.
+
 **Voice states** (`voiceSlice.status`): `idle → listening → transcribing → processing → executing → confirmation_required | completed | error | cancelled`, each rendered in the floating assistant with its own indicator.
 
 **Multi-turn.** If a required field is missing the executor sets a `pendingSlot` and asks (“What dosage?”). The next utterance that doesn't match a command answers that slot. A full medication phrase given as an answer is parsed into all its fields.
@@ -185,22 +205,38 @@ Redux + React Router + FormRegistry controllers → UI
 
 ## 8. STT setup (omi-med-stt)
 
-Option A — **browser** (no model): `VITE_STT_PROVIDER=browser`. Uses the Web Speech API (Chrome/Edge). Streaming interim text.
+Speech-to-text uses **Omi Med STT v1** (0.6B, built from NVIDIA Parakeet-TDT 0.6B v2) through its official runtime package [`omi-med-stt`](https://pypi.org/project/omi-med-stt/). It is **not** a Whisper model — it needs the patched `parakeet.cpp` runtime (CPU) or `parakeet-mlx` (Apple Silicon), which the package installs.
 
-Option B — **local omi-med-stt via the python bridge**: `VITE_STT_PROVIDER=http`, `VITE_STT_API_URL=http://127.0.0.1:8765/api/stt`.
+| Machine | Engine (`CAREFLOW_STT_ENGINE`) | Model artifact |
+|---|---|---|
+| Windows / Linux CPU | `gguf` | `omi-health/omi-med-stt-v1-gguf` (`omi-med-stt-v1-q8_0.gguf`, 929 MB) |
+| Apple Silicon | `mlx-q8` (default on macOS) | `omi-health/omi-med-stt-v1-mlx-q8` |
+| Apple Silicon, full precision | `mlx` | `omi-health/omi-med-stt-v1-mlx` |
+
+`auto` (default) picks `mlx-q8` on Apple Silicon and `gguf` everywhere else.
 
 ```bash
 cd python
-python -m venv .venv && .venv\Scripts\activate       # Windows (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements.txt
-# choose ONE runtime:
-pip install pywhispercpp          # GGUF  → omi-health/omi-med-stt-v1-gguf   (CAREFLOW_STT_ENGINE=gguf)
-pip install mlx-whisper           # MLX   → omi-health/omi-med-stt-v1-mlx / -mlx-q8 (Apple Silicon, CAREFLOW_STT_ENGINE=mlx)
-# GGUF: download the .gguf into python/models/omi-med-stt-v1.gguf (or set CAREFLOW_STT_MODEL_PATH)
-uvicorn app:app --host 127.0.0.1 --port 8765
+python -m venv .venv && .venv\Scripts\activate          # Windows   (macOS/Linux: source .venv/bin/activate)
+pip install -r requirements.txt                          # includes omi-med-stt
+# Windows / Linux CPU: install parakeet.cpp + download the GGUF (one time, ~1 GB)
+omi-med-stt install-cpp --cpp-backend cpu
+# Apple Silicon instead:  pip install -U "omi-med-stt[mlx]"
+uvicorn app:app --host 127.0.0.1 --port 8765             # or: .\start.ps1
 ```
 
-`ffmpeg` must be on PATH (browser audio is webm/ogg and is converted to 16 kHz mono WAV). The frontend records with `MediaRecorder`, POSTs the blob, and shows the **Transcribing…** state until text returns.
+Frontend `.env`: `VITE_STT_PROVIDER=http`, `VITE_STT_API_URL=http://127.0.0.1:8765/api/stt`.
+
+**GPU for STT?** `CAREFLOW_STT_BACKEND=cuda` (or `vulkan`) makes the bridge build parakeet.cpp with GPU support on first start — this needs CMake, a C++ compiler (MSVC Build Tools / GCC) and the CUDA Toolkit or Vulkan SDK on the machine. On a 4 GB card that is already holding Qwen it is counter-productive (VRAM contention pushes Qwen back to the CPU); the CPU engine already transcribes a 5-second utterance in ~0.8 s, so the default stays `cpu`.
+
+The bridge loads the model **once** and keeps it resident (`CAREFLOW_STT_PRELOAD=1`), so a 5-second utterance transcribes in ~0.8 s on CPU. Browser audio (`webm/opus` from `MediaRecorder`) is decoded by the ffmpeg that ships with the package and resampled to 16 kHz mono. Verify with:
+
+```bash
+curl http://127.0.0.1:8765/api/health
+# {"stt":{"engine":"gguf (omi-med-stt-v1-gguf / parakeet.cpp)","model":"omi-health/omi-med-stt-v1-gguf","ready":true,"resident":true}, ...}
+curl -F "audio=@speech.wav" http://127.0.0.1:8765/api/stt
+# {"text":"Add amoxicillin 500 mg twice daily for 7 days.","model":"omi-health/omi-med-stt-v1-gguf", ...}
+```
 
 ## 9. Qwen 3.5 4B setup
 
@@ -211,7 +247,11 @@ Any of these work — set `VITE_AI_MODE=local` and the matching provider:
 ollama pull qwen3.5:4b            # quantized build that fits typical local hardware
 ollama serve
 ```
-`.env`: `VITE_LLM_PROVIDER=ollama`, `VITE_LLM_API_URL=http://127.0.0.1:11434`, `VITE_LLM_MODEL=qwen3.5:4b`
+`.env`: `VITE_AI_MODE=local`, `VITE_LLM_PROVIDER=ollama`, `VITE_LLM_API_URL=http://127.0.0.1:11434`, `VITE_LLM_MODEL=qwen3.5:4b`. The app warms the model at start-up and keeps it resident (`keep_alive: 30m`); requests use JSON mode with a `{"commands":[...]}` envelope so multi-step utterances survive Ollama's single-object constraint.
+
+**GPU offload.** The app requests `num_gpu: 99` (all layers) and `num_ctx: 4096`; with those settings `qwen3.5:4b` (Q4_K_M, 3.1 GB) fits entirely in a 4 GB card (measured: GTX 1650 → 100 % GPU, ~4 s per command). Override with `VITE_LLM_NUM_GPU` / `VITE_LLM_NUM_CTX`; set `VITE_LLM_NUM_GPU=0` to force CPU. Check with `ollama ps` (PROCESSOR column should read `100% GPU`).
+
+**Why ~4 s and not 0.3 s?** Qwen 3.5 is a hybrid (Gated-DeltaNet recurrent) architecture; Ollama cannot reuse a partial KV-cache prefix for it, so the ~1.3k-token system prompt is re-processed on every command. Pure-transformer models reuse the prefix and answer in ~0.3 s — but they were less accurate in our benchmark (22 website-wide commands): `qwen3.5:4b` 22/22, `qwen3:1.7b` 17/22, `qwen3:0.6b` ~14/22. If you prefer speed over accuracy set `VITE_LLM_MODEL=qwen3:1.7b`; the deterministic guards and rule-based fallback soften — but do not eliminate — its mistakes.
 
 **llama.cpp / LM Studio / MLX server (OpenAI-compatible)**
 ```bash
@@ -227,11 +267,12 @@ The system prompt (`services/ai/prompt.ts`) lists every page id/number, every fo
 
 | Model | Size | Runtime | Notes |
 |---|---|---|---|
-| `omi-health/omi-med-stt-v1-gguf` | 0.6B | whisper.cpp (pywhispercpp) | CPU friendly, any OS |
-| `omi-health/omi-med-stt-v1-mlx` / `-mlx-q8` | 0.6B | mlx-whisper | Apple Silicon |
-| `qwen3.5:4b` (Q4_K_M ≈ 2.5 GB) | 4B | Ollama / llama.cpp / MLX | ~4–6 GB RAM/VRAM; JSON mode; `think=false` |
+| `omi-health/omi-med-stt-v1-gguf` | 0.6B (q8_0, 929 MB) | `omi-med-stt` → patched `parakeet.cpp` | Windows / Linux CPU; ~0.8 s per 5 s clip once resident |
+| `omi-health/omi-med-stt-v1-mlx-q8` | 0.6B (8-bit) | `omi-med-stt[mlx]` → `parakeet-mlx` | Apple Silicon default |
+| `omi-health/omi-med-stt-v1-mlx` | 0.6B (fp16) | `omi-med-stt[mlx]` | Apple Silicon, full precision |
+| `qwen3.5:4b` (Ollama, Q4_K_M ≈ 3.4 GB) | 4B | Ollama / llama.cpp / MLX | ~5–6 GB RAM; JSON mode, `think=false`, `num_ctx 8192`, `keep_alive 30m` |
 
-Typical latency on a laptop: STT 0.5–2 s per utterance, Qwen 0.5–3 s per command. Nothing leaves the machine in local mode.
+Measured on this development machine (CPU only): Qwen first call ~15–30 s (model load + prompt cache), then ~5–12 s per command; a GPU brings this to about a second. Nothing leaves the machine in local mode.
 
 ## 11. Model runtime configuration
 
@@ -242,13 +283,15 @@ If the local model is unreachable or returns invalid JSON and `VITE_AI_FALLBACK_
 ## 12. Environment variables
 
 ```env
-VITE_AI_MODE=mock                 # mock | local
-VITE_STT_PROVIDER=browser         # mock | browser | http
+VITE_AI_MODE=local                # mock | local   (this repo's .env is set to local: Qwen + omi-med-stt)
+VITE_STT_PROVIDER=http            # mock | browser | http (http = omi-med-stt via python bridge)
 VITE_STT_API_URL=http://127.0.0.1:8765/api/stt
 VITE_LLM_PROVIDER=ollama          # mock | ollama | openai-compatible | http
 VITE_LLM_API_URL=http://127.0.0.1:11434
 VITE_LLM_MODEL=qwen3.5:4b
-VITE_LLM_TIMEOUT_MS=20000
+VITE_LLM_TIMEOUT_MS=60000
+VITE_LLM_NUM_GPU=99               # layers on GPU (99 = all, 0 = CPU)
+VITE_LLM_NUM_CTX=4096             # context window (keep small to fit VRAM)
 VITE_AI_FALLBACK_TO_RULES=true
 VITE_ENABLE_VOICE=true
 VITE_ENABLE_DEBUG_PANEL=true
@@ -258,13 +301,21 @@ No `localhost` URLs are hard-coded in application code; everything is read in `s
 
 ## 13. Mock mode
 
-`VITE_AI_MODE=mock` (default). `MockLLMProvider` runs the rule-based interpreter (`services/ai/ruleBasedInterpreter.ts`) which understands navigation verbs, page numbers, patient lookup, medication/appointment/patient phrases, field-level edits, confirmations and multi-clause commands (“go to page 30 and add medication”). Everything downstream is the production path.
+`VITE_AI_MODE=mock` (set it in `.env`; this repo ships with `local`). `MockLLMProvider` runs the rule-based interpreter (`services/ai/ruleBasedInterpreter.ts`) which understands navigation verbs, page numbers, patient lookup, medication/appointment/patient phrases, field-level edits, confirmations and multi-clause commands (“go to page 30 and add medication”). Everything downstream is the production path.
 
 **Voice Test Console** (`/dev/voice-console`, page 90, or `Ctrl+K → Voice Test Console`): type a transcript, run it through the full pipeline or preview the interpretation only, run canned scenarios (multi-step navigation, slot filling, appointment booking, registration, error handling), inspect conversation history, and switch runtimes. The floating assistant also has a **keyboard mode** for typing commands when no microphone is available.
 
 ## 14. Debug mode
 
 `Ctrl+Shift+D` (or the bug icon) opens the **Debug Panel**: raw transcript, normalized transcript, provider used (incl. fallback reason), raw model output, validated commands, execution steps with tool names/status/timing, fields modified, confirmation state, context sent to the model, plus registry views (current page, mounted forms, page list). History keeps the last 20 traces.
+
+### How to confirm the local models are really being used
+
+1. Voice panel header shows `ollama:qwen3.5:4b` instead of `Mock mode`.
+2. Debug Panel (`Ctrl+Shift+D`) → header chips `STT: http-stt (…/api/stt)` and `LLM: ollama:qwen3.5:4b`; **Provider** row per command; **Raw model output** is Qwen's actual JSON. A line `→ fallback: rules (…)` means the model was *not* reachable.
+3. System Preferences (page 79) → "Active AI runtime" card.
+4. Browser DevTools → Network: `POST 127.0.0.1:11434/api/chat` (body `"model":"qwen3.5:4b"`) and `POST 127.0.0.1:8765/api/stt` (webm upload → `{"model":"omi-health/omi-med-stt-v1-gguf"}`).
+5. `ollama ps` lists `qwen3.5:4b` loaded; `curl http://127.0.0.1:8765/api/health` reports the STT engine/model.
 
 ## 15. Adding new pages
 
@@ -304,6 +355,21 @@ No `localhost` URLs are hard-coded in application code; everything is read in `s
 - Patient-scoped pages refuse to open without a patient in context and redirect to Patient Search with an explanation.
 
 ## 20. Testing
+
+### End-to-end voice coverage (real models, GPU)
+
+Verified in Chrome against `qwen3.5:4b` (Ollama, 100 % GPU) — 25/25 commands:
+
+| Area | Commands |
+|---|---|
+| Patients | "Add patient Bilal Hussain, male, 32 years old, phone 512 555 0199" → "set email to bilal@example.com" → "Save it" (registered, DOB derived from age) · "Open John Smith" · "Go to medications" |
+| Medications / Rx | "Add Lisinopril 10 milligrams once daily for 30 days" → "Save it" · "Go to page 30 and add medication" → "Amoxicillin 500 milligrams orally twice daily for seven days" → "Cancel" |
+| Appointments | "Create an appointment for Ahmed Khan with Dr Sarah Ahmed tomorrow at 3 PM for blood pressure review" → "Yes, save it" · "Open the appointment calendar" · "Go to appointment queue" |
+| Configuration | "Go to configuration" · "Open medication configuration" · "Open security configuration" |
+| Users / Roster / Providers / Reports | "Open user management and create user" · "Go to roster and add shift" · "Open provider list" · "Go to reports" · "Go to page 72" · "Go back" |
+
+Every save went through the confirmation boundary; every cancel closed the form without saving.
+
 
 ```bash
 npm test

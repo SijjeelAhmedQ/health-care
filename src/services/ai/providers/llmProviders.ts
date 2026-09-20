@@ -45,8 +45,23 @@ export class MockLLMProvider implements LLMProvider {
 /** Ollama /api/chat (qwen3.5:4b). */
 export class OllamaLLMProvider implements LLMProvider {
   readonly name: string;
-  constructor(private readonly baseUrl: string, private readonly model: string, private readonly timeoutMs: number) {
+  /** Keep the model resident between utterances so only the first call pays the load cost. */
+  static readonly KEEP_ALIVE = '30m';
+  constructor(private readonly baseUrl: string, private readonly model: string, private readonly timeoutMs: number, private readonly numGpu = 99, private readonly numCtx = 4096) {
     this.name = `ollama:${model}`;
+    void this.warmUp();
+  }
+  /** Fire-and-forget: load the model into memory as soon as the app starts. */
+  async warmUp() {
+    try {
+      await fetchWithTimeout(
+        `${this.baseUrl.replace(/\/$/, '')}/api/generate`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: this.model, prompt: '', keep_alive: OllamaLLMProvider.KEEP_ALIVE, options: { num_gpu: this.numGpu, num_ctx: this.numCtx } }) },
+        60000,
+      );
+    } catch {
+      /* runtime not up yet — the first real request will report it */
+    }
   }
   async generateCommands(transcript: string, context: AIContext): Promise<{ commands: AICommand[]; raw: string }> {
     const res = await fetchWithTimeout(
@@ -57,11 +72,14 @@ export class OllamaLLMProvider implements LLMProvider {
         body: JSON.stringify({
           model: this.model,
           stream: false,
+          // Ollama's JSON mode constrains output to a single object, so the array is wrapped in an envelope.
           format: 'json',
-          options: { temperature: 0, num_predict: 400 },
+          keep_alive: OllamaLLMProvider.KEEP_ALIVE,
+          // Full GPU offload (num_gpu) + a small context keep the whole model in VRAM on 4 GB cards.
+          options: { temperature: 0, num_predict: 400, num_ctx: this.numCtx, num_gpu: this.numGpu },
           think: false,
           messages: [
-            { role: 'system', content: buildSystemPrompt(context) },
+            { role: 'system', content: `${buildSystemPrompt(context)}\nIMPORTANT: respond with a single JSON object of the form {"commands":[ ...commands in order... ]}. Multi-step requests ("X and Y") must produce multiple commands inside "commands".` },
             { role: 'user', content: transcript },
           ],
         }),
@@ -152,7 +170,7 @@ export function createLLMProvider(config: AIConfig): LLMProvider {
   if (config.mode === 'mock') return new MockLLMProvider();
   switch (config.llm.provider) {
     case 'ollama':
-      return new OllamaLLMProvider(config.llm.apiUrl, config.llm.model, config.llm.timeoutMs);
+      return new OllamaLLMProvider(config.llm.apiUrl, config.llm.model, config.llm.timeoutMs, config.llm.numGpu, config.llm.numCtx);
     case 'openai-compatible':
       return new OpenAICompatibleLLMProvider(config.llm.apiUrl, config.llm.model, config.llm.timeoutMs);
     case 'http':

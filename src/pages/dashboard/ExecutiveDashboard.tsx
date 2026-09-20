@@ -188,12 +188,12 @@ export default function ExecutiveDashboard() {
         <div className="col-6">
           <SectionCard title="Voice assistant & system status">
             <div className="flex items-center gap-3" style={{ marginBottom: 12 }}>
-              <Mic size={18} color={voice.status === 'listening' ? '#d64545' : '#0f6e8c'} />
+              <Mic size={18} color={voice.micActive ? '#d64545' : '#0f6e8c'} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>Assistant {voice.status === 'idle' ? 'ready' : voice.status.replace('_', ' ')}</div>
                 <div className="muted" style={{ fontSize: 12 }}>STT: {voice.sttProvider} · LLM: {voice.llmProvider}</div>
               </div>
-              <Button type="primary" icon={<Mic size={14} />} onClick={() => getVoiceController().startListening()}>Speak</Button>
+              <Button type="primary" danger={voice.micActive} icon={<Mic size={14} />} onClick={() => getVoiceController().toggleListening()}>{voice.micActive ? 'Mic Off' : 'Speak'}</Button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
               {[['Mock API', 'Operational'], ['Voice pipeline', voice.llmProvider.startsWith('mock') ? 'Mock mode' : 'Local model'], ['Registered pages', '85'], ['Last command', voice.lastCommandAt ? fromNow(new Date(voice.lastCommandAt).toISOString()) : '—']].map(([k, v]) => (

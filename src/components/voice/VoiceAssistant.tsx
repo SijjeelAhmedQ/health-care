@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Input, Tag, Tooltip } from 'antd';
-import { AlertCircle, Bug, Check, CheckCircle2, Keyboard, Loader2, Mic, MicOff, Send, Square, X } from 'lucide-react';
+import { AlertCircle, Bug, Check, CheckCircle2, Keyboard, Loader2, Mic, MicOff, Send, X } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { voiceActions, type VoiceStatus } from '@/store/slices/voiceSlice';
 import { uiActions } from '@/store/slices/uiSlice';
@@ -28,6 +28,8 @@ export function VoiceAssistant() {
   const [showTyping, setShowTyping] = useState(false);
   const meta = statusMeta[voice.status];
   const busy = voice.status === 'processing' || voice.status === 'executing' || voice.status === 'transcribing';
+  // The microphone switch is owned by the user (micActive) — not by the transcription lifecycle.
+  const micOn = voice.micActive;
   const controller = getVoiceController();
 
   const submitTyped = () => {
@@ -41,8 +43,13 @@ export function VoiceAssistant() {
       {voice.panelOpen && (
         <div className="voice-panel" role="dialog" aria-label="Voice assistant">
           <div className="voice-panel-header">
-            <Mic size={16} color="#0f6e8c" />
+            <Mic size={16} color={micOn ? '#d64545' : '#0f6e8c'} />
             <span className="voice-panel-title">Voice Assistant</span>
+            {micOn && (
+              <Tag color="red" style={{ margin: 0, fontSize: 11 }}>
+                Mic on
+              </Tag>
+            )}
             <Tag color={voice.llmProvider.startsWith('mock') ? 'default' : 'blue'} style={{ margin: 0, fontSize: 11 }}>
               {voice.llmProvider.startsWith('mock') ? 'Mock mode' : voice.llmProvider}
             </Tag>
@@ -56,7 +63,7 @@ export function VoiceAssistant() {
 
           <div className="voice-panel-body">
             <div className="voice-status-row" style={{ color: meta.color }}>
-              {voice.status === 'listening' ? (
+              {voice.status === 'listening' || (micOn && voice.status === 'idle') ? (
                 <span className="voice-waveform"><span /><span /><span /><span /><span /></span>
               ) : busy ? (
                 <Loader2 size={16} className="spin" style={{ animation: 'spin 1s linear infinite' }} />
@@ -69,14 +76,15 @@ export function VoiceAssistant() {
               ) : (
                 <Mic size={16} />
               )}
-              <span>{meta.label}</span>
+              <span>{micOn && voice.status === 'idle' ? 'Listening…' : meta.label}</span>
               {voice.currentAction && <span className="muted" style={{ fontWeight: 400 }}>· {voice.currentAction}</span>}
+              {micOn && voice.status !== 'listening' && voice.status !== 'idle' && <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>· mic still on</span>}
             </div>
 
             {voice.interimTranscript || voice.transcript ? (
               <div className="voice-transcript">“{voice.interimTranscript || voice.transcript}”</div>
             ) : (
-              <div className="voice-transcript placeholder">{voice.micSupported ? 'Tap the microphone and speak a command…' : 'Microphone not supported here — type a command below.'}</div>
+              <div className="voice-transcript placeholder">{micOn ? 'Listening — speak whenever you are ready. The mic stays on until you press Stop.' : voice.micSupported ? 'Tap the microphone and speak a command…' : 'Microphone not supported here — type a command below.'}</div>
             )}
 
             {voice.pendingSlot && voice.status !== 'error' && (
@@ -113,7 +121,7 @@ export function VoiceAssistant() {
               </div>
             )}
 
-            {voice.history.length === 0 && voice.status === 'idle' && (
+            {voice.history.length === 0 && voice.status === 'idle' && !micOn && (
               <div>
                 <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Try saying</div>
                 <div className="voice-hint-chips">
@@ -150,7 +158,6 @@ export function VoiceAssistant() {
                 onChange={(e) => setTyped(e.target.value)}
                 onSearch={submitTyped}
                 enterButton={<Send size={14} />}
-                disabled={busy}
                 autoFocus
                 aria-label="Type a voice command"
               />
@@ -158,14 +165,15 @@ export function VoiceAssistant() {
               <>
                 <Button
                   type="primary"
-                  danger={voice.status === 'listening'}
-                  icon={voice.status === 'listening' ? <Square size={14} /> : <Mic size={15} />}
+                  danger={micOn}
+                  icon={micOn ? <MicOff size={14} /> : <Mic size={15} />}
                   onClick={() => controller.toggleListening()}
-                  disabled={busy}
+                  disabled={!micOn && busy}
+                  aria-pressed={micOn}
                 >
-                  {voice.status === 'listening' ? 'Stop' : 'Speak'}
+                  {micOn ? 'Mic Off' : 'Speak'}
                 </Button>
-                {(busy || voice.status === 'listening') && (
+                {(busy || micOn) && (
                   <Button icon={<X size={14} />} onClick={() => controller.cancel()}>
                     Cancel
                   </Button>
@@ -182,20 +190,20 @@ export function VoiceAssistant() {
         </div>
       )}
 
-      <Tooltip title={voice.panelOpen ? 'Close assistant' : 'Voice assistant (Ctrl+Shift+V)'} placement="left">
+      <Tooltip title={micOn ? 'Turn microphone off' : 'Turn microphone on (Ctrl+Shift+V)'} placement="left">
         <button
           type="button"
-          className={`voice-fab ${voice.status === 'listening' ? 'listening' : ''}`}
+          className={`voice-fab ${micOn ? 'listening' : ''}`}
           onClick={() => {
-            if (!voice.panelOpen) {
-              dispatch(voiceActions.setPanelOpen(true));
-              if (voice.micSupported && voice.status === 'idle') controller.startListening();
-            } else if (voice.status === 'listening') controller.stopListening();
-            else dispatch(voiceActions.setPanelOpen(false));
+            // Explicit user toggle — the only thing that switches the mic off besides Cancel.
+            if (micOn) controller.stopListening();
+            else if (voice.micSupported) controller.startListening();
+            else dispatch(voiceActions.setPanelOpen(!voice.panelOpen));
           }}
-          aria-label="Voice assistant"
+          aria-label={micOn ? 'Turn microphone off' : 'Turn microphone on'}
+          aria-pressed={micOn}
         >
-          {voice.status === 'listening' ? <Square size={20} /> : voice.micSupported ? <Mic size={22} /> : <MicOff size={22} />}
+          {micOn ? <MicOff size={22} /> : voice.micSupported ? <Mic size={22} /> : <Keyboard size={22} />}
         </button>
       </Tooltip>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>

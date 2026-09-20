@@ -46,6 +46,8 @@ interface VoiceState {
   sttProvider: string;
   llmProvider: string;
   micSupported: boolean;
+  /** User-controlled microphone switch. True from the moment the user turns the mic on until they turn it off. */
+  micActive: boolean;
   lastCommandAt: number | null;
 }
 
@@ -68,6 +70,7 @@ const initialState: VoiceState = {
   sttProvider: 'mock',
   llmProvider: 'mock',
   micSupported: true,
+  micActive: false,
   lastCommandAt: null,
 };
 
@@ -137,6 +140,10 @@ const voiceSlice = createSlice({
     },
     setMicSupported(state, action: PayloadAction<boolean>) {
       state.micSupported = action.payload;
+    },
+    setMicActive(state, action: PayloadAction<boolean>) {
+      state.micActive = action.payload;
+      if (!action.payload) state.interimTranscript = '';
     },
     setEnabled(state, action: PayloadAction<boolean>) {
       state.enabled = action.payload;

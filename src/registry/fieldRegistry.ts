@@ -68,6 +68,9 @@ const genderSynonyms: Record<string, string> = { male: 'Male', man: 'Male', m: '
 
 const yesNo = (raw: string) => /^(yes|true|on|checked|enable|enabled|allowed|allow)$/i.test(raw.trim());
 
+/** "amoxicillin" -> "Amoxicillin" (LLMs often return lower-case drug names). */
+export const normalizeName = (raw: string): string => raw.trim().replace(/(^|\s)([a-z])/g, (_, sp: string, c: string) => sp + c.toUpperCase());
+
 export const normalizeDosage = (raw: string): string =>
   raw
     .trim()
@@ -97,7 +100,7 @@ export const forms: FormDefinition[] = [
     sensitiveDescription: 'Save this medication to the patient record',
     fields: [
       { name: 'patientName', label: 'Patient', type: 'text', aliases: ['patient', 'for patient'] },
-      { name: 'medicationName', label: 'Medication Name', type: 'text', aliases: ['medication', 'drug', 'name', 'medicine'], required: true },
+      { name: 'medicationName', label: 'Medication Name', type: 'text', aliases: ['medication', 'drug', 'name', 'medicine'], required: true, normalize: normalizeName },
       { name: 'dosage', label: 'Dosage', type: 'text', aliases: ['dose', 'strength', 'amount'], required: true, normalize: normalizeDosage },
       { name: 'route', label: 'Route', type: 'select', options: ROUTE_OPTIONS, synonyms: routeSynonyms, aliases: ['route of administration', 'how taken'] },
       { name: 'frequency', label: 'Frequency', type: 'select', options: FREQUENCY_OPTIONS, synonyms: frequencySynonyms, aliases: ['how often', 'times a day', 'schedule'], required: true },
@@ -120,7 +123,7 @@ export const forms: FormDefinition[] = [
     sensitiveDescription: 'Create and send this prescription to the pharmacy',
     fields: [
       { name: 'patientName', label: 'Patient', type: 'text', aliases: ['patient', 'for patient'], required: true },
-      { name: 'medicationName', label: 'Medication Name', type: 'text', aliases: ['medication', 'drug', 'medicine', 'name'], required: true },
+      { name: 'medicationName', label: 'Medication Name', type: 'text', aliases: ['medication', 'drug', 'medicine', 'name'], required: true, normalize: normalizeName },
       { name: 'dosage', label: 'Dosage', type: 'text', aliases: ['dose', 'strength'], required: true, normalize: normalizeDosage },
       { name: 'route', label: 'Route', type: 'select', options: ROUTE_OPTIONS, synonyms: routeSynonyms },
       { name: 'frequency', label: 'Frequency', type: 'select', options: FREQUENCY_OPTIONS, synonyms: frequencySynonyms, aliases: ['how often'], required: true },
