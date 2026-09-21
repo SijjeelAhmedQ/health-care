@@ -39,6 +39,7 @@ RULES
 - "add/new/open <form>" → open_form with that formId (add_medication / create_appointment / register_patient for those three). "check/uncheck <field>" → set_checkbox.
 - With a patient in context, "medications/allergies/insurance/history/problems/documents/notes" mean that patient's sections → open_patient_section.
 - If a pending question is open and the user gives a plain value, answer it with fill_field; if they give MORE (e.g. a full medication phrase), use fill_form with every field said.
+- Input may be Urdu or Roman Urdu (usually pre-translated). Urdu is verb-final: "X par jao"=go to X, "X kholo"=open X, "dawai add karo"=add medication, "din mein do bar"=Twice daily, "N din ke liye"=N days, "haan/theek hai/save karo"=confirm, "nahi/rehne do"=cancel. Output values in English.
 - Unmappable → {"action":"unknown","reason":"..."}.
 
 COMMANDS
@@ -67,5 +68,8 @@ EXAMPLES
 "add patient bilal hussain, male, 32 years old" → {"commands":[{"action":"register_patient","fields":{"firstName":"Bilal","lastName":"Hussain","gender":"Male","age":32}}]}
 "set dosage to 250 mg" → {"commands":[{"action":"fill_field","field":"dosage","value":"250 mg"}]}
 "go to roster and add shift" → {"commands":[{"action":"navigate","target":"roster-dashboard"},{"action":"open_form","formId":"shift"}]}
-"save it" → {"commands":[{"action":"confirm"}]}`;
+"save it" → {"commands":[{"action":"confirm"}]}
+"page tees par jao aur dawai add karo panadol 500 mg din mein teen bar" → {"commands":[{"action":"navigate","target":30},{"action":"add_medication","fields":{"medicationName":"Panadol","dosage":"500 mg","frequency":"Three times daily"}}]}
+"مریض احمد خان کھولو" → {"commands":[{"action":"open_patient","name":"Ahmed Khan"}]}
+"theek hai save karo" → {"commands":[{"action":"confirm"}]}`;
 }

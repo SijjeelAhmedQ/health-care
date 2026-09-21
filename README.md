@@ -203,6 +203,21 @@ Redux + React Router + FormRegistry controllers → UI
 
 **Confirmation boundary.** After filling, the executor produces a `pendingConfirmation` (summary shown in the panel and a banner inside the form). Only `save it / yes / submit / confirm` → `confirm` triggers `controller.submit()` — the exact handler the Save button calls. `cancel / no / never mind` closes without saving. `submit_form` without a pending confirmation *requests* one instead of saving.
 
+**Urdu / Roman Urdu.** Commands can be spoken or typed in Urdu script or Roman Urdu (or a mix with English drug names). `services/ai/urdu/translator.ts` deterministically translates the utterance into the same English command language before the interpreter/LLM sees it, so every downstream piece (rules, Qwen prompt, executor, confirmation) is unchanged. Examples:
+
+| You say | Pipeline sees |
+|---|---|
+| `page number tees par jao or ek dawai add karo amoxicillin 500 mg twice daily paanch dino ke liay` | `go to page 30 and add medication amoxicillin 500 mg twice daily for 5 days` |
+| `پیج نمبر تیس پر جاؤ اور ایک دوائی ایڈ کرو اموکسیسلن 500 ملی گرام دن میں دو بار پانچ دن کے لیے` | same as above |
+| `ahmed khan ke liye dr sarah ke saath kal shaam 3 baje appointment banao seene mein dard ke liye` | `create appointment for ahmed khan with dr sarah tomorrow at 3 pm for chest pain` |
+| `mareez john smith kholo` · `john smith ki dawaiyan dikhao` | `open patient john smith` · `open john smith's medications` |
+| `dosage ko 250 mg karo` · `notes saaf karo` · `prn tick karo` | `set dosage to 250 mg` · `clear notes` · `check prn` |
+| `haan` / `theek hai` / `save karo` / `جی ہاں` — `nahi` / `rehne do` / `نہیں` | `yes` / `save it` — `cancel` |
+
+Covered vocabulary: Urdu numbers 1–100 (both scripts), verb-final word order (`X par jao`, `X kholo`, `X add karo`), postpositions (`ke liye` → for, `ke saath` → with), frequency (`din mein do bar`, `subah shaam`, `raat ko`, `zaroorat par`), duration (`N din/hafte/mahine ke liye`), route (`muun se`, `malham`, `aankh ke qatre`), food instructions, symptoms (`bukhar`, `seene mein dard`, …), relative dates/times (`kal`, `parso`, `agle peer`, `shaam 3 baje`), demographics (`mard`, `32 saal`) and confirm/cancel phrases. Spelling variants are normalised (`paanch/panch`, `liay/liye`, `karo/kro/kar do`) and common drug misspellings are fixed. English input is never rewritten — translation only switches on when an Urdu marker word or Urdu-script character is present.
+
+For voice input in Urdu set `VITE_STT_LANGUAGE=ur-PK` (or pick **اردو** under *STT language* in the Voice Console): Chrome's recogniser then returns Urdu script, which the translator handles. The default `omi-med-stt` bridge model is English-only; for Urdu speech through the bridge swap in a multilingual model (e.g. Whisper) in `python/services/stt.py`. The Debug panel shows the original transcript and the provider line notes `Urdu → English` when a translation happened. Tests: `services/ai/__tests__/urdu.test.ts`; extend the lexicon in `services/ai/urdu/lexicon.ts` and phrase/structure rules in `translator.ts`.
+
 ## 8. STT setup (omi-med-stt)
 
 Speech-to-text uses **Omi Med STT v1** (0.6B, built from NVIDIA Parakeet-TDT 0.6B v2) through its official runtime package [`omi-med-stt`](https://pypi.org/project/omi-med-stt/). It is **not** a Whisper model — it needs the patched `parakeet.cpp` runtime (CPU) or `parakeet-mlx` (Apple Silicon), which the package installs.
@@ -332,6 +347,7 @@ No `localhost` URLs are hard-coded in application code; everything is read in `s
 - **A new page or alias:** add aliases in `pageRegistry.ts` — “go to X” resolves automatically.
 - **A new tool:** add a Zod schema + union member in `types/ai.ts`, a `case` in `CommandExecutor.execute`, a rule in `ruleBasedInterpreter.ts` (mock/fallback), and a line in `prompt.ts` so Qwen knows the shape. Add a test in `services/ai/__tests__`.
 - **A palette action:** add an `AppCommand` in `commandRegistry.ts`; it becomes available in `Ctrl+K` and can be triggered by voice through the same executor.
+- **An Urdu / Roman Urdu phrase:** add spellings to `services/ai/urdu/lexicon.ts` (Urdu-script and Roman variants map to one canonical token) and, if the phrase needs re-ordering, a rule in `translator.ts` (`SUB_PHRASES` for fragments like frequencies, `structure()` for whole commands). The English interpreter does the rest.
 
 ## 17. Adding new forms
 

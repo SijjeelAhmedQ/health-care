@@ -74,9 +74,15 @@ const FATAL_SPEECH_ERRORS = new Set(['not-allowed', 'service-not-allowed', 'audi
 const RESTART_DELAY_MS = 250;
 
 export class BrowserSTTProvider implements SpeechToTextProvider, MicrophoneRecognizer {
-  readonly name = 'browser (Web Speech API)';
-  readonly providerName = this.name;
+  readonly name: string;
+  readonly providerName: string;
   readonly supportsStreaming = true;
+
+  /** @param lang BCP-47 recognition language, e.g. 'en-US' or 'ur-PK' (Urdu — transcripts arrive in Urdu script). */
+  constructor(private readonly lang: string = 'en-US') {
+    this.name = `browser (Web Speech API, ${lang})`;
+    this.providerName = this.name;
+  }
 
   isSupported() {
     return typeof window !== 'undefined' && getSpeechRecognition() !== null;
@@ -109,7 +115,7 @@ export class BrowserSTTProvider implements SpeechToTextProvider, MicrophoneRecog
     const spin = () => {
       const r = new Ctor();
       rec = r;
-      r.lang = 'en-US';
+      r.lang = this.lang;
       r.interimResults = true;
       r.continuous = true; // keep the engine open across pauses; each final result is one segment
       r.maxAlternatives = 1;
@@ -459,6 +465,6 @@ export function createSTTProvider(config: AIConfig): MicrophoneRecognizer & Spee
       return new MockSTTProvider();
     case 'browser':
     default:
-      return new BrowserSTTProvider();
+      return new BrowserSTTProvider(config.stt.language);
   }
 }

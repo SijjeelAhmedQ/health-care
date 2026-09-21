@@ -21,6 +21,7 @@ import { effectiveConfig } from './config';
 import { createLLMProvider, MockLLMProvider, ModelUnavailableError } from './providers/llmProviders';
 import { createSTTProvider, type ListeningSession, type MicrophoneRecognizer } from './providers/sttProviders';
 import { looksLikeCommand, normalizeTranscript } from './ruleBasedInterpreter';
+import { translateUrdu } from './urdu/translator';
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
@@ -330,14 +331,19 @@ export class VoiceController {
 
   private async generate(transcript: string, context: AIContext, trace: DebugTrace): Promise<AICommand[]> {
     const config = effectiveConfig();
+    // Urdu / Roman Urdu is translated deterministically before the model sees it, so the small
+    // local model only ever has to map English -> JSON. The original stays in the trace.
+    const urdu = translateUrdu(transcript);
+    const input = urdu.detected ? urdu.text : transcript;
+    if (urdu.detected) trace.provider = `${this.llm.name} (${urdu.language === 'ur' ? 'Urdu' : 'Roman Urdu'} → English)`;
     try {
-      const { commands, raw } = await this.llm.generateCommands(transcript, context);
+      const { commands, raw } = await this.llm.generateCommands(input, context);
       trace.rawModelOutput = raw;
-      return this.applySlotAnswerGuard(transcript, context, commands);
+      return this.applySlotAnswerGuard(input, context, commands);
     } catch (e) {
       const recoverable = e instanceof ModelUnavailableError || e instanceof CommandParseError;
       if (recoverable && config.fallbackToRules && !(this.llm instanceof MockLLMProvider)) {
-        const { commands, raw } = await this.fallback.generateCommands(transcript, context);
+        const { commands, raw } = await this.fallback.generateCommands(input, context);
         trace.provider = `${this.llm.name} → fallback: rules (${(e as Error).message})`;
         trace.rawModelOutput = raw;
         return commands;

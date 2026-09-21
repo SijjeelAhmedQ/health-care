@@ -2,10 +2,12 @@
 export type AIMode = 'mock' | 'local';
 export type STTProviderKind = 'mock' | 'browser' | 'http';
 export type LLMProviderKind = 'mock' | 'ollama' | 'openai-compatible' | 'http';
+/** Recognition language for the browser STT provider. Urdu (ur-PK) returns Urdu script, which the translator handles. */
+export type STTLanguage = 'en-US' | 'en-GB' | 'en-IN' | 'ur-PK' | 'hi-IN';
 
 export interface AIConfig {
   mode: AIMode;
-  stt: { provider: STTProviderKind; apiUrl: string };
+  stt: { provider: STTProviderKind; apiUrl: string; language: STTLanguage };
   llm: { provider: LLMProviderKind; apiUrl: string; model: string; timeoutMs: number; numGpu: number; numCtx: number };
   fallbackToRules: boolean;
   enableVoice: boolean;
@@ -21,6 +23,7 @@ export const aiConfig: AIConfig = {
   stt: {
     provider: (env.VITE_STT_PROVIDER as STTProviderKind) || 'browser',
     apiUrl: env.VITE_STT_API_URL || 'http://127.0.0.1:8765/api/stt',
+    language: (env.VITE_STT_LANGUAGE as STTLanguage) || 'en-US',
   },
   llm: {
     provider: (env.VITE_LLM_PROVIDER as LLMProviderKind) || 'ollama',
@@ -47,6 +50,7 @@ export interface AIOverride {
   llmModel?: string;
   llmApiUrl?: string;
   sttApiUrl?: string;
+  sttLanguage?: STTLanguage;
 }
 export function getAIOverride(): AIOverride {
   try {
@@ -65,6 +69,6 @@ export function effectiveConfig(): AIConfig {
     ...aiConfig,
     mode,
     llm: { ...aiConfig.llm, provider: mode === 'mock' ? 'mock' : o.llmProvider ?? aiConfig.llm.provider, model: o.llmModel ?? aiConfig.llm.model, apiUrl: o.llmApiUrl ?? aiConfig.llm.apiUrl },
-    stt: { ...aiConfig.stt, provider: o.sttProvider ?? (mode === 'mock' ? 'browser' : aiConfig.stt.provider), apiUrl: o.sttApiUrl ?? aiConfig.stt.apiUrl },
+    stt: { ...aiConfig.stt, provider: o.sttProvider ?? (mode === 'mock' ? 'browser' : aiConfig.stt.provider), apiUrl: o.sttApiUrl ?? aiConfig.stt.apiUrl, language: o.sttLanguage ?? aiConfig.stt.language },
   };
 }

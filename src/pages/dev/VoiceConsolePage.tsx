@@ -7,6 +7,7 @@ import { uiActions } from '@/store/slices/uiSlice';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { effectiveConfig, getAIOverride, setAIOverride, type AIOverride } from '@/services/ai/config';
 import { interpret, normalizeTranscript, splitClauses } from '@/services/ai/ruleBasedInterpreter';
+import { translateUrdu } from '@/services/ai/urdu/translator';
 import { validateCommands } from '@/services/ai/commandParser';
 import { buildSystemPrompt } from '@/services/ai/prompt';
 import { PageRegistry } from '@/registry/pageRegistry';
@@ -20,6 +21,10 @@ const scenarios: Array<{ title: string; steps: string[] }> = [
   { title: 'Appointment by voice', steps: ['Create an appointment for Ahmed Khan with Dr Sarah Ahmed tomorrow at 3 PM for blood pressure review', 'Yes, save it'] },
   { title: 'Register patient', steps: ['Add patient Bilal Hussain, male, 32 years old, phone 512 555 0199', 'Set email to bilal@example.com', 'Cancel'] },
   { title: 'Error handling', steps: ['Go to page 999', 'Open the flux capacitor', 'Save it'] },
+  { title: 'Roman Urdu: page + dawai + confirm', steps: ['page number tees par jao or ek dawai add karo amoxicillin 500 mg twice daily paanch dino ke liay', 'haan save karo'] },
+  { title: 'Roman Urdu: mareez, appointment, cancel', steps: ['mareez ahmed khan kholo', 'ahmed khan ke liye dr sarah ke saath kal shaam 3 baje appointment banao blood pressure ke liye', 'rehne do'] },
+  { title: 'اردو: صفحہ، دوائی، محفوظ', steps: ['پیج نمبر تیس پر جاؤ اور ایک دوائی ایڈ کرو اموکسیسلن 500 ملی گرام دن میں دو بار پانچ دن کے لیے', 'جی ہاں محفوظ کرو'] },
+  { title: 'اردو: مریض اور الرجی', steps: ['مریض جان سمتھ کھولو', 'الرجیز دکھاؤ', 'پینسلن کی الرجی ایڈ کرو شدید', 'واپس جاؤ'] },
 ];
 
 export default function VoiceConsolePage() {
@@ -50,10 +55,11 @@ export default function VoiceConsolePage() {
   const previewInterpretation = () => {
     const ctx = controller.buildContext();
     const normalized = normalizeTranscript(input);
+    const urdu = translateUrdu(input);
     const cmds = interpret(input, ctx);
     try {
       validateCommands(cmds);
-      setPreview(JSON.stringify({ normalized, clauses: splitClauses(normalized), commands: cmds, schemaValid: true }, null, 2));
+      setPreview(JSON.stringify({ language: urdu.language, ...(urdu.detected ? { translated: urdu.text } : {}), normalized, clauses: splitClauses(normalized), commands: cmds, schemaValid: true }, null, 2));
     } catch (e) {
       setPreview(JSON.stringify({ normalized, commands: cmds, schemaValid: false, error: (e as Error).message }, null, 2));
     }
@@ -72,7 +78,7 @@ export default function VoiceConsolePage() {
       <Row gutter={20}>
         <Col xs={24} lg={14}>
           <SectionCard title="Simulated transcript">
-            <Input.TextArea rows={3} value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type what the user would say…" onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); void run(input); } }} />
+            <Input.TextArea rows={3} value={input} onChange={(e) => setInput(e.target.value)} placeholder="Type what the user would say… (English, Roman Urdu ya اردو)" onPressEnter={(e) => { if (!e.shiftKey) { e.preventDefault(); void run(input); } }} />
             <Space style={{ marginTop: 12 }} wrap>
               <Button type="primary" icon={<Play size={15} />} loading={running} onClick={() => void run(input)}>Run through pipeline</Button>
               <Button icon={<Sparkles size={15} />} onClick={previewInterpretation}>Preview interpretation only</Button>
@@ -110,6 +116,7 @@ export default function VoiceConsolePage() {
               <Form.Item label="LLM endpoint"><Input value={override.llmApiUrl ?? cfg.llm.apiUrl} onChange={(e) => setOverride({ ...override, llmApiUrl: e.target.value })} /></Form.Item>
               <Form.Item label="Model"><Input value={override.llmModel ?? cfg.llm.model} onChange={(e) => setOverride({ ...override, llmModel: e.target.value })} /></Form.Item>
               <Form.Item label="STT provider"><Select value={override.sttProvider ?? cfg.stt.provider} onChange={(v) => setOverride({ ...override, sttProvider: v })} options={[{ value: 'browser', label: 'browser — Web Speech API' }, { value: 'http', label: 'http — omi-med-stt via python bridge' }, { value: 'mock', label: 'mock' }]} /></Form.Item>
+              <Form.Item label="STT language (browser)"><Select value={override.sttLanguage ?? cfg.stt.language} onChange={(v) => setOverride({ ...override, sttLanguage: v })} options={[{ value: 'en-US', label: 'English (US)' }, { value: 'en-GB', label: 'English (UK)' }, { value: 'en-IN', label: 'English (India / Pakistan accent)' }, { value: 'ur-PK', label: 'اردو — Urdu (Pakistan)' }, { value: 'hi-IN', label: 'हिन्दी — Hindi (India)' }]} /></Form.Item>
               <Form.Item label="STT endpoint"><Input value={override.sttApiUrl ?? cfg.stt.apiUrl} onChange={(e) => setOverride({ ...override, sttApiUrl: e.target.value })} /></Form.Item>
               <Space><Button type="primary" icon={<Save size={14} />} onClick={saveOverride}>Apply</Button><Button onClick={() => { setAIOverride({}); setOverride({}); controller.reconfigure(); message.success('Reset to .env configuration'); }}>Reset to .env</Button><Switch checkedChildren="fallback on" unCheckedChildren="fallback off" checked={cfg.fallbackToRules} disabled /></Space>
             </Form>

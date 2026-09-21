@@ -234,7 +234,8 @@ export const appointmentTypes: AppointmentTypeDef[] = [
 
 // ---------- Clinical records ----------
 const medsPool: Array<[string, string, string, string]> = [
-  ['Amoxicillin', '500 mg', 'Oral', 'Three times daily'], ['Lisinopril', '10 mg', 'Oral', 'Once daily'], ['Metformin', '500 mg', 'Oral', 'Twice daily'],
+  ['Amoxicillin', '500 mg', 'Oral', 'Three times daily'],
+  ['Panadol', '500 mg', 'Oral', 'Three times daily'], ['Lisinopril', '10 mg', 'Oral', 'Once daily'], ['Metformin', '500 mg', 'Oral', 'Twice daily'],
   ['Atorvastatin', '20 mg', 'Oral', 'Once daily at bedtime'], ['Amlodipine', '5 mg', 'Oral', 'Once daily'], ['Levothyroxine', '50 mcg', 'Oral', 'Once daily'],
   ['Omeprazole', '20 mg', 'Oral', 'Once daily'], ['Albuterol', '90 mcg/actuation', 'Inhalation', 'As needed'], ['Sertraline', '50 mg', 'Oral', 'Once daily'],
   ['Ibuprofen', '400 mg', 'Oral', 'Every 8 hours'], ['Losartan', '50 mg', 'Oral', 'Once daily'], ['Gabapentin', '300 mg', 'Oral', 'Three times daily'],

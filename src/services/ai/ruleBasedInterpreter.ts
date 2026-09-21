@@ -11,6 +11,7 @@ import type { AICommand, AIContext, FieldValues } from '@/types/ai';
 import { FieldRegistry, FREQUENCY_OPTIONS, normalizeDosage, normalizeDuration } from '@/registry/fieldRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
 import { ageToDob, parseDateTime } from './dateParser';
+import { translateUrdu } from './urdu/translator';
 
 const NAV_VERBS = '(?:go to|goto|open|navigate to|take me to|show me|show|i want|i want to see|bring up|switch to|display|view|load|jump to|head to|let\'s go to|lets go to|move to)';
 const OTHER_FORM_WORDS = /^(?:patient|appointment|allergy|diagnosis|problem|referral|user|provider|shift|leave|lab|imaging|prescription|note|roster|room|location)\b/;
@@ -19,9 +20,10 @@ const ACTION_VERB_START = /^(go|goto|open|add|create|fill|search|find|navigate|s
 /** True when an utterance starts with an application verb (i.e. is a command, not a plain value). */
 export const looksLikeCommand = (text: string): boolean => ACTION_VERB_START.test(normalizeTranscript(text)) || CONFIRM_RE.test(normalizeTranscript(text)) || CANCEL_RE.test(normalizeTranscript(text));
 
+/** Urdu / Roman Urdu is translated to the English command language first; English passes through. */
 export const normalizeTranscript = (raw: string): string =>
-  raw
-    .toLowerCase()
+  translateUrdu(raw)
+    .text.toLowerCase()
     .replace(/[“”"]/g, '')
     .replace(/[.!?]+$/g, '')
     .replace(/\bplease\b/g, '')
@@ -402,7 +404,9 @@ export function interpret(transcript: string, ctx: AIContext): AICommand[] {
   if (CONFIRM_RE.test(normalized)) return [{ action: 'confirm' }];
   if (CANCEL_RE.test(normalized)) return [{ action: 'cancel' }];
   const clauses = splitClauses(normalized);
-  const rawSingle = clauses.length === 1 ? transcript.trim().replace(/[.!?]+$/g, '') : undefined;
+  // Raw text is only used as a verbatim slot answer; for Urdu input the translation is the usable form.
+  const source = translateUrdu(transcript).text;
+  const rawSingle = clauses.length === 1 ? source.trim().replace(/[.!?]+$/g, '') : undefined;
   const commands: AICommand[] = [];
   let workingCtx = { ...ctx };
   for (const clause of clauses) {
