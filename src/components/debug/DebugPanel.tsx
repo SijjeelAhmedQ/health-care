@@ -1,6 +1,6 @@
-import { Button, Collapse, Drawer, Empty, Segmented, Space, Tag, Timeline } from 'antd';
+import { Button, Collapse, Empty, Segmented, Space, Tag, Timeline } from 'antd';
 import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Bug, Trash2 } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { uiActions } from '@/store/slices/uiSlice';
 import { voiceActions } from '@/store/slices/voiceSlice';
@@ -8,6 +8,7 @@ import { FormRegistry } from '@/registry/formRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
 import type { DebugTrace, ExecutionStep } from '@/types/ai';
 import { StatusTag } from '@/components/common';
+import { AppModal } from '@/components/common/AppModal';
 
 const stepColor: Record<ExecutionStep['status'], string> = { pending: 'gray', running: 'blue', done: 'green', skipped: 'gray', failed: 'red', awaiting_confirmation: 'orange' };
 
@@ -84,19 +85,25 @@ export function DebugPanel() {
   const [view, setView] = useState<'current' | 'history' | 'registry'>('current');
 
   return (
-    <Drawer
-      title={
-        <div className="flex items-center gap-3" style={{ flexWrap: 'wrap' }}>
-          <span>Voice Debug Panel</span>
-          <Tag color="blue">STT: {voice.sttProvider}</Tag>
-          <Tag color="purple">LLM: {voice.llmProvider}</Tag>
-          <Tag>{voice.status}</Tag>
-        </div>
+    <AppModal
+      title="Voice Debug Panel"
+      description={
+        <span className="flex items-center gap-2 wrap">
+          <Tag color="blue" className="tag-plain">STT: {voice.sttProvider}</Tag>
+          <Tag color="purple" className="tag-plain">LLM: {voice.llmProvider}</Tag>
+          <Tag className="tag-plain">{voice.status}</Tag>
+        </span>
       }
+      icon={<Bug size={18} />}
       open={open}
       onClose={() => dispatch(uiActions.setDebugPanelOpen(false))}
-      width={560}
-      extra={<Button size="small" icon={<Trash2 size={14} />} onClick={() => dispatch(voiceActions.clearHistory())}>Clear</Button>}
+      size="xl"
+      footer={
+        <>
+          <Button icon={<Trash2 size={14} />} onClick={() => dispatch(voiceActions.clearHistory())}>Clear history</Button>
+          <Button type="primary" onClick={() => dispatch(uiActions.setDebugPanelOpen(false))}>Close</Button>
+        </>
+      }
     >
       <Segmented block value={view} onChange={(v) => setView(v as typeof view)} options={[{ label: 'Current', value: 'current' }, { label: `History (${voice.traceHistory.length})`, value: 'history' }, { label: 'Registries', value: 'registry' }]} style={{ marginBottom: 16 }} />
       {view === 'current' && (voice.trace ? <TraceView trace={voice.trace} /> : <Empty description="No voice command processed yet. Speak or use the Voice Test Console." />)}
@@ -126,6 +133,6 @@ export function DebugPanel() {
           <Collapse size="small" items={[{ key: 'pages', label: 'Page registry', children: <pre className="debug-block" style={{ maxHeight: 400 }}>{PageRegistry.all().map((p) => `${String(p.number).padStart(2, ' ')}  ${p.id.padEnd(28)} ${p.path}`).join('\n')}</pre> }]} />
         </Space>
       )}
-    </Drawer>
+    </AppModal>
   );
 }

@@ -2,9 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { configureStore } from '@reduxjs/toolkit';
 import authReducer from '@/store/slices/authSlice';
 import patientReducer from '@/store/slices/patientSlice';
-import appointmentReducer from '@/store/slices/appointmentSlice';
 import providerReducer from '@/store/slices/providerSlice';
-import medicationReducer from '@/store/slices/medicationSlice';
+import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, tasksSlice } from '@/store/slices/recordSlices';
 import uiReducer from '@/store/slices/uiSlice';
 import voiceReducer from '@/store/slices/voiceSlice';
 import navigationReducer from '@/store/slices/navigationSlice';
@@ -41,7 +40,10 @@ class FakeRecognizer implements MicrophoneRecognizer {
 
 const makeStore = () =>
   configureStore({
-    reducer: { auth: authReducer, patients: patientReducer, appointments: appointmentReducer, providers: providerReducer, medications: medicationReducer, ui: uiReducer, voice: voiceReducer, navigation: navigationReducer },
+    reducer: { auth: authReducer, patients: patientReducer, appointments: appointmentsSlice.reducer, providers: providerReducer, medications: medicationsSlice.reducer,
+      diagnoses: diagnosesSlice.reducer,
+      tasks: tasksSlice.reducer,
+      recalls: recallsSlice.reducer, ui: uiReducer, voice: voiceReducer, navigation: navigationReducer },
     middleware: (g) => g({ serializableCheck: false }),
   });
 
@@ -170,5 +172,28 @@ describe('microphone lifecycle — stays on until the user turns it off', () => 
     expect(controller.isMicActive).toBe(true);
     controller.toggleListening();
     expect(controller.isMicActive).toBe(false);
+  });
+});
+
+describe('medication list guard — a model that drops a spoken drug is corrected by the rules', () => {
+  it('re-adds Paracetamol when the model returned only Panadol, keeping the model details', async () => {
+    const store = makeStore();
+    NavigationRegistry.install((to) => NavigationRegistry.setPathname(String(to)));
+    // Behaves like qwen3.5:4b on "add panadol paracetamol 200mg twice daily": one medication, Paracetamol gone.
+    const forgetful = {
+      name: 'fake-llm',
+      async generateCommands() {
+        return { commands: [{ action: 'add_medication' as const, fields: { medicationName: 'Panadol', dosage: '200 mg', frequency: 'Twice daily', duration: '10 days' } }], raw: '' };
+      },
+    };
+    const controller = new VoiceController(store as never, { stt: new FakeRecognizer(), llm: forgetful });
+    await controller.handleTranscript('Add panadol paracetamol 200mg twice daily for 10 days');
+    await flush(50);
+    const cmd = store.getState().voice.commands[0] as { action: string; kind?: string; records?: Array<Record<string, unknown>> };
+    expect(cmd.action).toBe('add_record');
+    expect(cmd.kind).toBe('medication');
+    expect(cmd.records?.map((m) => m.medicationName)).toEqual(['Panadol', 'Paracetamol']);
+    expect(cmd.records?.[0]).toMatchObject({ dosage: '200 mg', frequency: 'Twice daily', duration: '10 days' });
+    expect(cmd.records?.[1]).toMatchObject({ dosage: '200 mg', frequency: 'Twice daily', duration: '10 days' });
   });
 });

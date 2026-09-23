@@ -6,7 +6,7 @@ import { navigationActions } from '@/store/slices/navigationSlice';
 import { PageRegistry } from '@/registry/pageRegistry';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
 
-export { useRegisteredForm } from './useRegisteredForm';
+export { useRegisteredForm, type EntryStore } from './useRegisteredForm';
 
 interface AsyncState<T> {
   data: T | undefined;

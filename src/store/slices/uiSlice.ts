@@ -7,7 +7,7 @@ interface UiState {
   debugPanelOpen: boolean;
   globalSearchQuery: string;
   notificationsOpen: boolean;
-  /** Generic modal/drawer registry state: id -> open */
+  /** Generic overlay registry state: id -> open */
   overlays: Record<string, boolean>;
 }
 

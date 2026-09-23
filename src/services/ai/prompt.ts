@@ -1,75 +1,91 @@
 import type { AIContext } from '@/types/ai';
 import { FieldRegistry, type FormDefinition } from '@/registry/fieldRegistry';
-import { PageRegistry, moduleLabels } from '@/registry/pageRegistry';
+import { PageRegistry } from '@/registry/pageRegistry';
 
 /**
- * System prompt for the local Qwen 3.5 4B model. The model's only job is to
- * translate natural language into one of the structured commands below.
- * Application behaviour is deterministic and lives in commandExecutor.ts.
+ * Prompt for the local Qwen model. The model's only job is to translate natural
+ * language into one of the structured commands below. Application behaviour is
+ * deterministic and lives in commandExecutor.ts.
  *
- * Kept deliberately compact (~1.3k tokens): Qwen 3.5 is a hybrid (recurrent-state)
- * architecture, so Ollama cannot reuse a partial KV-cache prefix — every command
- * re-processes the whole system prompt and its size is the main latency driver.
- * Page ids are listed without numbers (spoken numbers pass straight through to
- * PageRegistry) and only forms relevant to the current page are described in full.
+ * Why the split into a STATIC system prompt and a per-request user message:
+ * Qwen 3.5 is a hybrid (recurrent-state) model, so llama.cpp cannot roll its
+ * cache back to an arbitrary token. It only keeps checkpoints of the recurrent
+ * state at the END of each prompt and at END-508, and on the next request
+ * resumes from the last checkpoint that lies inside the shared prefix. On a
+ * GTX 1650 prompt processing runs at ~75 tok/s, so anything that changes the
+ * system prompt (page, open form, today's date) costs ~7 s per command.
+ *
+ * With a byte-for-byte identical system prompt on every request, a padded
+ * warm-up (see OllamaLLMProvider.warmUp) parks a checkpoint just before the
+ * user turn, and each real command only pays for its own ~60 tokens (<1 s).
+ * Nothing in buildSystemPrompt() may therefore depend on runtime state; all of
+ * that goes through buildUserMessage().
  */
-export function buildSystemPrompt(context: AIContext): string {
+export function buildSystemPrompt(): string {
   const describeForm = (f: FormDefinition) =>
-    `${f.id}: ${f.fields.map((fd) => `${fd.name}${fd.required ? '*' : ''}${fd.options ? `(${fd.options.slice(0, 5).join('|')}${fd.options.length > 5 ? '|…' : ''})` : ''}`).join(', ')}`;
+    `${f.id}: ${f.fields.map((fd) => `${fd.name}${fd.required ? '*' : ''}${fd.options ? `(${fd.options.slice(0, 4).join('|')}${fd.options.length > 4 ? '|…' : ''})` : ''}`).join(', ')}`;
+  const pageIds = PageRegistry.all()
+    .map((p) => `${p.number} ${p.id}`)
+    .join(' · ');
 
-  const onPage = FieldRegistry.formsForPage(context.currentPageId);
-  const openForm = context.openFormId ? FieldRegistry.getForm(context.openFormId) : undefined;
-  const detailed = new Map<string, FormDefinition>();
-  for (const f of [...onPage, ...(openForm ? [openForm] : []), FieldRegistry.getForm('medication')!]) detailed.set(f.id, f);
-  const otherForms = FieldRegistry.forms().filter((f) => !detailed.has(f.id)).map((f) => f.id);
-  // Page ids grouped by module (no numbers: spoken numbers are passed through as-is and resolved by the app).
-  const modules = [...new Set(PageRegistry.all().filter((p) => p.module !== 'dev').map((p) => p.module))];
-  const pageIds = modules.map((mod) => `${moduleLabels[mod]}: ${PageRegistry.byModule(mod).map((p) => p.id).join(' ')}`).join('\n');
-
-  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
-
-  return `You convert a clinician's spoken command into JSON for CareFlow, a healthcare practice-management UI.
-Output ONLY {"commands":[ ... ]} — commands in order, no prose.
+  return `Convert a clinician's spoken command into JSON for CareFlow, a patient-centric practice-management UI.
+The app has exactly eight modules: Dashboard, Patient, Medication, Diagnosis, Task, Recall, Appointment, Summary.
+ONE patient is selected at a time; every medication, diagnosis, task, recall and appointment belongs to that selected patient.
+The user message has a CONTEXT line (today's date, current page, selected patient, open form, pending question) and a COMMAND line.
+Output ONLY {"commands":[...]} — commands in order, no prose. "X and Y" → two commands.
 
 RULES
-- Never invent medical data; include only values the user said. Omit unknown fields.
-- Normalize values: "twice a day"→"Twice daily", "orally"→"Oral", "500 milligrams"→"500 mg", "seven days"→"7 days", dates→YYYY-MM-DD (today ${new Date().toISOString().slice(0, 10)}), times→HH:mm 24h.
-- submit_form ONLY when the user explicitly says save/submit/send. "save it"/"yes"→confirm. "cancel"/"no"→cancel.
-- "X and Y" → two commands. navigate target = a page NUMBER the user said, or the closest id from PAGES.
-- "add/new/open <form>" → open_form with that formId (add_medication / create_appointment / register_patient for those three). "check/uncheck <field>" → set_checkbox.
-- With a patient in context, "medications/allergies/insurance/history/problems/documents/notes" mean that patient's sections → open_patient_section.
-- If a pending question is open and the user gives a plain value, answer it with fill_field; if they give MORE (e.g. a full medication phrase), use fill_form with every field said.
-- Input may be Urdu or Roman Urdu (usually pre-translated). Urdu is verb-final: "X par jao"=go to X, "X kholo"=open X, "dawai add karo"=add medication, "din mein do bar"=Twice daily, "N din ke liye"=N days, "haan/theek hai/save karo"=confirm, "nahi/rehne do"=cancel. Output values in English.
+- Never invent data; include only values the user said. Omit unknown fields.
+- Normalize: "twice a day"→"Twice daily", "orally"→"Oral", "500 milligrams"→"500 mg", "seven days"→"7 days", dates→YYYY-MM-DD (relative to today from CONTEXT), times→HH:mm.
+- Adding/changing/removing a record → add_record / update_record / delete_record with the right "kind".
+- kind is one of: medication, diagnosis, task, recall, appointment, patient.
+- delete_record NEVER deletes on its own — the app asks the user to confirm. Still emit it when the user asks to delete.
+- "match" identifies an existing record in plain words ("the metformin", "blood pressure task").
+- submit_form only on explicit save/submit/send. "save it"/"yes"/"theek hai"→confirm. "cancel"/"no"→cancel.
+- Choosing who to work on → select_patient{name}. Looking someone up → search_patient{query}.
+- Reading data aloud → read_records{kind}. A whole-patient overview → summarize_patient.
+- Summary tabs → open_tab{tab} with tab one of: ai-summary, medication, recall, appointment, diagnosis, task.
+- navigate target = page NUMBER the user said, else the closest id from PAGES.
+- Several drugs in one sentence → ONE add_record{kind:"medication"} with "records":[one per drug]; shared frequency/duration on each. Never join names.
+- If a pending question is open and the user gives a plain value → fill_field; if they give more (a full medication phrase) → fill_form with every field said.
 - Unmappable → {"action":"unknown","reason":"..."}.
 
 COMMANDS
-navigate{target} · go_back · go_home · search_patient{query} · open_patient{name,section?} · open_patient_section{section} · open_provider{name}
-open_form{formId} · close_form · fill_form{formId?,fields} · fill_field{field,value} · select_dropdown{field,value} · set_checkbox{field,checked} · clear_field{field} · focus_field{field}
-add_medication{fields?} · create_appointment{fields?} · register_patient{fields?}   (navigate to the right page, open the form, fill it)
-scroll{direction|section} · open_tab{tab} · submit_form · confirm · cancel · ask_user{question,field?} · respond{message} · unknown{reason}
+navigate{target} · go_back · go_home · open_tab{tab} · scroll{direction|section} · toggle_sidebar
+select_patient{name} · search_patient{query} · clear_patient
+add_record{kind,fields?,records?[]} · update_record{kind,match,fields?} · delete_record{kind,match} · search_records{kind,query} · read_records{kind} · summarize_patient
+open_form{formId} · close_form · fill_form{formId?,fields} · fill_field{field,value} · select_dropdown{field,value} · set_checkbox{field,checked} · clear_field{field} · focus_field{field} · add_entry
+submit_form · confirm · cancel · ask_user{question,field?} · respond{message} · unknown{reason}
 
-PAGES (ids)
+PAGES (number id)
 ${pageIds}
 
-FORMS (* required)
-${[...detailed.values()].map(describeForm).join('\n')}
-Other forms (fields on request): ${otherForms.join(', ')}
+FORM FIELDS (* required)
+${FieldRegistry.forms().map(describeForm).join('\n')}
 
-CONTEXT
-page: ${context.currentPageId ?? 'none'} (#${context.currentPageNumber ?? '-'}) | patient: ${context.currentPatientName ?? 'none'} | open form: ${context.openFormId ?? 'none'} | awaiting confirmation: ${context.awaitingConfirmation ? 'YES' : 'no'} | pending question: ${context.pendingSlot ? `${context.pendingSlot.label} (${context.pendingSlot.formId}.${context.pendingSlot.field})` : 'none'}
-
-EXAMPLES
-"go to patient search" → {"commands":[{"action":"navigate","target":"patient-search"}]}
-"open the appointment calendar" → {"commands":[{"action":"navigate","target":"appointment-calendar"}]}
-"go to page 30 and add medication" → {"commands":[{"action":"navigate","target":30},{"action":"add_medication"}]}
-"add amoxicillin 500 milligrams orally twice daily for seven days" → {"commands":[{"action":"add_medication","fields":{"medicationName":"Amoxicillin","dosage":"500 mg","route":"Oral","frequency":"Twice daily","duration":"7 days"}}]}
-"open john smith and go to allergies" → {"commands":[{"action":"open_patient","name":"John Smith","section":"allergies"}]}
-"create an appointment for ahmed khan with dr sarah tomorrow at 3 pm for chest pain" → {"commands":[{"action":"create_appointment","fields":{"patientName":"Ahmed Khan","providerName":"Sarah","date":"${tomorrow}","startTime":"15:00","reason":"Chest pain"}}]}
-"add patient bilal hussain, male, 32 years old" → {"commands":[{"action":"register_patient","fields":{"firstName":"Bilal","lastName":"Hussain","gender":"Male","age":32}}]}
+EXAMPLES (CONTEXT omitted; today = 2026-01-10 where a date matters)
+"select patient ahmed khan" → {"commands":[{"action":"select_patient","name":"Ahmed Khan"}]}
+"open medications" → {"commands":[{"action":"navigate","target":"medications"}]}
+"go to page 5" → {"commands":[{"action":"navigate","target":5}]}
+"add amoxicillin 500 mg orally twice daily for seven days" → {"commands":[{"action":"add_record","kind":"medication","fields":{"medicationName":"Amoxicillin","dosage":"500 mg","route":"Oral","frequency":"Twice daily","duration":"7 days"}}]}
+"add panadol and metformin twice daily for 10 days" → {"commands":[{"action":"add_record","kind":"medication","fields":{"medicationName":"Panadol","frequency":"Twice daily","duration":"10 days"},"records":[{"medicationName":"Panadol","frequency":"Twice daily","duration":"10 days"},{"medicationName":"Metformin","frequency":"Twice daily","duration":"10 days"}]}]}
+"add diagnosis hypertension" → {"commands":[{"action":"add_record","kind":"diagnosis","fields":{"description":"Hypertension"}}]}
+"create a task for blood pressure monitoring due next friday" → {"commands":[{"action":"add_record","kind":"task","fields":{"title":"Blood pressure monitoring","category":"Monitoring","dueDate":"2026-01-16"}}]}
+"recall the patient in two weeks for a blood pressure review" → {"commands":[{"action":"add_record","kind":"recall","fields":{"type":"Follow-up","reason":"Blood pressure review","dueDate":"2026-01-24"}}]}
+"book an appointment next tuesday at 3 pm for chest pain" → {"commands":[{"action":"add_record","kind":"appointment","fields":{"date":"2026-01-13","startTime":"15:00","reason":"Chest pain"}}]}
+"mark the blood pressure task as completed" → {"commands":[{"action":"update_record","kind":"task","match":"blood pressure","fields":{"status":"Completed"}}]}
+"delete the metformin" → {"commands":[{"action":"delete_record","kind":"medication","match":"metformin"}]}
+"read the medication list" → {"commands":[{"action":"read_records","kind":"medication"}]}
+"give me a summary of this patient" → {"commands":[{"action":"summarize_patient"}]}
+"open summary and show me the diagnosis tab" → {"commands":[{"action":"navigate","target":"summary"},{"action":"open_tab","tab":"diagnosis"}]}
+"add patient bilal hussain, male, 32 years old" → {"commands":[{"action":"add_record","kind":"patient","fields":{"firstName":"Bilal","lastName":"Hussain","gender":"Male","age":32}}]}
 "set dosage to 250 mg" → {"commands":[{"action":"fill_field","field":"dosage","value":"250 mg"}]}
-"go to roster and add shift" → {"commands":[{"action":"navigate","target":"roster-dashboard"},{"action":"open_form","formId":"shift"}]}
-"save it" → {"commands":[{"action":"confirm"}]}
-"page tees par jao aur dawai add karo panadol 500 mg din mein teen bar" → {"commands":[{"action":"navigate","target":30},{"action":"add_medication","fields":{"medicationName":"Panadol","dosage":"500 mg","frequency":"Three times daily"}}]}
-"مریض احمد خان کھولو" → {"commands":[{"action":"open_patient","name":"Ahmed Khan"}]}
-"theek hai save karo" → {"commands":[{"action":"confirm"}]}`;
+"save it" → {"commands":[{"action":"confirm"}]}`;
+}
+
+/** The per-request part: runtime context on one line, then the transcript. */
+export function buildUserMessage(transcript: string, context: AIContext): string {
+  const pending = context.pendingSlot ? `${context.pendingSlot.label} (${context.pendingSlot.formId}.${context.pendingSlot.field})` : 'none';
+  return `CONTEXT: today ${new Date().toISOString().slice(0, 10)} | page ${context.currentPageId ?? 'none'} (#${context.currentPageNumber ?? '-'}) | tab ${context.currentTab ?? 'none'} | selected patient ${context.currentPatientName ?? 'NONE — patient-dependent commands need one'} | open form ${context.openFormId ?? 'none'} | awaiting confirmation ${context.awaitingConfirmation ? 'YES' : 'no'} | pending question ${pending}
+COMMAND: ${transcript}`;
 }

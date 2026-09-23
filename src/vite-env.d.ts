@@ -11,6 +11,7 @@ interface ImportMetaEnv {
   readonly VITE_LLM_NUM_GPU?: string;
   readonly VITE_LLM_NUM_CTX?: string;
   readonly VITE_AI_FALLBACK_TO_RULES?: string;
+  readonly VITE_AI_RULES_FIRST?: string;
   readonly VITE_ENABLE_VOICE?: string;
   readonly VITE_ENABLE_DEBUG_PANEL?: string;
   readonly VITE_APP_NAME?: string;

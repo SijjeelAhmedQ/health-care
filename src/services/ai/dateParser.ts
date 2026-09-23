@@ -33,10 +33,11 @@ export function parseDateTime(input: string, now: Dayjs = dayjs()): ParsedDateTi
   take(/\btomorrow\b/, () => (date = date ?? now.add(1, 'day')));
   take(/\btoday\b/, () => (date = date ?? now));
   take(/\byesterday\b/, () => (date = date ?? now.subtract(1, 'day')));
-  take(/\bin (\d+|[a-z]+) (day|week|month)s?\b/, (m) => {
+  take(/\bin (\d+|[a-z]+) (day|week|month|year)s?\b/, (m) => {
     const n = Number.isNaN(Number(m[1])) ? NUM_WORDS[m[1]] : Number(m[1]);
-    if (n) date = now.add(n, m[2] as 'day' | 'week' | 'month');
+    if (n) date = now.add(n, m[2] as 'day' | 'week' | 'month' | 'year');
   });
+  take(/\bnext (week|month|year)\b/, (m) => (date = date ?? now.add(1, m[1] as 'week' | 'month' | 'year')));
   take(/\b(?:next|this|on|coming)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/, (m) => {
     const target = WEEKDAYS.indexOf(m[1]);
     let d = now.day(target);

@@ -1,0 +1,280 @@
+/* =========================================================================
+   Inbox — filter strip across the top, then three columns:
+   message queue · reading pane · assistant.
+   Dense by design: this screen is worked through, not browsed.
+   ========================================================================= */
+.ibx { display: flex; flex-direction: column; gap: 10px; }
+.ibx-error { margin: 0; }
+
+/* ---- filter strip ------------------------------------------------------ */
+.ibx-filterbar {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.ibx-filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ibx-filter-row.is-secondary { padding-top: 8px; border-top: 1px solid var(--color-border); }
+.ibx-f { width: 118px; flex: 0 1 118px; }
+.ibx-f-patient { width: 150px; flex: 0 1 150px; }
+.ibx-f-wide { width: 146px; flex: 0 1 146px; }
+.ibx-f-narrow { width: 92px; flex: 0 1 92px; }
+.ibx-filterbar .ant-input, .ibx-filterbar .ant-select-selector, .ibx-filterbar .ant-btn { font-size: 12.5px; }
+.ibx-filterbar .ant-input, .ibx-filterbar .ant-select-single .ant-select-selector { height: 30px; }
+.ibx-filterbar .ant-btn { height: 30px; }
+.ibx-btn-reset, .ibx-btn-search { flex-shrink: 0; }
+
+.ibx-flag { font-size: 12px; color: var(--color-text-muted); white-space: nowrap; }
+.ibx-flag.is-on { color: var(--color-primary); font-weight: 600; }
+.ibx-info { display: inline-grid; place-items: center; color: var(--color-text-muted); cursor: help; }
+
+.ibx-counters { display: inline-flex; gap: 6px; margin-inline-start: auto; flex-wrap: wrap; }
+.ibx-counter {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 500; border: 1px solid transparent; white-space: nowrap;
+}
+.ibx-counter b { font-weight: 700; }
+.ibx-counter.is-critical { color: #a83232; background: var(--color-error-soft); border-color: #f3cfcf; }
+.ibx-counter.is-high { color: #9a6400; background: var(--color-warning-soft); border-color: #f0ddb4; }
+.ibx-counter.is-normal { color: #0b7a44; background: var(--color-success-soft); border-color: #c5e8d5; }
+
+.ibx-applied {
+  font-size: 12px; font-weight: 600; color: #0b7a44; background: var(--color-success-soft);
+  border: 1px solid #c5e8d5; border-radius: var(--radius-sm); padding: 3px 10px; text-transform: capitalize;
+}
+.ibx-saved { width: 150px; }
+.ibx-unfiled { margin-inline-start: auto; font-size: 12px; color: var(--color-primary); font-weight: 500; }
+.ibx-unfiled b { font-weight: 700; }
+
+/* ---- three columns ----------------------------------------------------- */
+.ibx-body {
+  display: grid; grid-template-columns: 232px minmax(0, 1fr) 300px; gap: 10px; align-items: start;
+}
+.ibx-col {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); min-width: 0; overflow: hidden;
+}
+.ibx-col-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px; border-bottom: 1px solid var(--color-border);
+  font-size: 11.5px; color: var(--color-text-muted); background: var(--color-surface-subtle);
+}
+
+/* ---- message queue ----------------------------------------------------- */
+.ibx-messages { display: flex; flex-direction: column; max-height: calc(100vh - 260px); }
+.ibx-patient-card {
+  display: flex; gap: 8px; padding: 9px 10px; border-left: 3px solid var(--color-warning);
+  background: #fff8ec; border-bottom: 1px solid var(--color-border);
+}
+.ibx-avatar {
+  width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0;
+  background: #f0954a; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+}
+.ibx-patient-card-main { min-width: 0; flex: 1; }
+.ibx-patient-card-top { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.ibx-patient-card-top strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ibx-patient-card-icons { display: inline-flex; gap: 5px; color: var(--color-text-muted); flex-shrink: 0; }
+.ibx-patient-card-nhi { font-size: 11.5px; color: var(--color-primary); margin-top: 1px; }
+.ibx-patient-card-line {
+  margin: 4px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--color-text-secondary);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ibx-flagpill {
+  display: inline-block; margin-top: 5px; padding: 1px 8px; border-radius: var(--radius-sm);
+  font-size: 10.5px; font-weight: 700; text-transform: capitalize;
+}
+.ibx-flagpill.is-high { background: #f6c777; color: #6b4300; }
+.ibx-flagpill.is-normal { background: var(--color-surface-muted); color: var(--color-text-secondary); }
+
+.ibx-msglist { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.ibx-msg {
+  width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 0 8px; cursor: pointer; text-align: left;
+  padding: 8px 10px; border: none; border-bottom: 1px solid var(--color-border);
+  border-left: 3px solid transparent; background: none; font: inherit; color: var(--color-text-secondary);
+}
+.ibx-msg:hover { background: var(--color-surface-subtle); }
+.ibx-msg.is-unfiled .ibx-msg-title { color: var(--color-error); font-weight: 600; }
+.ibx-msg.is-filed .ibx-msg-title { color: var(--color-text-secondary); font-weight: 500; }
+.ibx-msg.is-selected { background: var(--color-primary-soft); border-left-color: var(--color-primary); }
+.ibx-msg.is-selected .ibx-msg-title { color: var(--color-primary); }
+.ibx-msg.is-attention { border-left-color: var(--color-error); }
+.ibx-msg:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.ibx-msg-title { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ibx-msg-date { font-size: 11px; color: var(--color-text-muted); white-space: nowrap; }
+.ibx-msg-patient {
+  grid-column: 1 / -1; font-size: 11px; color: var(--color-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+}
+.ibx-messages-empty { padding: 26px 12px; }
+
+/* loading skeleton */
+.ibx-skeleton { padding: 10px; display: flex; flex-direction: column; gap: 14px; }
+.ibx-skeleton-row { display: flex; flex-direction: column; gap: 5px; }
+.ibx-sk { display: block; height: 9px; border-radius: 4px; background: var(--color-surface-muted); }
+.ibx-sk-title { width: 72%; }
+.ibx-sk-date { width: 38%; height: 7px; }
+
+/* ---- reading pane ------------------------------------------------------ */
+.ibx-reading { display: flex; flex-direction: column; max-height: calc(100vh - 260px); }
+.ibx-reading.is-empty { justify-content: center; padding: 48px 20px; min-height: 360px; }
+.ibx-read-head { padding: 10px 14px; border-bottom: 1px solid var(--color-border); }
+.ibx-back { padding-inline: 4px !important; margin-bottom: 4px; }
+.ibx-read-identity { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ibx-read-pin { color: var(--color-text-muted); }
+.ibx-read-identity h2 { font-size: 16px; font-weight: 700; margin: 0; }
+.ibx-sex {
+  width: 17px; height: 17px; border-radius: 4px; display: grid; place-items: center;
+  background: var(--color-info-soft); color: #1c5fae; font-size: 10.5px; font-weight: 700;
+}
+.ibx-read-actions { margin-inline-start: auto; display: flex; gap: 5px; flex-wrap: wrap; }
+.ibx-read-demographics {
+  margin: 6px 0 0; font-size: 12px; color: var(--color-text-secondary);
+  display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap;
+}
+.ibx-read-demographics b { color: var(--color-primary); font-weight: 600; }
+.ibx-read-contact { color: var(--color-text-muted); }
+.ibx-read-flags { display: flex; align-items: center; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
+.ibx-read-flags .ant-checkbox-wrapper { font-size: 12px; color: var(--color-text-secondary); }
+.ibx-flags-note {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted);
+  border: 1px dashed var(--color-border-strong); border-radius: var(--radius-sm); padding: 0 6px; cursor: help;
+}
+.ibx-read-tag {
+  display: inline-block; margin-top: 10px; padding: 3px 12px; border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; color: var(--color-text-secondary);
+}
+
+.ibx-read-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.ibx-panel { margin-bottom: 14px; }
+.ibx-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: var(--color-text-muted); margin-bottom: 6px;
+}
+.ibx-panel-toggle {
+  display: inline-flex; align-items: center; gap: 3px; border: none; background: none; cursor: pointer;
+  font: inherit; font-size: 11px; color: var(--color-text-muted); letter-spacing: 0.04em;
+}
+.ibx-panel-toggle .is-open { transform: rotate(180deg); }
+.ibx-panel-box {
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 9px 11px;
+  font-size: 13px; line-height: 1.55; background: var(--color-surface);
+}
+.ibx-result-status { margin: 0 0 8px; font-size: 12.5px; color: var(--color-text-secondary); }
+.ibx-result-status b { color: var(--color-text); }
+
+.ibx-result-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 14px; }
+.ibx-result-table thead th {
+  text-align: left; padding: 7px 10px; background: var(--color-surface-muted); color: var(--color-text-muted);
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; border-bottom: 1px solid var(--color-border);
+}
+.ibx-result-table tbody th, .ibx-result-table tbody td {
+  text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--color-border); vertical-align: top;
+}
+.ibx-result-table tbody th { font-weight: 600; width: 34%; }
+.ibx-ref { display: block; font-size: 11px; font-weight: 400; color: var(--color-text-muted); margin-top: 1px; }
+.ibx-value { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--color-info); }
+.ibx-value.is-abnormal { color: #d97706; }
+.ibx-report { white-space: pre-line; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11.5px; line-height: 1.7; color: var(--color-text-secondary); }
+.ibx-note-row td { font-size: 11.5px; color: var(--color-text-muted); background: var(--color-surface-subtle); }
+.ibx-pill {
+  display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em;
+}
+.ibx-pill.is-high { background: #fdefd9; color: #9a6400; }
+.ibx-pill.is-normal { background: var(--color-surface-muted); color: var(--color-text-secondary); }
+
+.ibx-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 18px; margin: 0; }
+.ibx-meta dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; color: var(--color-text-muted); }
+.ibx-meta dd { margin: 2px 0 0; font-size: 12.5px; font-weight: 500; }
+
+.ibx-read-foot {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-top: 1px solid var(--color-border); background: var(--color-surface-subtle); flex-wrap: wrap;
+}
+.ibx-cat-tag {
+  padding: 2px 9px; border-radius: var(--radius-sm); font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em;
+  background: var(--color-primary-soft); color: var(--color-primary);
+}
+.ibx-cat-tag.is-referral { background: #efe7fb; color: #5b3fa8; }
+.ibx-cat-tag.is-discharge { background: var(--color-success-soft); color: #0b7a44; }
+.ibx-cat-tag.is-radiology { background: var(--color-info-soft); color: #1c5fae; }
+.ibx-foot-subject { font-size: 12.5px; color: var(--color-text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ibx-foot-count { margin-inline-start: auto; font-size: 12px; color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+
+/* ---- assistant --------------------------------------------------------- */
+.ibx-ai { display: flex; flex-direction: column; gap: 9px; padding: 10px; max-height: calc(100vh - 260px); overflow-y: auto; }
+.ibx-ai-idle, .ibx-ai-gate { font-size: 12.5px; color: var(--color-text-muted); margin: 0; line-height: 1.5; }
+.ibx-ai-gate {
+  background: var(--color-warning-soft); border: 1px solid #f0ddb4; color: #7a5200;
+  border-radius: var(--radius-sm); padding: 8px 10px;
+}
+.ibx-ai-card { border-radius: var(--radius-sm); padding: 9px 11px; border-left: 3px solid; }
+.ibx-ai-card h3 {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.04em; margin: 0 0 5px;
+  display: flex; align-items: center; gap: 5px;
+}
+.ibx-ai-card h3 span { font-weight: 500; opacity: 0.75; }
+.ibx-ai-card p { margin: 0; font-size: 12px; line-height: 1.55; }
+.ibx-ai-card.is-patient { background: #fff8ec; border-color: var(--color-warning); color: #6b4a12; }
+.ibx-ai-card.is-result { background: var(--color-info-soft); border-color: var(--color-info); color: #1a4a86; }
+
+.ibx-ai-actions-head {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+  color: var(--color-text); padding-top: 4px; border-top: 1px solid var(--color-border); margin-top: 2px;
+}
+.ibx-ai-actions-head > svg { color: var(--color-warning); }
+.ibx-ai-count {
+  margin-inline-start: auto; background: var(--color-primary); color: #fff; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; min-width: 20px; text-align: center; padding: 1px 6px;
+}
+
+.ibx-sugg { border: 1px solid var(--color-border); border-radius: var(--radius-sm); overflow: hidden; }
+.ibx-sugg.is-editing { border-color: var(--color-primary); }
+.ibx-sugg-head {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  background: var(--color-surface-subtle); border-bottom: 1px solid var(--color-border);
+}
+.ibx-sugg-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--color-text-secondary); }
+.ibx-sugg-buttons { margin-inline-start: auto; display: inline-flex; gap: 4px; }
+.ibx-sugg-buttons .ant-btn { font-size: 11.5px; height: 24px; padding-inline: 8px; }
+.ibx-sugg-done { margin-inline-start: auto; border: none; background: none; cursor: pointer; font: inherit; font-size: 11.5px; color: var(--color-primary); }
+.ibx-sugg-body { padding: 7px 8px; }
+.ibx-sugg-body .ant-input { font-size: 12px; }
+.ibx-sugg-basis { margin: 7px 0 0; font-size: 11px; color: var(--color-text-muted); line-height: 1.45; }
+
+.ibx-quick { padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+.ibx-quick-title { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--color-warning); }
+.ibx-q-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); font-weight: 600; margin-top: 4px; }
+.ibx-quick .ant-input, .ibx-quick .ant-select-selector, .ibx-quick .ant-picker { font-size: 12px; }
+.ibx-q-select { width: 100%; }
+.ibx-quick-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+.ibx-quick-actions .ant-btn { font-size: 11.5px; height: 25px; padding-inline: 8px; }
+
+/* ---- responsive -------------------------------------------------------- */
+@media (max-width: 1399.98px) {
+  .ibx-body { grid-template-columns: 210px minmax(0, 1fr) 270px; }
+}
+@media (max-width: 1199.98px) {
+  /* The assistant moves below the reading pane rather than squeezing it. */
+  .ibx-body { grid-template-columns: 220px minmax(0, 1fr); }
+  .ibx-col-ai { grid-column: 1 / -1; }
+  .ibx-ai { max-height: none; flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+  .ibx-ai > * { flex: 1 1 280px; }
+  .ibx-ai-actions-head { flex-basis: 100%; }
+  .ibx-messages, .ibx-reading { max-height: calc(100vh - 300px); }
+}
+@media (max-width: 991.98px) {
+  /* One column: the queue, or the item being read. */
+  .ibx-body { grid-template-columns: 1fr; }
+  .ibx-body .ibx-col-read, .ibx-body .ibx-col-ai { display: none; }
+  .ibx-body.is-reading .ibx-col-list { display: none; }
+  .ibx-body.is-reading .ibx-col-read, .ibx-body.is-reading .ibx-col-ai { display: block; }
+  .ibx-messages, .ibx-reading { max-height: none; }
+  .ibx-f, .ibx-f-patient, .ibx-f-wide, .ibx-f-narrow { flex: 1 1 140px; width: auto; }
+  .ibx-counters { margin-inline-start: 0; }
+  .ibx-unfiled { margin-inline-start: 0; }
+}
+@media (max-width: 767.98px) {
+  .ibx-read-actions { width: 100%; margin-inline-start: 0; }
+  .ibx-read-actions .ant-btn { flex: 1 1 calc(50% - 3px); }
+  .ibx-read-foot { position: sticky; bottom: 0; }
+  .ibx-result-table tbody th { width: auto; }
+  .ibx-ai > * { flex-basis: 100%; }
+}

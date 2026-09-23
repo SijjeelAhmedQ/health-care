@@ -5,10 +5,28 @@ import type { RootState } from '..';
 
 const adapter = createEntityAdapter<Patient>({ sortComparer: (a, b) => a.lastName.localeCompare(b.lastName) });
 
+/** The selected patient survives a reload — it is the context the whole app works in. */
+const SELECTED_KEY = 'careflow.selectedPatientId';
+const readSelected = (): string | null => {
+  try {
+    return localStorage.getItem(SELECTED_KEY);
+  } catch {
+    return null;
+  }
+};
+const writeSelected = (id: string | null) => {
+  try {
+    if (id) localStorage.setItem(SELECTED_KEY, id);
+    else localStorage.removeItem(SELECTED_KEY);
+  } catch {
+    /* storage unavailable — the context still works for this session */
+  }
+};
+
 interface PatientExtraState {
   status: 'idle' | 'loading' | 'succeeded' | 'failed';
   error: string | null;
-  /** Patient currently in context (open profile) — used by the voice assistant. */
+  /** The patient every patient-dependent module works on. Null = nothing may be created or changed. */
   currentPatientId: string | null;
   recentPatientIds: string[];
   lastSearch: string;
@@ -17,19 +35,16 @@ interface PatientExtraState {
 const initialState = adapter.getInitialState<PatientExtraState>({
   status: 'idle',
   error: null,
-  currentPatientId: null,
+  currentPatientId: readSelected(),
   recentPatientIds: [],
   lastSearch: '',
 });
 
 export const fetchPatients = createAsyncThunk('patients/fetchAll', async () => patientService.all());
-
 export const createPatient = createAsyncThunk('patients/create', async (input: Omit<Patient, 'id'>) => patientService.create(input));
-
 export const updatePatient = createAsyncThunk('patients/update', async ({ id, patch }: { id: string; patch: Partial<Patient> }) =>
   patientService.update(id, patch),
 );
-
 export const deletePatient = createAsyncThunk('patients/delete', async (id: string) => {
   await patientService.remove(id);
   return id;
@@ -41,6 +56,7 @@ const patientSlice = createSlice({
   reducers: {
     setCurrentPatient(state, action: PayloadAction<string | null>) {
       state.currentPatientId = action.payload;
+      writeSelected(action.payload);
       if (action.payload) {
         state.recentPatientIds = [action.payload, ...state.recentPatientIds.filter((id) => id !== action.payload)].slice(0, 8);
       }
@@ -57,6 +73,11 @@ const patientSlice = createSlice({
       .addCase(fetchPatients.fulfilled, (state, action) => {
         state.status = 'succeeded';
         adapter.setAll(state, action.payload);
+        // A stored selection that no longer exists must not leave a stale context behind.
+        if (state.currentPatientId && !action.payload.some((p) => p.id === state.currentPatientId)) {
+          state.currentPatientId = null;
+          writeSelected(null);
+        }
       })
       .addCase(fetchPatients.rejected, (state, action) => {
         state.status = 'failed';
@@ -70,7 +91,11 @@ const patientSlice = createSlice({
       })
       .addCase(deletePatient.fulfilled, (state, action) => {
         adapter.removeOne(state, action.payload);
-        if (state.currentPatientId === action.payload) state.currentPatientId = null;
+        state.recentPatientIds = state.recentPatientIds.filter((id) => id !== action.payload);
+        if (state.currentPatientId === action.payload) {
+          state.currentPatientId = null;
+          writeSelected(null);
+        }
       });
   },
 });

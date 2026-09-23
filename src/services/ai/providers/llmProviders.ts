@@ -5,7 +5,7 @@
  */
 import type { AICommand, AIContext, LLMProvider } from '@/types/ai';
 import { parseCommands } from '../commandParser';
-import { buildSystemPrompt } from '../prompt';
+import { buildSystemPrompt, buildUserMessage } from '../prompt';
 import { interpret } from '../ruleBasedInterpreter';
 import type { AIConfig } from '../config';
 
@@ -37,6 +37,10 @@ export class MockLLMProvider implements LLMProvider {
     const commands = interpret(transcript, context);
     return { commands, raw: JSON.stringify(commands, null, 2) };
   }
+  /** No model here — the caller falls back to its deterministic path. */
+  async complete(): Promise<string> {
+    throw new ModelUnavailableError('No language model is configured (mock mode)');
+  }
   async healthCheck() {
     return true;
   }
@@ -47,17 +51,58 @@ export class OllamaLLMProvider implements LLMProvider {
   readonly name: string;
   /** Keep the model resident between utterances so only the first call pays the load cost. */
   static readonly KEEP_ALIVE = '30m';
+  /** Re-ping well inside KEEP_ALIVE so the model is never unloaded while the app is open. */
+  static readonly KEEP_ALIVE_PING_MS = 20 * 60 * 1000;
+  /**
+   * llama.cpp checkpoints the recurrent state of hybrid models (Qwen 3.5) at END and END-508 of each
+   * prompt. A warm-up whose user turn is ~490 one-token words therefore leaves a checkpoint a few
+   * tokens *before* the user turn, i.e. right at the end of the (static) system prompt. Every real
+   * command then resumes from there and only processes its own ~60 tokens instead of ~508 (~0.5 s
+   * instead of ~7 s at the ~75 tok/s a GTX 1650 manages for this architecture). Slightly under 508
+   * on purpose: a checkpoint past the shared prefix is useless, one a few tokens early costs ~50 ms.
+   */
+  static readonly WARM_UP_PAD_TOKENS = 490;
+  private keepAliveTimer?: ReturnType<typeof setInterval>;
   constructor(private readonly baseUrl: string, private readonly model: string, private readonly timeoutMs: number, private readonly numGpu = 99, private readonly numCtx = 4096) {
     this.name = `ollama:${model}`;
     void this.warmUp();
+    if (typeof window !== 'undefined') this.keepAliveTimer = setInterval(() => void this.ping(), OllamaLLMProvider.KEEP_ALIVE_PING_MS);
   }
-  /** Fire-and-forget: load the model into memory as soon as the app starts. */
-  async warmUp() {
+  dispose() {
+    if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
+  }
+  /**
+   * Fire-and-forget at app start: load the model, run the static system prompt through it once
+   * (the slow part, off the user's first command) and park the prefix checkpoint — see WARM_UP_PAD_TOKENS.
+   */
+  warmUp() {
+    return this.primeCache(Array(OllamaLLMProvider.WARM_UP_PAD_TOKENS).fill('x').join(' '), 90000);
+  }
+  /** Cheap periodic keep-alive: resumes from the parked checkpoint, so it costs a few tokens, not a re-read. */
+  ping() {
+    return this.primeCache('ping', 30000);
+  }
+  private async primeCache(userContent: string, timeoutMs: number) {
     try {
       await fetchWithTimeout(
-        `${this.baseUrl.replace(/\/$/, '')}/api/generate`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: this.model, prompt: '', keep_alive: OllamaLLMProvider.KEEP_ALIVE, options: { num_gpu: this.numGpu, num_ctx: this.numCtx } }) },
-        60000,
+        `${this.baseUrl.replace(/\/$/, '')}/api/chat`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: this.model,
+            stream: false,
+            format: 'json',
+            keep_alive: OllamaLLMProvider.KEEP_ALIVE,
+            think: false,
+            options: { temperature: 0, num_predict: 1, num_ctx: this.numCtx, num_gpu: this.numGpu },
+            messages: [
+              { role: 'system', content: buildSystemPrompt() },
+              { role: 'user', content: userContent },
+            ],
+          }),
+        },
+        timeoutMs,
       );
     } catch {
       /* runtime not up yet — the first real request will report it */
@@ -76,11 +121,11 @@ export class OllamaLLMProvider implements LLMProvider {
           format: 'json',
           keep_alive: OllamaLLMProvider.KEEP_ALIVE,
           // Full GPU offload (num_gpu) + a small context keep the whole model in VRAM on 4 GB cards.
-          options: { temperature: 0, num_predict: 400, num_ctx: this.numCtx, num_gpu: this.numGpu },
+          options: { temperature: 0, num_predict: 300, num_ctx: this.numCtx, num_gpu: this.numGpu },
           think: false,
           messages: [
-            { role: 'system', content: `${buildSystemPrompt(context)}\nIMPORTANT: respond with a single JSON object of the form {"commands":[ ...commands in order... ]}. Multi-step requests ("X and Y") must produce multiple commands inside "commands".` },
-            { role: 'user', content: transcript },
+            { role: 'system', content: buildSystemPrompt() },
+            { role: 'user', content: buildUserMessage(transcript, context) },
           ],
         }),
       },
@@ -90,6 +135,32 @@ export class OllamaLLMProvider implements LLMProvider {
     const data = (await res.json()) as { message?: { content?: string } };
     const raw = data.message?.content ?? '';
     return { commands: parseCommands(raw), raw };
+  }
+  /** Free-form JSON completion (AI Summary extraction) — a different system prompt from the command one. */
+  async complete(systemPrompt: string, userMessage: string, options?: { timeoutMs?: number; maxTokens?: number }): Promise<string> {
+    const res = await fetchWithTimeout(
+      `${this.baseUrl.replace(/\/$/, '')}/api/chat`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          stream: false,
+          format: 'json',
+          keep_alive: OllamaLLMProvider.KEEP_ALIVE,
+          think: false,
+          options: { temperature: 0, num_predict: options?.maxTokens ?? 700, num_ctx: this.numCtx, num_gpu: this.numGpu },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+        }),
+      },
+      options?.timeoutMs ?? Math.max(this.timeoutMs, 45000),
+    );
+    if (!res.ok) throw new ModelUnavailableError(`Ollama responded ${res.status}`);
+    const data = (await res.json()) as { message?: { content?: string } };
+    return data.message?.content ?? '';
   }
   async healthCheck() {
     try {
@@ -119,8 +190,8 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
           max_tokens: 400,
           response_format: { type: 'json_object' },
           messages: [
-            { role: 'system', content: buildSystemPrompt(context) + '\nWrap the array as {"commands":[...]}.' },
-            { role: 'user', content: transcript },
+            { role: 'system', content: buildSystemPrompt() },
+            { role: 'user', content: buildUserMessage(transcript, context) },
           ],
         }),
       },
@@ -130,6 +201,29 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const raw = data.choices?.[0]?.message?.content ?? '';
     return { commands: parseCommands(raw), raw };
+  }
+  async complete(systemPrompt: string, userMessage: string, options?: { timeoutMs?: number; maxTokens?: number }): Promise<string> {
+    const res = await fetchWithTimeout(
+      `${this.baseUrl.replace(/\/$/, '')}/v1/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          temperature: 0,
+          max_tokens: options?.maxTokens ?? 700,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+        }),
+      },
+      options?.timeoutMs ?? Math.max(this.timeoutMs, 45000),
+    );
+    if (!res.ok) throw new ModelUnavailableError(`LLM server responded ${res.status}`);
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    return data.choices?.[0]?.message?.content ?? '';
   }
   async healthCheck() {
     try {
@@ -148,13 +242,24 @@ export class HttpBridgeLLMProvider implements LLMProvider {
   async generateCommands(transcript: string, context: AIContext) {
     const res = await fetchWithTimeout(
       this.url,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript, context, system_prompt: buildSystemPrompt(context) }) },
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript, context, system_prompt: buildSystemPrompt(), user_message: buildUserMessage(transcript, context) }) },
       this.timeoutMs,
     );
     if (!res.ok) throw new ModelUnavailableError(`Bridge responded ${res.status}`);
     const data = (await res.json()) as { raw?: string; commands?: unknown };
     const raw = data.raw ?? JSON.stringify(data.commands ?? '');
     return { commands: parseCommands(raw), raw };
+  }
+  /** The bridge takes any system prompt + user message, so extraction reuses the same endpoint. */
+  async complete(systemPrompt: string, userMessage: string, options?: { timeoutMs?: number }): Promise<string> {
+    const res = await fetchWithTimeout(
+      this.url,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript: userMessage, system_prompt: systemPrompt, user_message: userMessage }) },
+      options?.timeoutMs ?? Math.max(this.timeoutMs, 45000),
+    );
+    if (!res.ok) throw new ModelUnavailableError(`Bridge responded ${res.status}`);
+    const data = (await res.json()) as { raw?: string };
+    return data.raw ?? '';
   }
   async healthCheck() {
     try {

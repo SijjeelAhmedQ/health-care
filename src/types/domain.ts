@@ -103,17 +103,53 @@ export interface Prescription {
   instructions?: string;
 }
 
+export type DiagnosisStatus = 'Active' | 'Resolved' | 'Chronic' | 'Inactive';
+
+/** A diagnosis on the patient's problem list. */
 export interface Problem {
   id: ID;
   patientId: ID;
+  patientName?: string;
   icd10: string;
   description: string;
-  status: 'Active' | 'Resolved' | 'Chronic' | 'Inactive';
+  status: DiagnosisStatus;
   onsetDate: string;
   resolvedDate?: string;
   severity: 'Mild' | 'Moderate' | 'Severe';
   diagnosedBy: string;
   notes?: string;
+}
+
+/** The Diagnosis module works on the problem list; the two names are interchangeable. */
+export type Diagnosis = Problem;
+
+export type TaskStatus = 'Open' | 'In Progress' | 'Completed' | 'Cancelled';
+export type TaskPriority = 'Low' | 'Normal' | 'High' | 'Urgent';
+export type TaskCategory =
+  | 'Follow-up'
+  | 'Monitoring'
+  | 'Referral'
+  | 'Documentation'
+  | 'Medication Review'
+  | 'Lab Follow-up'
+  | 'Patient Education'
+  | 'Other';
+
+/** A piece of work a staff member owes this patient. */
+export interface Task {
+  id: ID;
+  patientId: ID;
+  patientName: string;
+  title: string;
+  category: TaskCategory;
+  description?: string;
+  assignedTo: string;
+  dueDate: string; // YYYY-MM-DD
+  priority: TaskPriority;
+  status: TaskStatus;
+  createdBy: string;
+  createdAt: string;
+  completedAt?: string;
 }
 
 export interface Immunization {
@@ -351,6 +387,29 @@ export interface LabOrder {
   lab: string;
   abnormal?: boolean;
   fasting: boolean;
+  /** Result value as reported, e.g. "7.2 %" or "Normal". Present once status is Resulted. */
+  result?: string;
+  referenceRange?: string;
+  resultNotes?: string;
+}
+
+export type RecallType = 'Follow-up' | 'Screening' | 'Vaccination' | 'Lab Test' | 'Medication Review' | 'Chronic Care Review' | 'Other';
+export type RecallStatus = 'Due' | 'Scheduled' | 'Completed' | 'Cancelled';
+
+/** A reminder that the patient should be brought back (follow-up, screening, repeat labs…). */
+export interface Recall {
+  id: ID;
+  patientId: ID;
+  patientName: string;
+  type: RecallType;
+  reason: string;
+  dueDate: string; // YYYY-MM-DD
+  priority: 'Normal' | 'High';
+  status: RecallStatus;
+  createdBy: string;
+  createdAt: string;
+  notes?: string;
+  appointmentId?: ID;
 }
 
 export interface ImagingOrder {

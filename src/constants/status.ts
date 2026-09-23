@@ -55,6 +55,9 @@ export const statusColor: Record<string, string> = {
   Declined: 'red',
   Due: 'gold',
   Overdue: 'red',
+  // tasks
+  Open: 'blue',
+  Normal: 'default',
   // providers / users
   'On Leave': 'gold',
   Locked: 'red',

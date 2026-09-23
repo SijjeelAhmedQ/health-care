@@ -4,7 +4,7 @@ CareFlow local AI bridge.
 A minimal FastAPI service that exposes the two local models the frontend needs:
 
   POST /api/stt   multipart audio  -> {"text": "...", "model": "omi-health/omi-med-stt-v1-gguf"}
-  POST /api/llm   {"transcript","context","system_prompt"} -> {"raw": "...", "commands": [...]}   (qwen3.5:4b)
+  POST /api/llm   {"transcript","context","system_prompt","user_message"} -> {"raw": "...", "commands": [...]}   (qwen3.5:4b)
   GET  /api/health                                            -> runtime status
 
 The frontend talks to it when VITE_STT_PROVIDER=http and/or VITE_LLM_PROVIDER=http.
@@ -50,6 +50,8 @@ class LLMRequest(BaseModel):
     transcript: str
     context: dict[str, Any] | None = None
     system_prompt: str | None = None
+    # Static system prompt + per-request user message (context line + transcript); see src/services/ai/prompt.ts
+    user_message: str | None = None
 
 
 @app.get("/api/health")
@@ -85,7 +87,7 @@ async def transcribe(audio: UploadFile = File(...)) -> dict[str, Any]:
 def generate(req: LLMRequest) -> dict[str, Any]:
     if not llm.is_ready():
         raise HTTPException(status_code=503, detail=f"LLM runtime '{llm.name}' is not reachable")
-    raw = llm.generate(req.transcript, req.system_prompt or "", req.context or {})
+    raw = llm.generate(req.user_message or req.transcript, req.system_prompt or "", req.context or {})
     commands: Any = None
     try:
         commands = json.loads(raw)

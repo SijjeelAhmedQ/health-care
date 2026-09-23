@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { Button, Input, Tag, Tooltip } from 'antd';
-import { AlertCircle, Bug, Check, CheckCircle2, Keyboard, Loader2, Mic, MicOff, Send, X } from 'lucide-react';
+import { AlertCircle, Bug, Check, CheckCircle2, Keyboard, Loader2, Mic, MicOff, Send, Volume2, VolumeX, X } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { voiceActions, type VoiceStatus } from '@/store/slices/voiceSlice';
 import { uiActions } from '@/store/slices/uiSlice';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { aiConfig } from '@/services/ai/config';
+import { getSpeakReplies, isSpeechSupported, setSpeakReplies, stopSpeaking } from '@/services/ai/speech';
 
 const statusMeta: Record<VoiceStatus, { label: string; color: string }> = {
   idle: { label: 'Ready', color: '#5b6b7a' },
@@ -19,13 +20,25 @@ const statusMeta: Record<VoiceStatus, { label: string; color: string }> = {
   cancelled: { label: 'Cancelled', color: '#5b6b7a' },
 };
 
-const hints = ['Go to patient search', 'Open John Smith', 'Go to page 30 and add medication', 'Add Amoxicillin 500 mg twice daily for 7 days', 'Create an appointment for Ahmed tomorrow at 3 PM'];
+const hints = [
+  'Select patient John Smith',
+  'Open medications',
+  'Add amoxicillin 500 mg twice daily for 7 days',
+  'Add diagnosis hypertension',
+  'Add task blood pressure monitoring due next Friday',
+  'Set recall for review in 3 months',
+  'Read the medication list',
+  'Give me a summary of this patient',
+  'Open summary and show me the diagnosis tab',
+];
 
 export function VoiceAssistant() {
   const dispatch = useAppDispatch();
   const voice = useAppSelector((s) => s.voice);
   const [typed, setTyped] = useState('');
   const [showTyping, setShowTyping] = useState(false);
+  // Read-back commands ("read the medication list") are spoken unless the user mutes them.
+  const [speakReplies, setSpeak] = useState(getSpeakReplies);
   const meta = statusMeta[voice.status];
   const busy = voice.status === 'processing' || voice.status === 'executing' || voice.status === 'transcribing';
   // The microphone switch is owned by the user (micActive) — not by the transcription lifecycle.
@@ -66,7 +79,7 @@ export function VoiceAssistant() {
               {voice.status === 'listening' || (micOn && voice.status === 'idle') ? (
                 <span className="voice-waveform"><span /><span /><span /><span /><span /></span>
               ) : busy ? (
-                <Loader2 size={16} className="spin" style={{ animation: 'spin 1s linear infinite' }} />
+                <Loader2 size={16} className="spin" />
               ) : voice.status === 'completed' ? (
                 <CheckCircle2 size={16} />
               ) : voice.status === 'error' ? (
@@ -88,7 +101,7 @@ export function VoiceAssistant() {
             )}
 
             {voice.pendingSlot && voice.status !== 'error' && (
-              <div className="voice-confirm-box" style={{ borderColor: '#b9dff0', background: '#eef7fb' }}>
+              <div className="voice-confirm-box is-question">
                 <strong>Question:</strong> {voice.pendingSlot.question}
                 <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Answer by voice or type below — e.g. “500 mg”.</div>
               </div>
@@ -99,7 +112,11 @@ export function VoiceAssistant() {
 
             {voice.pendingConfirmation && (
               <div className="voice-confirm-box">
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>{voice.pendingConfirmation.formTitle} — ready to save</div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                  {voice.pendingConfirmation.kind === 'delete'
+                    ? `${voice.pendingConfirmation.formTitle} — confirm deletion`
+                    : `${voice.pendingConfirmation.formTitle} — ready to save`}
+                </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', marginBottom: 8 }}>
                   {voice.pendingConfirmation.summary.slice(0, 8).map((s) => (
                     <div key={s.label} style={{ display: 'contents' }}>
@@ -109,10 +126,20 @@ export function VoiceAssistant() {
                   ))}
                   {voice.pendingConfirmation.summary.length > 8 && <span className="muted">+{voice.pendingConfirmation.summary.length - 8} more</span>}
                 </div>
-                <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>Review the form, then confirm. Say “save it” or “cancel”.</div>
+                <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                  {voice.pendingConfirmation.kind === 'delete'
+                    ? 'This cannot be undone. Say “yes, delete it” or “cancel”.'
+                    : 'Review the form, then confirm. Say “save it” or “cancel”.'}
+                </div>
                 <div className="flex gap-2">
-                  <Button type="primary" size="small" icon={<Check size={14} />} onClick={() => void controller.handleTranscript('save it')}>
-                    Save
+                  <Button
+                    type="primary"
+                    danger={voice.pendingConfirmation.kind === 'delete'}
+                    size="small"
+                    icon={<Check size={14} />}
+                    onClick={() => void controller.handleTranscript('yes')}
+                  >
+                    {voice.pendingConfirmation.kind === 'delete' ? 'Delete' : 'Save'}
                   </Button>
                   <Button size="small" onClick={() => void controller.handleTranscript('cancel')}>
                     Cancel
@@ -126,7 +153,7 @@ export function VoiceAssistant() {
                 <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Try saying</div>
                 <div className="voice-hint-chips">
                   {hints.map((h) => (
-                    <Tag key={h} style={{ cursor: 'pointer', margin: 0 }} onClick={() => void controller.handleTranscript(h)}>
+                    <Tag key={h} className="voice-hint-chip" onClick={() => void controller.handleTranscript(h)}>
                       {h}
                     </Tag>
                   ))}
@@ -181,6 +208,22 @@ export function VoiceAssistant() {
               </>
             )}
             <div style={{ flex: 1 }} />
+            {isSpeechSupported() && (
+              <Tooltip title={speakReplies ? 'Spoken replies on — click to mute' : 'Spoken replies muted'}>
+                <Button
+                  type="text"
+                  icon={speakReplies ? <Volume2 size={15} /> : <VolumeX size={15} />}
+                  onClick={() => {
+                    const next = !speakReplies;
+                    setSpeak(next);
+                    setSpeakReplies(next);
+                    if (!next) stopSpeaking();
+                  }}
+                  aria-label={speakReplies ? 'Mute spoken replies' : 'Enable spoken replies'}
+                  aria-pressed={speakReplies}
+                />
+              </Tooltip>
+            )}
             {voice.micSupported && (
               <Tooltip title={showTyping ? 'Use microphone' : 'Type instead'}>
                 <Button type="text" icon={showTyping ? <Mic size={15} /> : <Keyboard size={15} />} onClick={() => setShowTyping((v) => !v)} aria-label="Toggle typing mode" />
@@ -206,7 +249,6 @@ export function VoiceAssistant() {
           {micOn ? <MicOff size={22} /> : voice.micSupported ? <Mic size={22} /> : <Keyboard size={22} />}
         </button>
       </Tooltip>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </>
   );
 }

@@ -4,24 +4,35 @@
  *   -> CommandExecutor -> Redux / router / forms
  * and keeps voiceSlice in sync so the UI can render every state.
  */
-import type { AppStore } from '@/store';
+import type { AppStore, RootState } from '@/store';
 import { voiceActions, type PendingSlot } from '@/store/slices/voiceSlice';
 import { navigationActions } from '@/store/slices/navigationSlice';
 import { uiActions } from '@/store/slices/uiSlice';
-import { setCurrentPatient, setLastSearch, patientSelectors } from '@/store/slices/patientSlice';
-import { setCurrentProvider } from '@/store/slices/providerSlice';
-import type { AICommand, AIContext, DebugTrace, ExecutionStep, LLMProvider, PendingConfirmation } from '@/types/ai';
-import { patientService, providerService } from '@/services/api';
+import { deletePatient, setCurrentPatient, setLastSearch, patientSelectors } from '@/store/slices/patientSlice';
+import { recordSlices } from '@/store/slices/recordSlices';
+import type { AICommand, AIContext, AIRecordKind, DebugTrace, ExecutionStep, FieldValues, LLMProvider, PendingConfirmation } from '@/types/ai';
+import { patientService } from '@/services/api';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
 import { FormRegistry } from '@/registry/formRegistry';
+import { buildPatientNarrative } from '@/services/records/patientNarrative';
+import type { AnyRecord } from '@/services/records/recordMapping';
 import { CommandExecutor, type ExecutionResult } from './commandExecutor';
-import { CommandParseError } from './commandParser';
+import { CommandParseError, coalesceMedicationCommands } from './commandParser';
 import { effectiveConfig } from './config';
 import { createLLMProvider, MockLLMProvider, ModelUnavailableError } from './providers/llmProviders';
 import { createSTTProvider, type ListeningSession, type MicrophoneRecognizer } from './providers/sttProviders';
-import { looksLikeCommand, normalizeTranscript } from './ruleBasedInterpreter';
+import { interpret, looksLikeCommand, normalizeTranscript } from './ruleBasedInterpreter';
+import { speak } from './speech';
 import { translateUrdu } from './urdu/translator';
+
+/** Records of one kind belonging to the selected patient. */
+function patientRecords(state: RootState, kind: AIRecordKind): AnyRecord[] {
+  if (kind === 'patient') return patientSelectors.selectAll(state);
+  const patientId = state.patients.currentPatientId;
+  if (!patientId) return [];
+  return recordSlices[kind].selectors.selectAll(state).filter((r) => r.patientId === patientId) as AnyRecord[];
+}
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
@@ -50,6 +61,7 @@ export class VoiceController {
   /** Re-create providers after the dev console changed the configuration. */
   reconfigure() {
     const config = effectiveConfig();
+    (this.llm as { dispose?: () => void }).dispose?.();
     this.llm = createLLMProvider(config);
     this.stt = createSTTProvider(config);
     this.publishProviders();
@@ -94,7 +106,10 @@ export class VoiceController {
   private openSession() {
     const { dispatch } = this.store;
     this.session = this.stt.start({
-      onInterim: (text) => dispatch(voiceActions.setInterimTranscript(text)),
+      onInterim: (text) => {
+        dispatch(voiceActions.setInterimTranscript(text));
+        this.dictation?.onInterim?.(text);
+      },
       onTranscribing: () => {
         if (!this.busy) dispatch(voiceActions.setStatus('transcribing'));
       },
@@ -123,6 +138,42 @@ export class VoiceController {
     });
   }
 
+  /**
+   * Dictation mode: the microphone feeds a text box (the AI Summary paragraph)
+   * instead of the command pipeline. Nothing spoken here is executed.
+   */
+  private dictation: { onText: (text: string) => void; onInterim?: (text: string) => void } | null = null;
+
+  get isDictating() {
+    return this.dictation !== null;
+  }
+
+  /** Start capturing speech as plain text. Returns a stop function. */
+  startDictation(handlers: { onText: (text: string) => void; onInterim?: (text: string) => void }): () => void {
+    this.dictation = handlers;
+    const { dispatch } = this.store;
+    dispatch(voiceActions.setError(null));
+    dispatch(voiceActions.setStatus('listening'));
+    this.micActive = true;
+    this.cancelled = false;
+    dispatch(voiceActions.setMicActive(true));
+    if (!this.session) this.openSession();
+    return () => this.stopDictation();
+  }
+
+  stopDictation() {
+    if (!this.dictation) return;
+    this.dictation = null;
+    this.micActive = false;
+    const { dispatch } = this.store;
+    dispatch(voiceActions.setMicActive(false));
+    dispatch(voiceActions.setInterimTranscript(''));
+    dispatch(voiceActions.setStatus('idle'));
+    const session = this.session;
+    this.session = null;
+    session?.stop();
+  }
+
   /** Text of a very short segment we are holding, waiting to see whether the user continues the sentence. */
   private fragment: string | null = null;
   private fragmentTimer: ReturnType<typeof setTimeout> | null = null;
@@ -136,6 +187,13 @@ export class VoiceController {
    */
   private acceptSegment(text: string) {
     const { dispatch, getState } = this.store;
+    // Dictation mode (AI Summary): what is said is captured as text, never executed as a command.
+    if (this.dictation) {
+      const clean = text.trim();
+      if (clean) this.dictation.onText(clean);
+      dispatch(voiceActions.setInterimTranscript(''));
+      return;
+    }
     const state = getState().voice;
     const combined = this.fragment ? `${this.fragment} ${text}`.trim() : text.trim();
     if (this.fragmentTimer) clearTimeout(this.fragmentTimer);
@@ -336,17 +394,27 @@ export class VoiceController {
     const urdu = translateUrdu(transcript);
     const input = urdu.detected ? urdu.text : transcript;
     if (urdu.detected) trace.provider = `${this.llm.name} (${urdu.language === 'ur' ? 'Urdu' : 'Roman Urdu'} → English)`;
+    // Fast path: when the deterministic interpreter understands every clause there is nothing for the
+    // model to add, and skipping it saves the full system-prompt re-read Qwen 3.5 pays on every call.
+    if (config.rulesFirst && !(this.llm instanceof MockLLMProvider)) {
+      const rules = interpret(input, context);
+      if (rules.length && rules.every((c) => c.action !== 'unknown')) {
+        trace.provider = `rules (fast path)${urdu.detected ? ` (${urdu.language === 'ur' ? 'Urdu' : 'Roman Urdu'} → English)` : ''}`;
+        trace.rawModelOutput = JSON.stringify(rules, null, 2);
+        return coalesceMedicationCommands(rules);
+      }
+    }
     try {
       const { commands, raw } = await this.llm.generateCommands(input, context);
       trace.rawModelOutput = raw;
-      return this.applySlotAnswerGuard(input, context, commands);
+      return this.applySlotAnswerGuard(input, context, this.applyMedicationListGuard(input, context, coalesceMedicationCommands(commands)));
     } catch (e) {
       const recoverable = e instanceof ModelUnavailableError || e instanceof CommandParseError;
       if (recoverable && config.fallbackToRules && !(this.llm instanceof MockLLMProvider)) {
         const { commands, raw } = await this.fallback.generateCommands(input, context);
         trace.provider = `${this.llm.name} → fallback: rules (${(e as Error).message})`;
         trace.rawModelOutput = raw;
-        return commands;
+        return coalesceMedicationCommands(commands);
       }
       throw e;
     }
@@ -365,6 +433,46 @@ export class VoiceController {
     return [{ action: 'fill_field', formId: slot.formId, field: slot.field, value: transcript.trim().replace(/[.!?]+$/g, '') }];
   }
 
+  /**
+   * Deterministic guard: a small model asked for "panadol paracetamol 200 mg twice daily" may return only
+   * Panadol (it treats the two as the same drug) or otherwise drop names. The rules parser re-reads the
+   * transcript; when it heard more medications than the model returned, the missing ones are added and
+   * the model's details are kept for the names it did return. Nothing the user said is lost.
+   */
+  private applyMedicationListGuard(transcript: string, context: AIContext, commands: AICommand[]): AICommand[] {
+    const isMedicationCommand = (c: AICommand) =>
+      c.action === 'add_medication' ||
+      (c.action === 'add_record' && c.kind === 'medication') ||
+      (c.action === 'fill_form' && (c.formId ?? context.openFormId) === 'medication');
+    const listOf = (c: AICommand): FieldValues[] => {
+      if (c.action === 'add_record') return c.records ?? (c.fields ? [c.fields] : []);
+      if (c.action === 'add_medication') return c.medications ?? (c.fields ? [c.fields] : []);
+      if (c.action === 'fill_form') return c.entries ?? [c.fields];
+      return [];
+    };
+
+    const idx = commands.findIndex(isMedicationCommand);
+    if (idx < 0) return commands;
+    const spoken = interpret(transcript, context).find((c) => isMedicationCommand(c) && listOf(c).length > 1);
+    if (!spoken) return commands;
+    const heard = listOf(spoken);
+    const cmd = commands[idx];
+    const returned = listOf(cmd);
+    if (returned.length >= heard.length) return commands;
+
+    const key = (m: FieldValues) => String(m.medicationName ?? '').toLowerCase().split(/[\s/]/)[0];
+    const merged = heard.map((h) => {
+      const m = returned.find((r) => key(r) === key(h));
+      return m ? { ...h, ...m } : h;
+    });
+    const next = [...commands];
+    next[idx] =
+      cmd.action === 'fill_form'
+        ? { action: 'fill_form', formId: cmd.formId, fields: merged[0], entries: merged }
+        : { action: 'add_record', kind: 'medication', fields: merged[0], records: merged };
+    return next;
+  }
+
   // ------------------------------------------------------------------ context
 
   buildContext(): AIContext {
@@ -378,7 +486,7 @@ export class VoiceController {
       currentPageNumber: page?.number ?? null,
       currentPatientId: state.patients.currentPatientId,
       currentPatientName: patient?.fullName ?? null,
-      currentProviderId: state.providers.currentProviderId,
+      currentTab: page?.tab ?? (page?.parentId ? (state.navigation.activeTabs[page.parentId] ?? null) : null),
       openFormId: openForm?.formId ?? state.navigation.openFormId,
       openFormFields: openForm ? Object.keys(openForm.getValues()) : [],
       pendingSlot: state.voice.pendingSlot ? { formId: state.voice.pendingSlot.formId, field: state.voice.pendingSlot.field, label: state.voice.pendingSlot.label } : null,
@@ -389,15 +497,19 @@ export class VoiceController {
 
   private buildDeps() {
     const { dispatch, getState } = this.store;
+    const currentPatient = () => {
+      const s = getState();
+      return s.patients.currentPatientId ? patientSelectors.selectById(s, s.patients.currentPatientId) : undefined;
+    };
     return {
       getState: () => {
         const s = getState();
-        const patient = s.patients.currentPatientId ? patientSelectors.selectById(s, s.patients.currentPatientId) : undefined;
+        const page = s.navigation.currentPageId ? PageRegistry.get(s.navigation.currentPageId) : undefined;
         return {
           currentPageId: s.navigation.currentPageId,
+          currentTab: page?.tab ?? null,
           currentPatientId: s.patients.currentPatientId,
-          currentPatientName: patient?.fullName ?? null,
-          currentProviderId: s.providers.currentProviderId,
+          currentPatientName: currentPatient()?.fullName ?? null,
           openFormId: FormRegistry.active()?.formId ?? s.navigation.openFormId,
           pendingConfirmation: s.voice.pendingConfirmation,
           pendingSlot: s.voice.pendingSlot,
@@ -407,7 +519,6 @@ export class VoiceController {
       navigate: (path: string) => NavigationRegistry.navigate(path),
       back: () => NavigationRegistry.back(),
       setCurrentPatient: (id: string | null) => dispatch(setCurrentPatient(id)),
-      setCurrentProvider: (id: string | null) => dispatch(setCurrentProvider(id)),
       setActiveTab: (pageId: string, tab: string) => dispatch(navigationActions.setActiveTab({ pageId, tab })),
       setOpenForm: (formId: string | null) => dispatch(navigationActions.setOpenForm(formId)),
       setPendingConfirmation: (p: PendingConfirmation | null) => dispatch(voiceActions.setPendingConfirmation(p)),
@@ -415,7 +526,26 @@ export class VoiceController {
       setPatientSearch: (q: string) => dispatch(setLastSearch(q)),
       toggleSidebar: () => dispatch(uiActions.toggleSidebar()),
       resolvePatientByName: (name: string) => patientService.resolveByName(name),
-      resolveProviderByName: (name: string) => providerService.resolveByName(name),
+      getPatient: () => currentPatient(),
+      getRecords: (kind: AIRecordKind) => patientRecords(getState(), kind),
+      deleteRecord: async (kind: AIRecordKind, id: string) => {
+        if (kind === 'patient') await dispatch(deletePatient(id)).unwrap();
+        else await dispatch(recordSlices[kind].remove(id)).unwrap();
+      },
+      speak: (text: string) => speak(text),
+      describePatient: () => {
+        const s = getState();
+        const patient = currentPatient();
+        if (!patient) return 'No patient is selected.';
+        return buildPatientNarrative({
+          patient,
+          medications: patientRecords(s, 'medication') as never,
+          diagnoses: patientRecords(s, 'diagnosis') as never,
+          tasks: patientRecords(s, 'task') as never,
+          recalls: patientRecords(s, 'recall') as never,
+          appointments: patientRecords(s, 'appointment') as never,
+        }).text;
+      },
     };
   }
 }
@@ -426,10 +556,25 @@ function describeAction(command: AICommand): string {
       const page = PageRegistry.resolve(command.target);
       return page ? `Navigating to ${page.title}…` : 'Navigating…';
     }
+    case 'open_tab':
+      return `Opening the ${command.tab} tab…`;
     case 'search_patient':
       return `Searching for ${command.query}…`;
+    case 'select_patient':
     case 'open_patient':
-      return `Opening ${command.name ?? 'patient'}…`;
+      return `Selecting ${command.name ?? 'patient'}…`;
+    case 'add_record':
+      return `Opening the ${command.kind} form…`;
+    case 'update_record':
+      return `Opening the ${command.kind} for editing…`;
+    case 'delete_record':
+      return `Checking which ${command.kind} to delete…`;
+    case 'search_records':
+      return `Searching ${command.kind}s…`;
+    case 'read_records':
+      return `Reading the ${command.kind} list…`;
+    case 'summarize_patient':
+      return 'Building the patient summary…';
     case 'open_form':
       return 'Opening form…';
     case 'fill_form':
@@ -442,11 +587,11 @@ function describeAction(command: AICommand): string {
     case 'create_appointment':
       return 'Preparing appointment…';
     case 'register_patient':
-      return 'Filling registration form…';
+      return 'Filling patient form…';
     case 'submit_form':
       return 'Requesting confirmation…';
     case 'confirm':
-      return 'Saving…';
+      return 'Applying…';
     case 'cancel':
       return 'Cancelling…';
     case 'scroll':

@@ -26,6 +26,7 @@ import type {
   Prescription,
   Problem,
   Provider,
+  Recall,
   Referral,
   Resource,
   Role,
@@ -34,6 +35,7 @@ import type {
   ServiceItem,
   Shift,
   Specialty,
+  Task,
   User,
   Vitals,
 } from '@/types/domain';
@@ -322,11 +324,47 @@ export const problems: Problem[] = Array.from({ length: 200 }, (_, i) => {
   const status = rng.weighted<Problem['status']>([['Active', 45], ['Chronic', 30], ['Resolved', 20], ['Inactive', 5]]);
   const onset = TODAY.subtract(rng.int(30, 4000), 'day');
   return {
-    id: `prb-${i + 1}`, patientId: patient.id, icd10, description, status,
+    id: `prb-${i + 1}`, patientId: patient.id, patientName: patient.fullName, icd10, description, status,
     onsetDate: onset.format('YYYY-MM-DD'),
     resolvedDate: status === 'Resolved' ? onset.add(rng.int(10, 300), 'day').format('YYYY-MM-DD') : undefined,
     severity: rng.pick(['Mild', 'Moderate', 'Severe'] as const),
     diagnosedBy: rng.pick(providers).fullName,
+  };
+});
+
+const taskSeeds: Array<[Task['category'], string]> = [
+  ['Monitoring', 'Blood pressure monitoring'],
+  ['Follow-up', 'Call patient with follow-up plan'],
+  ['Lab Follow-up', 'Review outstanding lab results'],
+  ['Medication Review', 'Review current medication list'],
+  ['Documentation', 'Complete consultation note'],
+  ['Referral', 'Send referral letter to specialist'],
+  ['Patient Education', 'Explain inhaler technique'],
+  ['Monitoring', 'Check blood glucose diary'],
+  ['Follow-up', 'Confirm follow-up appointment booked'],
+  ['Other', 'Update emergency contact details'],
+];
+
+export const tasks: Task[] = Array.from({ length: 120 }, (_, i) => {
+  const patient = patients[(i * 3) % patients.length];
+  const [category, title] = rng.pick(taskSeeds);
+  const created = TODAY.subtract(rng.int(0, 60), 'day');
+  const status = rng.weighted<Task['status']>([['Open', 45], ['In Progress', 20], ['Completed', 30], ['Cancelled', 5]]);
+  const due = created.add(rng.int(1, 45), 'day');
+  return {
+    id: `task-${i + 1}`,
+    patientId: patient.id,
+    patientName: patient.fullName,
+    title,
+    category,
+    description: rng.bool(0.4) ? `${title} for ${patient.fullName}.` : undefined,
+    assignedTo: rng.pick(providers).fullName,
+    dueDate: due.format('YYYY-MM-DD'),
+    priority: rng.weighted<Task['priority']>([['Low', 15], ['Normal', 55], ['High', 25], ['Urgent', 5]]),
+    status,
+    createdBy: rng.pick(providers).fullName,
+    createdAt: created.toISOString(),
+    completedAt: status === 'Completed' ? due.subtract(rng.int(0, 3), 'day').toISOString() : undefined,
   };
 });
 
@@ -426,21 +464,44 @@ export const consultations: Consultation[] = Array.from({ length: 90 }, (_, i) =
   };
 });
 
-const labTests: Array<[string, string, string]> = [
-  ['Complete Blood Count', 'Hematology', 'Whole blood'], ['Basic Metabolic Panel', 'Chemistry', 'Serum'], ['Lipid Panel', 'Chemistry', 'Serum'], ['HbA1c', 'Chemistry', 'Whole blood'],
-  ['TSH', 'Endocrine', 'Serum'], ['Urinalysis', 'Urine', 'Urine'], ['Liver Function Tests', 'Chemistry', 'Serum'], ['Vitamin D, 25-OH', 'Chemistry', 'Serum'],
-  ['PT/INR', 'Coagulation', 'Plasma'], ['Urine Culture', 'Microbiology', 'Urine'], ['Troponin I', 'Cardiac', 'Serum'], ['Ferritin', 'Hematology', 'Serum'],
+// [test, panel, specimen, normal result, abnormal result, reference range]
+const labTests: Array<[string, string, string, string, string, string]> = [
+  ['Complete Blood Count', 'Hematology', 'Whole blood', 'Hb 13.8 g/dL, WBC 6.2', 'Hb 10.1 g/dL, WBC 12.4', 'Hb 12–16 g/dL'], ['Basic Metabolic Panel', 'Chemistry', 'Serum', 'Na 139, K 4.1, Cr 0.9', 'Na 131, K 5.6, Cr 1.8', 'Na 135–145 mmol/L'],
+  ['Lipid Panel', 'Chemistry', 'Serum', 'LDL 92 mg/dL', 'LDL 168 mg/dL', 'LDL < 100 mg/dL'], ['HbA1c', 'Chemistry', 'Whole blood', '5.4 %', '8.1 %', '< 5.7 %'],
+  ['TSH', 'Endocrine', 'Serum', '2.1 mIU/L', '7.8 mIU/L', '0.4–4.0 mIU/L'], ['Urinalysis', 'Urine', 'Urine', 'Normal', 'Protein 2+, WBC present', 'Negative'],
+  ['Liver Function Tests', 'Chemistry', 'Serum', 'ALT 24 U/L', 'ALT 96 U/L', 'ALT 7–56 U/L'], ['Vitamin D, 25-OH', 'Chemistry', 'Serum', '38 ng/mL', '14 ng/mL', '30–100 ng/mL'],
+  ['PT/INR', 'Coagulation', 'Plasma', 'INR 1.0', 'INR 3.6', 'INR 0.8–1.2'], ['Urine Culture', 'Microbiology', 'Urine', 'No growth', 'E. coli > 100,000 CFU/mL', 'No growth'],
+  ['Troponin I', 'Cardiac', 'Serum', '< 0.01 ng/mL', '0.42 ng/mL', '< 0.04 ng/mL'], ['Ferritin', 'Hematology', 'Serum', '85 ng/mL', '9 ng/mL', '20–250 ng/mL'],
 ];
 export const labOrders: LabOrder[] = Array.from({ length: 130 }, (_, i) => {
   const patient = patients[(i * 3) % patients.length];
-  const [testName, panel, specimen] = rng.pick(labTests);
+  const [testName, panel, specimen, normal, abnormalResult, referenceRange] = rng.pick(labTests);
   const ordered = TODAY.subtract(rng.int(0, 90), 'day');
   const status = rng.weighted<LabOrder['status']>([['Ordered', 20], ['Collected', 15], ['In Progress', 15], ['Resulted', 45], ['Cancelled', 5]]);
+  const abnormal = status === 'Resulted' ? rng.bool(0.25) : undefined;
   return {
     id: `lab-${i + 1}`, orderNumber: `LAB-${300000 + i}`, patientId: patient.id, patientName: patient.fullName, providerName: rng.pick(providers).fullName,
     testName, panel, priority: rng.weighted([['Routine', 80], ['Urgent', 15], ['STAT', 5]]), status,
     orderedAt: ordered.toISOString(), resultedAt: status === 'Resulted' ? ordered.add(rng.int(1, 3), 'day').toISOString() : undefined,
-    specimen, lab: rng.pick(['Quest Diagnostics', 'LabCorp', 'In-house Lab']), abnormal: status === 'Resulted' ? rng.bool(0.25) : undefined, fasting: rng.bool(0.4),
+    specimen, lab: rng.pick(['Quest Diagnostics', 'LabCorp', 'In-house Lab']), abnormal, fasting: rng.bool(0.4),
+    result: status === 'Resulted' ? (abnormal ? abnormalResult : normal) : undefined, referenceRange: status === 'Resulted' ? referenceRange : undefined,
+  };
+});
+
+const recallReasons: Array<[Recall['type'], string]> = [
+  ['Follow-up', 'Blood pressure review'], ['Follow-up', 'Post-treatment check'], ['Chronic Care Review', 'Diabetes annual review'], ['Chronic Care Review', 'Asthma review'],
+  ['Lab Test', 'Repeat HbA1c'], ['Lab Test', 'Repeat lipid panel'], ['Screening', 'Mammogram due'], ['Screening', 'Colorectal screening'], ['Vaccination', 'Influenza vaccine'],
+  ['Vaccination', 'Tetanus booster'], ['Medication Review', 'Anticoagulant review'], ['Medication Review', 'Statin tolerance check'],
+];
+export const recalls: Recall[] = Array.from({ length: 110 }, (_, i) => {
+  const patient = patients[(i * 5) % patients.length];
+  const [type, reason] = rng.pick(recallReasons);
+  const created = TODAY.subtract(rng.int(5, 120), 'day');
+  const due = created.add(rng.int(14, 180), 'day');
+  const status = rng.weighted<Recall['status']>([['Due', 55], ['Scheduled', 20], ['Completed', 20], ['Cancelled', 5]]);
+  return {
+    id: `recall-${i + 1}`, patientId: patient.id, patientName: patient.fullName, type, reason, dueDate: due.format('YYYY-MM-DD'),
+    priority: rng.weighted([['Normal', 85], ['High', 15]]), status, createdBy: rng.pick(providers).fullName, createdAt: created.toISOString(),
   };
 });
 

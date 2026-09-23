@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
-import { Alert, Button, Card, Drawer, Form, Space, message, type FormInstance } from 'antd';
-import { Save, X } from 'lucide-react';
-import { useRegisteredForm } from '@/hooks';
+import { Button, Card, Form, Modal, Space, message, type FormInstance } from 'antd';
+import { AlertTriangle, CheckCircle2, MessageCircleQuestion, Mic, Save, X } from 'lucide-react';
+import { useRegisteredForm, type EntryStore } from '@/hooks';
 import { useAppSelector } from '@/store';
 import { FieldRegistry } from '@/registry/fieldRegistry';
+import { AppModal, type ModalSize } from '@/components/common/AppModal';
 
 export interface FormHelpers<T> {
   form: FormInstance<T>;
@@ -22,37 +23,88 @@ interface BaseProps<T extends object> {
   extraActions?: ReactNode;
 }
 
-interface DrawerProps<T extends object> extends BaseProps<T> {
+interface ModalFormProps<T extends object> extends BaseProps<T> {
   open: boolean;
   onOpen: () => void;
   onClose: () => void;
+  /** Preferred over `width` — sm/md/lg/xl keep dialog widths consistent. */
+  size?: ModalSize;
   width?: number;
   description?: string;
+  icon?: ReactNode;
+  /** Supply the form instance when the dialog needs it outside (e.g. to switch between entry tabs). */
+  form?: FormInstance<T>;
+  /** Multi-entry forms: every entry is saved, in order, with one confirmation. */
+  entries?: EntryStore<T>;
+  /** Rendered above the fields, inside the form (e.g. the entry tabs). */
+  header?: ReactNode;
 }
 
-function VoiceBanner({ formId }: { formId: string }) {
+/**
+ * Shown whenever the assistant has written into this form: lists the voice-filled fields and what
+ * happens next (a pending question, or "say save it"). Stays until the form is saved or closed.
+ */
+function VoiceBanner({ formId, fields }: { formId: string; fields: string[] }) {
   const pending = useAppSelector((s) => s.voice.pendingConfirmation);
   const slot = useAppSelector((s) => s.voice.pendingSlot);
-  if (pending?.formId === formId) {
-    return <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="Filled by voice — review before saving" description={`Say “save it” or click ${FieldRegistry.getForm(formId)?.submitLabel ?? 'Save'} to confirm. Nothing has been saved yet.`} />;
-  }
-  if (slot?.formId === formId) {
-    return <Alert type="info" showIcon style={{ marginBottom: 16 }} message={slot.question} description={`The assistant is waiting for the ${slot.label.toLowerCase()}.`} />;
-  }
-  return null;
+  const def = FieldRegistry.getForm(formId);
+  const awaitingSave = pending?.formId === formId;
+  const question = slot?.formId === formId ? slot : null;
+  if (!fields.length && !awaitingSave && !question) return null;
+
+  const labels = fields.map((name) => def?.fields.find((f) => f.name === name)?.label ?? name);
+  const submitLabel = def?.submitLabel ?? 'Save';
+
+  return (
+    <div className="voice-banner" role="alert" aria-live="polite">
+      <div className="voice-banner-icon"><Mic size={18} /></div>
+      <div className="voice-banner-body">
+        <div className="voice-banner-head">
+          <span className="voice-banner-title">Filled by voice</span>
+          {labels.length > 0 && <span className="voice-banner-count">{labels.length} field{labels.length === 1 ? '' : 's'}</span>}
+        </div>
+        <div className="voice-banner-text">
+          Please review {labels.length ? 'these values' : 'the form'} before saving — nothing has been saved yet.
+        </div>
+        {labels.length > 0 && (
+          <div className="voice-banner-chips">
+            {labels.map((l) => <span key={l} className="voice-banner-chip">{l}</span>)}
+          </div>
+        )}
+        {question ? (
+          <div className="voice-banner-status is-question">
+            <MessageCircleQuestion size={14} />
+            <span><strong>{question.question}</strong> — the assistant is waiting for the {question.label.toLowerCase()}.</span>
+          </div>
+        ) : awaitingSave ? (
+          <div className="voice-banner-status is-ready">
+            <CheckCircle2 size={14} />
+            <span>Say <strong>“save it”</strong> or click <strong>{submitLabel}</strong> to confirm.</span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
-/** A drawer-hosted form that is registered for voice control. */
-export function RegisteredFormDrawer<T extends object>({ formId, title, description, open, onOpen, onClose, onSubmit, initialValues, children, submitLabel, width = 620, instanceKey, extraActions }: DrawerProps<T>) {
-  const [form] = Form.useForm<T>();
+/**
+ * A modal-hosted form that is registered for voice control.
+ *
+ * Replaces the former slide-out shell: same props and the same FormRegistry contract
+ * (open / close / isOpen / submit), rendered as a centred dialog that goes full-screen on phones.
+ */
+export function RegisteredFormModal<T extends object>({ formId, title, description, icon, open, onOpen, onClose, onSubmit, initialValues, children, submitLabel, size = 'lg', width, instanceKey, extraActions, form: externalForm, entries, header }: ModalFormProps<T>) {
+  const [form] = Form.useForm<T>(externalForm);
   const [saving, setSaving] = useState(false);
   const def = FieldRegistry.getForm(formId);
 
   const submit = async (values: T) => {
     setSaving(true);
     try {
-      await onSubmit(values);
-      message.success(`${title} saved`);
+      // With entry tabs the active tab is validated by antd; the others were snapshotted when the user (or voice) left them.
+      const all = entries ? entries.items.map((snap, i) => (i === entries.active ? values : ({ ...initialValues, ...snap } as T))) : [values];
+      for (const v of all) await onSubmit(v);
+      message.success(all.length > 1 ? `${all.length} ${title.replace(/^add\s+/i, '').toLowerCase()}s saved` : `${title} saved`);
       form.resetFields();
       onClose();
     } finally {
@@ -60,30 +112,56 @@ export function RegisteredFormDrawer<T extends object>({ formId, title, descript
     }
   };
 
-  const { fieldClass } = useRegisteredForm<T>({ formId, form, isOpen: open, open: onOpen, close: () => { form.resetFields(); onClose(); }, onSubmit: submit, instanceKey });
+  const { fieldClass, voiceFilledFields } = useRegisteredForm<T>({ formId, form, isOpen: open, open: onOpen, close: () => { form.resetFields(); onClose(); }, onSubmit: submit, instanceKey, entries });
+
+  /** Closing with data in the form asks first — a mis-click should never lose a dictated medication. */
+  const requestClose = () => {
+    if (!saving && form.isFieldsTouched()) {
+      Modal.confirm({
+        title: 'Discard this entry?',
+        icon: <AlertTriangle size={20} color="#d98800" style={{ marginRight: 12, flexShrink: 0 }} />,
+        content: 'Nothing has been saved yet. Closing now discards what you entered.',
+        okText: 'Discard',
+        okButtonProps: { danger: true },
+        cancelText: 'Keep editing',
+        centered: true,
+        onOk: () => { form.resetFields(); onClose(); },
+      });
+      return;
+    }
+    form.resetFields();
+    onClose();
+  };
+
+  const action = submitLabel ?? def?.submitLabel ?? 'Save';
 
   return (
-    <Drawer
-      title={title}
+    <AppModal
       open={open}
-      onClose={() => { form.resetFields(); onClose(); }}
+      title={title}
+      description={description}
+      icon={icon}
+      size={size}
       width={width}
+      onClose={requestClose}
+      maskClosable={false}
+      footerHint={<span className="form-required-hint"><span className="mark">*</span> Required field</span>}
       footer={
-        <div className="flex gap-2" style={{ justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        <>
           {extraActions}
-          <Button icon={<X size={14} />} onClick={() => { form.resetFields(); onClose(); }}>Cancel</Button>
+          <Button icon={<X size={14} />} onClick={requestClose} disabled={saving}>Cancel</Button>
           <Button type="primary" icon={<Save size={14} />} loading={saving} onClick={() => form.submit()}>
-            {submitLabel ?? def?.submitLabel ?? 'Save'}
+            {action}
           </Button>
-        </div>
+        </>
       }
     >
-      {description && <p className="text-secondary" style={{ marginTop: 0 }}>{description}</p>}
-      <VoiceBanner formId={formId} />
-      <Form<T> form={form} layout="vertical" initialValues={initialValues as never} onFinish={(v) => void submit(v)} requiredMark="optional" scrollToFirstError>
+      <VoiceBanner formId={formId} fields={voiceFilledFields} />
+      {header && <div className="app-modal-entries">{header}</div>}
+      <Form<T> form={form} layout="vertical" initialValues={initialValues as never} onFinish={(v) => void submit(v)} requiredMark scrollToFirstError>
         {children({ form, fc: fieldClass })}
       </Form>
-    </Drawer>
+    </AppModal>
   );
 }
 
@@ -91,10 +169,12 @@ interface CardProps<T extends object> extends BaseProps<T> {
   onCancel?: () => void;
   loading?: boolean;
   successMessage?: string;
+  /** Shown to the left of the sticky action bar. */
+  hint?: ReactNode;
 }
 
 /** A page-level form (e.g. Patient Registration) registered for voice control. */
-export function RegisteredFormCard<T extends object>({ formId, title, onSubmit, onCancel, initialValues, children, submitLabel, instanceKey, extraActions, loading, successMessage }: CardProps<T>) {
+export function RegisteredFormCard<T extends object>({ formId, title, onSubmit, onCancel, initialValues, children, submitLabel, instanceKey, extraActions, loading, successMessage, hint }: CardProps<T>) {
   const [form] = Form.useForm<T>();
   const [saving, setSaving] = useState(false);
   const def = FieldRegistry.getForm(formId);
@@ -103,23 +183,39 @@ export function RegisteredFormCard<T extends object>({ formId, title, onSubmit, 
     setSaving(true);
     try {
       await onSubmit(values);
+      clearVoiceFilled();
       message.success(successMessage ?? `${title} saved`);
     } finally {
       setSaving(false);
     }
   };
 
-  const { fieldClass } = useRegisteredForm<T>({ formId, form, isOpen: true, open: () => undefined, close: () => form.resetFields(), onSubmit: submit, instanceKey });
+  const { fieldClass, voiceFilledFields, clearVoiceFilled } = useRegisteredForm<T>({ formId, form, isOpen: true, open: () => undefined, close: () => form.resetFields(), onSubmit: submit, instanceKey });
+
+  const reset = () => {
+    if (!form.isFieldsTouched()) { onCancel?.(); return; }
+    Modal.confirm({
+      title: 'Clear this form?',
+      icon: <AlertTriangle size={20} color="#d98800" style={{ marginRight: 12, flexShrink: 0 }} />,
+      content: 'Everything you have entered will be removed.',
+      okText: 'Clear form',
+      okButtonProps: { danger: true },
+      cancelText: 'Keep editing',
+      centered: true,
+      onOk: () => { form.resetFields(); clearVoiceFilled(); onCancel?.(); },
+    });
+  };
 
   return (
     <Card loading={loading}>
-      <VoiceBanner formId={formId} />
-      <Form<T> form={form} layout="vertical" initialValues={initialValues as never} onFinish={(v) => void submit(v)} requiredMark="optional" scrollToFirstError>
+      <VoiceBanner formId={formId} fields={voiceFilledFields} />
+      <Form<T> form={form} layout="vertical" initialValues={initialValues as never} onFinish={(v) => void submit(v)} requiredMark scrollToFirstError>
         {children({ form, fc: fieldClass })}
         <div className="sticky-actions">
+          <span className="sticky-actions-hint">{hint ?? <span className="form-required-hint"><span className="mark">*</span> Required field</span>}</span>
           {extraActions}
           <Space>
-            <Button onClick={() => { form.resetFields(); onCancel?.(); }}>Reset</Button>
+            <Button onClick={reset} disabled={saving}>Clear</Button>
             <Button type="primary" htmlType="submit" icon={<Save size={14} />} loading={saving}>
               {submitLabel ?? def?.submitLabel ?? 'Save'}
             </Button>

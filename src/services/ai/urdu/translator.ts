@@ -283,7 +283,7 @@ const CREATE_END = '(?:banao|create karo|create|schedule karo|book karo|book|fix
 const SET_END = '(?:set karo|karo|rakho|likho|daalo|bharo|set|enter karo|type karo|do|kardo)';
 const FORM_NOUN = '(?:form|medication|dawai|appointment|patient|mareez|prescription|record|changes|entry|sab kuch|sab|ye)';
 
-const ALLERGY_LIKE = 'allergy|diagnosis|problem|referral|lab order|lab|shift|leave|note|immunization|vaccination|document|insurance';
+const ALLERGY_LIKE = 'allergy|diagnosis|problem|referral|lab result|lab results|lab order|lab|recall|reminder|shift|leave|note|immunization|vaccination|document|insurance';
 const SECTION_NAMES = 'medications|medication|dawai|allergies|allergy|history|insurance|problems|documents|notes|note|immunizations|contacts|demographics|summary|communication|profile|file|record|chart|appointments';
 const SECTION_MAP: Record<string, string> = { dawai: 'medications', medication: 'medications', allergy: 'allergies', note: 'notes' };
 
@@ -404,11 +404,11 @@ function structure(c: string): string {
   if ((r = m(/^(.+?) (?:bhejo|send karo)$/))) return `send the ${r[1]}`;
   return c;
 }
-const FORM_ALIAS: Record<string, string> = { lab: 'lab order', chhutti: 'leave', tashkhees: 'diagnosis' };
+const FORM_ALIAS: Record<string, string> = { lab: 'lab order', chhutti: 'leave', tashkhees: 'diagnosis', reminder: 'recall', 'lab results': 'lab result' };
 
 const CLEANUP: Rule[] = [
   [/\b(?:ko|ka|ki|ke|par|mein|se|tak|hai|hoon|chahiye|ye|us|wala|zara|mujhe|ab|bhi|hi|karo|kardo|do|liye|saath)\b/g, ' '],
-  [/\b1 (medication|patient|appointment|allergy|prescription|form|referral|shift|leave|diagnosis|problem|note|lab order|user|provider|room|location)\b/g, 'a $1'],
+  [/\b1 (medication|patient|appointment|allergy|prescription|form|referral|shift|leave|diagnosis|problem|note|lab order|lab result|recall|user|provider|room|location)\b/g, 'a $1'],
   [/\bnaya\b/g, 'new'],
   [/\bdawai\b/g, 'medication'],
   [/\bmareez\b/g, 'patient'],

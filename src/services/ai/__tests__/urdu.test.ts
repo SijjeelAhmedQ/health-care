@@ -5,7 +5,7 @@ import type { AIContext } from '@/types/ai';
 import dayjs from 'dayjs';
 
 const ctx = (over: Partial<AIContext> = {}): AIContext => ({
-  currentPageId: 'dashboard', currentPageTitle: 'Executive Dashboard', currentPageNumber: 1, currentPatientId: null, currentPatientName: null, currentProviderId: null,
+  currentPageId: 'dashboard', currentPageTitle: 'Dashboard', currentPageNumber: 1, currentPatientId: 'pat-1', currentPatientName: 'John Smith', currentTab: null,
   openFormId: null, openFormFields: [], pendingSlot: null, awaitingConfirmation: false, recentTranscripts: [], ...over,
 });
 const t = (s: string) => translateUrdu(s).text;
@@ -27,19 +27,19 @@ describe('translateUrdu — the requested example', () => {
     expect(t('page number tees par jao or ek dawai add karo amoxcillin 500 mg twice daily paanch dino ke liay')).toBe('go to page 30 and add medication amoxicillin 500 mg twice daily for 5 days');
     expect(interpret('page number tees par jao or ek dawai add karo amoxcillin 500 mg twice daily paanch dino ke liay', ctx())).toEqual([
       { action: 'navigate', target: 30 },
-      { action: 'add_medication', fields: { medicationName: 'Amoxicillin', dosage: '500 mg', frequency: 'Twice daily', duration: '5 days' } },
+      { action: 'add_record', kind: 'medication', fields: { medicationName: 'Amoxicillin', dosage: '500 mg', frequency: 'Twice daily', duration: '5 days' } },
     ]);
   });
   it('same command in Urdu script', () => {
     expect(interpret('پیج نمبر تیس پر جاؤ اور ایک دوائی ایڈ کرو اموکسیسلن 500 ملی گرام دن میں دو بار پانچ دن کے لیے', ctx())).toEqual([
       { action: 'navigate', target: 30 },
-      { action: 'add_medication', fields: { medicationName: 'Amoxicillin', dosage: '500 mg', frequency: 'Twice daily', duration: '5 days' } },
+      { action: 'add_record', kind: 'medication', fields: { medicationName: 'Amoxicillin', dosage: '500 mg', frequency: 'Twice daily', duration: '5 days' } },
     ]);
   });
   it('fully Urdu frequency / duration / route / food', () => {
     expect(t('amoxicillin 500 mg muun se din mein do bar saat din ke liye khanay ke baad')).toBe('amoxicillin 500 mg orally twice daily for 7 days after food');
     expect(interpret('dawai add karo amoxicillin 500 mg muun se din mein do bar saat din ke liye khanay ke baad', ctx())).toEqual([
-      { action: 'add_medication', fields: { medicationName: 'Amoxicillin', dosage: '500 mg', route: 'Oral', frequency: 'Twice daily', duration: '7 days', instructions: 'After Food.' } },
+      { action: 'add_record', kind: 'medication', fields: { medicationName: 'Amoxicillin', dosage: '500 mg', route: 'Oral', frequency: 'Twice daily', duration: '7 days', instructions: 'After Food.' } },
     ]);
   });
 });
@@ -70,9 +70,9 @@ describe('translateUrdu — navigation', () => {
   it('produces navigate commands', () => {
     expect(interpret('page tees par jao', ctx())).toEqual([{ action: 'navigate', target: 30 }]);
     expect(interpret('صفحہ نمبر بیس پر جائیں', ctx())).toEqual([{ action: 'navigate', target: 20 }]);
-    expect(interpret('mareez ki talash par jao', ctx())).toEqual([{ action: 'navigate', target: 'patient-search' }]);
+    expect(interpret('mareez ki talash par jao', ctx())).toEqual([{ action: 'navigate', target: 'patients' }]);
     expect(interpret('واپس جاؤ', ctx())).toEqual([{ action: 'go_back' }]);
-    expect(interpret('medications kholo', ctx({ currentPatientId: 'pat-1', currentPageId: 'patient-profile' }))).toEqual([{ action: 'navigate', target: 'patient-medications' }]);
+    expect(interpret('medications kholo', ctx({ currentPatientId: 'pat-1', currentPageId: 'dashboard' }))).toEqual([{ action: 'navigate', target: 'medications' }]);
   });
 });
 
@@ -80,30 +80,31 @@ describe('translateUrdu — patients', () => {
   it('search, open, sections', () => {
     expect(interpret('ahmed khan ko dhoondo', ctx())).toEqual([{ action: 'search_patient', query: 'Ahmed Khan' }]);
     expect(interpret('mareez ahmed khan search karo', ctx())).toEqual([{ action: 'search_patient', query: 'Ahmed Khan' }]);
-    expect(interpret('mareez john smith kholo', ctx())).toEqual([{ action: 'open_patient', name: 'John Smith' }]);
-    expect(interpret('john smith kholo', ctx())).toEqual([{ action: 'open_patient', name: 'John Smith' }]);
-    expect(interpret('john smith ki dawaiyan dikhao', ctx())).toEqual([{ action: 'open_patient', name: 'John Smith', section: 'medications' }]);
-    expect(interpret('مریض جان سمتھ کھولو', ctx())).toEqual([{ action: 'open_patient', name: 'John Smith' }]);
-    expect(interpret('john smith ki file kholo', ctx())).toEqual([{ action: 'open_patient', name: 'John Smith' }]);
+    expect(interpret('mareez john smith kholo', ctx())).toEqual([{ action: 'select_patient', name: 'John Smith' }]);
+    expect(interpret('john smith kholo', ctx())).toEqual([{ action: 'select_patient', name: 'John Smith' }]);
+    expect(interpret('john smith ki dawaiyan dikhao', ctx())).toEqual([{ action: 'select_patient', name: 'John Smith', section: 'medications' }]);
+    expect(interpret('مریض جان سمتھ کھولو', ctx())).toEqual([{ action: 'select_patient', name: 'John Smith' }]);
+    expect(interpret('john smith ki file kholo', ctx())).toEqual([{ action: 'select_patient', name: 'John Smith' }]);
   });
   it('registration with demographics', () => {
     const cmds = interpret('naya mareez add karo bilal hussain mard 32 saal', ctx());
-    expect(cmds[0].action).toBe('register_patient');
+    expect(cmds[0]).toMatchObject({ action: 'add_record', kind: 'patient' });
     expect((cmds[0] as { fields: Record<string, unknown> }).fields).toMatchObject({ firstName: 'Bilal', lastName: 'Hussain', gender: 'Male', age: 32 });
-    expect(interpret('naya mareez add karo', ctx())).toEqual([{ action: 'register_patient' }]);
-    expect(interpret('bilal hussain naam ka naya mareez register karo', ctx())[0]).toMatchObject({ action: 'register_patient', fields: { firstName: 'Bilal', lastName: 'Hussain' } });
+    expect(interpret('naya mareez add karo', ctx())).toEqual([{ action: 'add_record', kind: 'patient' }]);
+    expect(interpret('bilal hussain naam ka naya mareez register karo', ctx())[0]).toMatchObject({ action: 'add_record', kind: 'patient', fields: { firstName: 'Bilal', lastName: 'Hussain' } });
   });
 });
 
 describe('translateUrdu — appointments', () => {
-  it('builds create_appointment with patient, provider, date, time, reason', () => {
+  it('builds an appointment with provider, date, time and reason for the selected patient', () => {
     const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
     expect(t('ahmed khan ke liye dr sarah ke saath kal shaam 3 baje appointment banao seene mein dard ke liye')).toBe('create appointment for ahmed khan with dr sarah tomorrow at 3 pm for chest pain');
     expect(interpret('ahmed khan ke liye dr sarah ke saath kal shaam 3 baje appointment banao seene mein dard ke liye', ctx())).toEqual([
-      { action: 'create_appointment', fields: { patientName: 'Ahmed Khan', providerName: 'Sarah', date: tomorrow, startTime: '15:00', reason: 'Chest Pain' } },
+      // The patient is the selected one, so a spoken name is not copied onto the appointment.
+      { action: 'add_record', kind: 'appointment', fields: { providerName: 'Sarah', date: tomorrow, startTime: '15:00', reason: 'Chest Pain' } },
     ]);
-    expect(interpret('naya appointment banao', ctx())).toEqual([{ action: 'create_appointment' }]);
-    expect(interpret('اپائنٹمنٹ بناؤ', ctx())).toEqual([{ action: 'create_appointment' }]);
+    expect(interpret('naya appointment banao', ctx())).toEqual([{ action: 'add_record', kind: 'appointment' }]);
+    expect(interpret('اپائنٹمنٹ بناؤ', ctx())).toEqual([{ action: 'add_record', kind: 'appointment' }]);
   });
   it('morning times and weekdays', () => {
     expect(t('subah 9 baje')).toBe('at 9 am');
@@ -114,10 +115,10 @@ describe('translateUrdu — appointments', () => {
 
 describe('translateUrdu — forms and fields', () => {
   it('medication form open / fill', () => {
-    expect(interpret('dawai add karo', ctx())).toEqual([{ action: 'add_medication' }]);
-    expect(interpret('ek nayi dawai add karo', ctx())).toEqual([{ action: 'add_medication' }]);
-    expect(interpret('دوائی ایڈ کرو', ctx())).toEqual([{ action: 'add_medication' }]);
-    expect(interpret('panadol 500 mg din mein teen bar likho', ctx())).toEqual([{ action: 'add_medication', fields: { medicationName: 'Panadol', dosage: '500 mg', frequency: 'Three times daily' } }]);
+    expect(interpret('dawai add karo', ctx())).toEqual([{ action: 'add_record', kind: 'medication' }]);
+    expect(interpret('ek nayi dawai add karo', ctx())).toEqual([{ action: 'add_record', kind: 'medication' }]);
+    expect(interpret('دوائی ایڈ کرو', ctx())).toEqual([{ action: 'add_record', kind: 'medication' }]);
+    expect(interpret('panadol 500 mg din mein teen bar likho', ctx())).toEqual([{ action: 'add_record', kind: 'medication', fields: { medicationName: 'Panadol', dosage: '500 mg', frequency: 'Three times daily' } }]);
     expect(interpret('metformin 500 mg subah shaam 1 mahine ke liye', ctx({ openFormId: 'medication' }))).toEqual([{ action: 'fill_form', formId: 'medication', fields: { medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily', duration: '1 month' } }]);
     expect(t('raat ko sone se pehle')).toBe('at bedtime');
     expect(t('zaroorat par')).toBe('as needed');
@@ -129,9 +130,9 @@ describe('translateUrdu — forms and fields', () => {
     expect(interpret('notes saaf karo', ctx({ openFormId: 'medication' }))).toEqual([{ action: 'clear_field', formId: 'medication', field: 'notes' }]);
     expect(interpret('prn tick karo', ctx({ openFormId: 'medication' }))).toEqual([{ action: 'set_checkbox', formId: 'medication', field: 'isPRN', checked: true }]);
   });
-  it('allergy with details', () => {
-    expect(interpret('penicillin ki allergy add karo severe', ctx())).toEqual([{ action: 'open_form', formId: 'allergy' }, { action: 'fill_form', formId: 'allergy', fields: { allergen: 'Penicillin', severity: 'Severe' } }]);
-    expect(interpret('پینسلن کی الرجی ایڈ کرو شدید', ctx())).toEqual([{ action: 'open_form', formId: 'allergy' }, { action: 'fill_form', formId: 'allergy', fields: { allergen: 'Penicillin', severity: 'Severe' } }]);
+  it('diagnosis with details', () => {
+    expect(interpret('tashkhees add karo hypertension', ctx())).toEqual([{ action: 'add_record', kind: 'diagnosis', fields: { description: 'Hypertension' } }]);
+    expect(interpret('تشخیص ایڈ کرو hypertension', ctx())).toEqual([{ action: 'add_record', kind: 'diagnosis', fields: { description: 'Hypertension' } }]);
   });
   it('slot answers in Urdu are translated values', () => {
     const c = ctx({ openFormId: 'medication', pendingSlot: { formId: 'medication', field: 'frequency', label: 'Frequency' } });
@@ -153,7 +154,7 @@ describe('translateUrdu — confirmation boundary', () => {
     expect(interpret('form save karo', ctx())).toEqual([{ action: 'confirm' }]);
     expect(t('dawai save karo')).toBe('save the medication');
     expect(t('nuskha bhejo')).toBe('save the prescription');
-    expect(interpret('appointment book karo', ctx())).toEqual([{ action: 'create_appointment' }]);
+    expect(interpret('appointment book karo', ctx())).toEqual([{ action: 'add_record', kind: 'appointment' }]);
     expect(interpret('form band karo', ctx())).toEqual([{ action: 'cancel' }]);
   });
 });
@@ -163,7 +164,7 @@ describe('translateUrdu — multi-step and connectors', () => {
     expect(t('patient search par jao phir ahmed khan dhoondo')).toBe('go to patient search and search patient ahmed khan');
     expect(t('page 30 kholo uske baad dawai add karo')).toBe('go to page 30 and add medication');
     expect(t('amoxicillin aur clavulanate 500 mg likho')).toBe('add amoxicillin and clavulanate 500 mg');
-    expect(interpret('page 29 par jao aur dawai add karo', ctx())).toEqual([{ action: 'navigate', target: 29 }, { action: 'add_medication' }]);
+    expect(interpret('page 29 par jao aur dawai add karo', ctx())).toEqual([{ action: 'navigate', target: 29 }, { action: 'add_record', kind: 'medication' }]);
   });
   it('handles Urdu digits and punctuation', () => {
     expect(t('پیج ۳۰ پر جاؤ۔')).toBe('go to page 30');

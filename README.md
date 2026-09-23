@@ -1,8 +1,10 @@
-# CareFlow PMS — Voice-Controlled Healthcare Practice Management System
+# CareFlow PMS — Patient-Centric, Voice-Controlled Healthcare PMS
 
-A production-quality, responsive **Healthcare Practice Management System** frontend that can be operated almost entirely by voice. Speech is transcribed by a local medical STT model, interpreted into **structured, schema-validated commands** by a local **Qwen 3.5 4B** model (or a deterministic rule-based interpreter in mock mode), and executed through a controlled command system that navigates, opens forms and fills fields — but **never saves without explicit confirmation**.
+A responsive **Healthcare Patient Management System** built around one idea: **you always work on one selected patient**. Everything — dashboard, medications, diagnoses, tasks, recalls, appointments and the summary — belongs to that patient, and nothing patient-dependent can be opened, created, changed or deleted until a patient has been selected.
 
-> Speak → STT → Qwen 3.5 4B → Intent / Tool Call → Application Command → Navigation → Form Interaction → Review → Explicit Confirmation → Save
+The whole application can also be driven by voice. Speech is transcribed by a local medical STT model, interpreted into **structured, schema-validated commands** by a local **Qwen** model (with a deterministic interpreter as the fast path and fallback), and executed through a controlled command system that navigates, opens forms, fills fields and stages deletions — but **never saves or deletes without explicit confirmation**.
+
+> Speak → STT → Qwen → structured command → application action → UI update → review → explicit confirmation → save
 
 **Stack:** React 18 · TypeScript · Vite · Ant Design 5 · Redux Toolkit · React Router 6 · lucide-react · Recharts · Zod · Vitest
 
@@ -10,384 +12,300 @@ A production-quality, responsive **Healthcare Practice Management System** front
 
 ## Table of contents
 
-1. [Project overview](#1-project-overview)
-2. [Architecture](#2-architecture)
-3. [Folder structure](#3-folder-structure)
-4. [Installation](#4-installation)
-5. [Development commands](#5-development-commands)
-6. [Build commands](#6-build-commands)
-7. [Voice architecture](#7-voice-architecture)
-8. [STT setup (omi-med-stt)](#8-stt-setup-omi-med-stt)
-9. [Qwen 3.5 4B setup](#9-qwen-35-4b-setup)
-10. [Local model requirements](#10-local-model-requirements)
-11. [Model runtime configuration](#11-model-runtime-configuration)
-12. [Environment variables](#12-environment-variables)
-13. [Mock mode](#13-mock-mode)
-14. [Debug mode](#14-debug-mode)
-15. [Adding new pages](#15-adding-new-pages)
-16. [Adding new voice commands](#16-adding-new-voice-commands)
-17. [Adding new forms](#17-adding-new-forms)
-18. [Production integration notes](#18-production-integration-notes)
-19. [Safety model](#19-safety-model)
-20. [Testing](#20-testing)
+1. [The eight modules](#1-the-eight-modules)
+2. [Patient selection is mandatory](#2-patient-selection-is-mandatory)
+3. [Architecture](#3-architecture)
+4. [Folder structure](#4-folder-structure)
+5. [Installation and commands](#5-installation-and-commands)
+6. [Voice architecture](#6-voice-architecture)
+7. [Voice command reference](#7-voice-command-reference)
+8. [AI Summary](#8-ai-summary)
+9. [STT setup (omi-med-stt)](#9-stt-setup-omi-med-stt)
+10. [Qwen setup](#10-qwen-setup)
+11. [Environment variables](#11-environment-variables)
+12. [Mock mode and debugging](#12-mock-mode-and-debugging)
+13. [Safety model](#13-safety-model)
+14. [Extending the app](#14-extending-the-app)
+15. [Testing](#15-testing)
 
 ---
 
-## 1. Project overview
+## 1. The eight modules
 
-CareFlow is a frontend-first prototype of an enterprise PMS with **85 registered pages** across ten modules:
+The navigation contains exactly eight entries — nothing else exists in the application.
 
-| Module | Pages | Highlights |
-|---|---|---|
-| Dashboards | 1–6 | Executive, Practice, Provider, Operations, Financial, Clinical overviews with charts |
-| Patients | 7–22 | Search, list, registration (25-field form), profile with 12 tabs (summary, demographics, history, allergies, medications, problems, immunizations, documents, notes, insurance, contacts, communication) |
-| Clinical | 23–34 | Consultation dashboard, full consultation encounter screen, clinical notes, SOAP notes, diagnosis, treatment plan, medications, prescriptions, labs, imaging, referrals, documents |
-| Appointments | 35–43 | Dashboard, search, day/week/month calendar, create, details, live queue (kanban), history, types, status management |
-| Providers | 44–50 | List, profile (details/appointments/credentials/panel), availability, weekly schedule, performance, credentials |
-| Roster | 51–56 | Dashboard, create roster, roster calendar, shifts, availability, leave management |
-| Practice | 57–64 | Practice management hub, profile, locations, departments, specialties, services/fee schedule, rooms, resources |
-| Users | 65–72 | Dashboard, list, create, profile, roles, permission matrix, access control, audit logs |
-| Configuration | 73–79 | General, clinical, appointment, medication, notification, security, system preferences (10–18 settings each) |
-| Reports | 80–85 | Clinical, patient, appointment, provider, practice, audit reports |
-| Developer | 90 | Voice Test Console |
+| # | Module | Path | Needs a patient | What it does |
+|---|--------|------|-----------------|--------------|
+| 1 | Dashboard | `/dashboard` | yes | Overview of the selected patient: key numbers, what needs attention, and data-driven charts per record type |
+| 2 | Patient | `/patients` | no | Search, select, add, update and delete patients. **Selecting here sets the context for everything else** |
+| 3 | Inbox | `/inbox` | no | Incoming correspondence in four queues: Lab, Radiology, Referrals, Discharge Summary |
+| 4 | Medication | `/medications` | yes | The patient's medications — search + full CRUD |
+| 5 | Diagnosis | `/diagnoses` | yes | The patient's problem list — search + full CRUD |
+| 6 | Task | `/tasks` | yes | Work owed to the patient — search + full CRUD |
+| 7 | Recall | `/recalls` | yes | Reminders to bring the patient back — search + full CRUD |
+| 8 | Appointment | `/appointments` | yes | The patient's appointments — search + full CRUD |
+| 9 | Summary | `/summary` | yes | Six tabs: **AI Summary**, Medication, Recall, Appointment, Diagnosis, Task |
 
-Every page has a real UI: header + breadcrumb + page number, metric cards, filters, searchable/sortable/hideable-column tables with CSV export, drawers/modals with validated forms, empty/loading/error states and responsive behaviour (4-col → 2-col → 1-col forms, collapsible sidebar, mobile drawer navigation).
+Summary tabs are real routes (`/summary/ai-summary`, `/summary/medication`, …), and so are the Inbox queues (`/inbox/lab`, `/inbox/radiology`, `/inbox/referral`, `/inbox/discharge`), so a voice command like *"show me the diagnosis tab"* or *"open the radiology inbox"* lands on a URL you can bookmark.
 
-No backend is required. A mock service layer (`services/api`) with realistic seeded data (96 patients, 14 providers, 220 appointments, 180 medications, …) sits behind the same `Repository<T>` interface a real API would implement. User edits persist to `localStorage`.
+---
 
-## 2. Architecture
+## 1a. The Inbox
 
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│  UI (React + Ant Design)                                                   │
-│   pages/  ─ uses ─▶ components/ (PageHeader, DataTable, forms, charts)     │
-│   forms register themselves ──▶ FormRegistry (runtime controllers)         │
-└──────────────┬─────────────────────────────────────────────────────────────┘
-               │ Redux Toolkit (auth, patients, appointments, providers,
-               │ medications, ui, voice, navigation)
-┌──────────────┴─────────────────────────────────────────────────────────────┐
-│  Registries (single source of truth)                                       │
-│   PageRegistry   – number · id · path · title · aliases · context needs    │
-│   FieldRegistry  – forms, fields, aliases, options, synonyms, normalizers  │
-│   FormRegistry   – mounted form controllers (open/fill/validate/submit)    │
-│   CommandRegistry– app commands shared by voice + Ctrl+K palette           │
-│   NavigationRegistry – imperative navigate/back/scroll targets             │
-└──────────────┬─────────────────────────────────────────────────────────────┘
-               │ AICommand (Zod-validated discriminated union)
-┌──────────────┴─────────────────────────────────────────────────────────────┐
-│  AI layer (services/ai)                                                    │
-│   voiceController ─▶ STT provider ─▶ LLM provider ─▶ commandParser         │
-│                   ─▶ commandExecutor (deterministic tools) ─▶ registries   │
-│   providers: Mock (rules) · Ollama · OpenAI-compatible · Python bridge     │
-└────────────────────────────────────────────────────────────────────────────┘
-```
+The Inbox is the one module that deliberately spans patients: it is a provider workqueue, not a patient chart. It reads **existing** clinical records and presents them as one queue — nothing about those records changes.
 
-Key principles:
+| Queue | Source record | What counts as "arrived" |
+|-------|---------------|---------------------------|
+| Lab | `LabOrder` | Status `Resulted` — the result is back |
+| Radiology | `ImagingOrder` | Status `Reported` — the report is back |
+| Referrals | `Referral` | All referrals, with their current status |
+| Discharge Summary | `ClinicalNote` (type `Discharge`) and `ClinicalDocument` (category `Discharge Summary`) | Filed against the patient |
 
-- **`feature → service → registry → command → state`.** UI never depends on mock data shapes directly; it goes through services and Redux.
-- **The LLM only translates language into structured intent.** All behaviour (routing, which form, which field, normalization, confirmation) is deterministic TypeScript in `commandExecutor.ts`.
-- **No DOM hacks.** Forms are controlled through `FormRegistry` controllers created by the `useRegisteredForm` hook (wrapping Ant Design `FormInstance`). Pages are resolved through `PageRegistry`.
-- **Confirmation boundary.** `submit_form` and `confirm` are the only tools that persist data, and `confirm` only succeeds when a `pendingConfirmation` exists — which the executor creates *after* filling a form and *before* anything is saved.
+* `services/inbox/inboxModel.ts` normalises the four sources into one `InboxItem` for the list; the reading pane then shows what only that source has — a result value against its reference range, a report body, a referral destination, a document's file details.
+* **Attention** is derived, not invented: an abnormal lab, an urgent or STAT priority, a declined referral, an unsigned draft. It is always shown as a labelled chip, never as colour alone.
+* **Reviewed** is a presentation state for this screen. It lives in `inboxSlice` + `localStorage` and never writes to the lab, imaging, referral, note or document record — there is a test that asserts exactly that.
+* Follow-up actions (task, recall, appointment) open the application's **existing** forms, pre-filled, and save through the usual review step. They are disabled unless the item's patient is the selected patient, so a record can never land on the wrong chart; a one-click "Select patient" unlocks them.
+* Layout: a filter strip across the top (patient identifiers, then message attributes, then the Critical / High / Normal counters), and three columns beneath it — the message queue, the item being read, and the assistant. Below 1200px the assistant moves under the reading pane; below 992px it becomes a single column where opening an item replaces the queue.
+* The assistant column carries a patient summary, a result summary and the suggested follow-up. Each suggestion is editable inline (quick edit), states the reason it was offered, can be opened in the full form, and is disabled unless the item's patient is the selected patient.
 
-## 3. Folder structure
+---
+
+## 2. Patient selection is mandatory
+
+**The flow starts at the patient list.** Signing in lands on the Patient module; picking someone there sets the context and opens their dashboard. Everything else follows from that choice.
+
+* Patient-dependent routes sit behind a route guard (`components/patient/RequirePatient.tsx`). With no selected patient the module is **not rendered at all**, so no record can be created, changed or deleted without a patient context.
+* The guard redirects to the patient list and carries the route the user was heading for: the list explains why (*"Select a patient to open Dashboard"*) and selecting someone takes them straight there.
+* The voice executor enforces the same rule independently (`requirePatient` in `services/ai/commandExecutor.ts`) — a spoken "add a medication" with no patient opens the Patient module instead of a form.
+* The **Selected Patient Banner** (`components/patient/SelectedPatientBanner.tsx`) is rendered above every page while a patient is selected: demographics, contact details, and live counts for medications, diagnoses, tasks, recalls and appointments — each one a link into that module.
+* The selection survives a reload (`localStorage`), and switching patients immediately refreshes the banner, dashboard, every module and the summary, because they all read the same store.
+
+---
+
+## 3. Architecture
 
 ```
 src/
-├── app/            App.tsx, router.tsx (routes generated from PageRegistry), providers.tsx
-├── components/
-│   ├── common/     PageHeader, MetricCard, StatusTag, SectionCard, EmptyState, FormGrid…
-│   ├── layout/     AppLayout, Sidebar (searchable), Header, GlobalSearch, Notifications
-│   ├── forms/      RegisteredForm (drawer/card shells), field primitives, Medication/Prescription,
-│   │               Appointment, Patient (+Address/Insurance sections), Clinical, Staff, Roster forms
-│   ├── tables/     DataTable (search, filters, sort, column visibility, selection, export)
-│   ├── charts/     TrendChart, BarsChart, DonutChart (validated palette, single axis)
-│   ├── voice/      VoiceAssistant (floating panel + FAB, all voice states)
-│   ├── command-palette/  Ctrl+K palette (shares CommandRegistry with voice)
-│   └── debug/      DebugPanel drawer (transcript → command → tool → execution)
-├── pages/          dashboard/ patients/ clinical/ appointments/ providers/ roster/
-│                   practice/ users/ configuration/ reports/ dev/ + LoginPage
-├── services/
-│   ├── api/        repository.ts (Repository<T> + mock impl), index.ts (domain services)
-│   ├── mock/       mockDb.ts (seeded realistic data), random.ts
-│   └── ai/         config, prompt, ruleBasedInterpreter, dateParser, commandParser,
-│                   commandExecutor, voiceController, providers/{llmProviders,sttProviders}
-├── store/          index.ts + slices/ (auth, patient, appointment, provider, medication, ui, voice, navigation)
-├── registry/       pageRegistry, fieldRegistry, formRegistry, commandRegistry, navigationRegistry
-├── hooks/          useRegisteredForm, useAsyncData, usePageTracking, useResponsive, useScrollSection…
-├── types/          domain.ts (healthcare model), ai.ts (AICommand schema, provider interfaces)
-├── theme/          tokens.ts (colors, spacing, radius, shadows, chart palette), antdTheme.ts
-├── styles/         global.css (layout, responsive grids, voice UI)
-├── constants/      status colour map
-└── utils/          format.ts (dates, currency, initials)
-python/             FastAPI bridge for omi-med-stt + Qwen (optional)
+  app/            router + providers (Redux, Ant Design theme, voice controller singleton)
+  components/
+    patient/      PatientPicker · SelectedPatientBanner · RequirePatient (the context layer)
+    inbox/        InboxList · InboxDetail (the provider workqueue)
+    records/      useRecordModule (add/edit/delete for one record kind) + RecordModulePage
+    forms/        RecordFormModal (medication/diagnosis/task/recall/appointment) · PatientFormModal
+    summary/      AiSummaryTab · SummaryRecordTab
+    voice/        VoiceAssistant panel · VoiceConfirmDialog (destructive confirmations)
+    layout/       AppLayout · Sidebar · Header · MobileNav
+    tables/ charts/ common/   DataTable, Recharts wrappers, shared UI primitives
+  registry/
+    pageRegistry      the eight modules + summary tabs: ids, numbers, paths, voice aliases
+    fieldRegistry     one form definition per record type: fields, options, synonyms, required
+    formRegistry      runtime registry of mounted forms (voice fills these, never the DOM)
+    recordRegistry    runtime registry of mounted module pages (voice opens their dialogs)
+    commandRegistry   command palette (Ctrl+K) entries, executed through the same executor
+    navigationRegistry imperative navigation for non-React code
+  services/
+    ai/          voiceController · commandExecutor · ruleBasedInterpreter · summaryExtractor
+                 prompt.ts (Qwen system prompt) · providers/ (STT + LLM adapters) · speech.ts (TTS)
+    api/         repository-backed services, one per record type
+    records/     recordMapping (label/summary/read-back/matching) · patientNarrative
+    inbox/       inboxModel — normalises four record types into one workqueue
+    mock/        deterministic seed data
+  store/         Redux Toolkit: patients, providers + five patient-scoped record slices
+  types/         domain.ts (data model) · ai.ts (command schema, Zod)
 ```
 
-## 4. Installation
+**One flow per record type.** `useRecordModule(kind)` owns add / edit / delete / search for a record kind. The module page and the Summary tab both use it, so a medication added from the Summary behaves exactly like one added from the Medication module — same dialog, same validation, same confirmation, same voice control.
 
-### Quick start with the local models (Windows, NVIDIA GPU)
+---
 
-```powershell
-.\start-all.ps1
-```
+## 4. Folder structure
 
-That single script: checks/starts Ollama and pulls `qwen3.5:4b` if missing, warms it onto the GPU, creates the Python venv, installs `omi-med-stt` + the parakeet.cpp runtime + the omi-med-stt GGUF (first run only, ~1 GB), starts the STT bridge on `:8765`, and runs the Vite dev server on `http://localhost:5173`. Sign in with any credentials and press `Ctrl+Shift+V`.
+Key files worth knowing:
 
-Manual equivalent (three terminals):
+| File | Responsibility |
+|------|----------------|
+| `registry/pageRegistry.ts` | The eight modules. Voice/palette/router all resolve pages here — the model never guesses routes |
+| `registry/fieldRegistry.ts` | Field names, labels, aliases, options, synonyms and required-ness for all six forms |
+| `services/ai/commandExecutor.ts` | Deterministic execution of every command. Patient guard + confirmation boundary live here |
+| `services/ai/ruleBasedInterpreter.ts` | Natural language → commands without a model (fast path, mock mode and fallback) |
+| `services/ai/summaryExtractor.ts` | Dictated paragraph → structured medication/diagnosis/task/recall/appointment items |
+| `services/records/patientNarrative.ts` | The spoken patient summary — built only from records that exist |
+| `hooks/usePatientData.ts` | One hook for everything the selected patient owns, used by banner, dashboard and modules |
+| `services/inbox/inboxModel.ts` | Lab / radiology / referral / discharge records → one `InboxItem`, with attention derived from the data |
 
-```powershell
-ollama serve                                   # terminal 1 — Ollama (qwen3.5:4b, pulled once with: ollama pull qwen3.5:4b)
-npm run bridge                                 # terminal 2 — omi-med-stt bridge  (first time: see §8)
-npm run dev                                    # terminal 3 — frontend
-```
+---
 
-Frontend-only / no models:
+## 5. Installation and commands
 
 ```bash
 npm install
-cp .env.example .env && sed -i 's/VITE_AI_MODE=local/VITE_AI_MODE=mock/' .env
-npm run dev
+npm run dev          # Vite dev server (http://localhost:5173)
+npm run build        # typecheck + production build
+npm run preview      # serve the production build
+npm run typecheck    # tsc -b --noEmit
+npm test             # vitest run
+npm run test:watch
+npm run bridge       # start the local Python AI bridge (STT + Qwen)
 ```
 
-Sign in with any credentials (e.g. `mreed` / anything). The app is fully functional in mock mode.
+Sign in with any of the demo accounts shown on the login screen (for example `mreed` / `demo`).
 
-## 5. Development commands
+---
 
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Vite dev server with HMR |
-| `npm run typecheck` | `tsc -b --noEmit` (strict, `noUnusedLocals`) |
-| `npm test` | Vitest — interpreter, parser, page registry and executor tests |
-| `npm run test:watch` | Watch mode |
-
-Keyboard shortcuts in the app: `Ctrl+K` command palette · `Ctrl+Shift+V` push-to-talk · `Ctrl+Shift+D` debug panel · `Ctrl+B` toggle sidebar · `Esc` close voice panel.
-
-## 6. Build commands
-
-```bash
-npm run build      # tsc -b && vite build  → dist/
-npm run preview    # serve the production build locally
-```
-
-Routes are lazy-loaded per module (`react`, `antd`, `charts` vendor chunks + one chunk per feature area).
-
-## 7. Voice architecture
+## 6. Voice architecture
 
 ```
-Microphone
-   ↓  BrowserSTTProvider (Web Speech API)  |  HttpSTTProvider (MediaRecorder → python bridge → omi-med-stt)
-Transcript  ── normalizeTranscript ──▶ AIContext (current page, patient in context, open form, pending question)
-   ↓
-LLMProvider.generateCommands(transcript, context)
-   • MockLLMProvider          deterministic rule-based interpreter (mock mode / fallback)
-   • OllamaLLMProvider        qwen3.5:4b via /api/chat (JSON mode, think=false, temperature 0)
-   • OpenAICompatibleLLMProvider   llama.cpp / LM Studio / MLX server /v1/chat/completions
-   • HttpBridgeLLMProvider    python/app.py
-   ↓
-commandParser.parseCommands(raw)  — strips <think>/fences, extracts JSON, validates with Zod (AICommandSchema)
-   ↓  AICommand[]   e.g. [{action:"navigate",target:30},{action:"add_medication",fields:{…}}]
-CommandExecutor.execute(command)  — one deterministic tool per action:
-   navigate_to_page · search_patient · open_patient · open_patient_section · open_provider · open_form ·
-   fill_form / fill_field / select_dropdown / set_checkbox / clear_field / focus_form_field ·
-   scroll / scroll_to_section · open_tab · request_confirmation · save_after_confirmation · cancel_command …
-   ↓
-Redux + React Router + FormRegistry controllers → UI
+microphone → STT (browser Web Speech API or local omi-med-stt via the Python bridge)
+          → transcript (Urdu / Roman Urdu translated to English first)
+          → deterministic interpreter (fast path) ── or ── Qwen (structured JSON)
+          → Zod validation (types/ai.ts) — anything else is rejected
+          → CommandExecutor → Redux / router / registered forms
+          → UI updates, and the reply can be spoken back
 ```
 
-**Microphone lifecycle.** The mic switch is owned by the user (`voice.micActive`), not by the recognition engine. Once turned on it stays on across sentences, pauses, transcription results, command execution and AI responses. End-of-utterance from the STT engine only closes a *segment* (one `onFinal`); the session keeps running and segments are queued and processed in order. If the engine stops by itself (Chrome's silence timeout, `no-speech`) the adapter re-arms automatically. The mic turns off **only** on **Mic Off**, **Cancel**, or a fatal device error (permission denied / no microphone). The HTTP adapter (omi-med-stt) uses an energy-based voice-activity detector to delimit segments so no re-arming is ever needed.
+* **Nothing is executed that is not in the schema.** The model returns JSON that must parse into `AICommandSchema`; invalid output falls back to the rule-based interpreter.
+* **The executor never touches the DOM.** It talks to the page registry, the form registry (mounted forms) and the record registry (mounted module pages).
+* **Patient context is resolved at execution time**, so a command always applies to the patient that is selected right now.
+* **The microphone stays on** until the user turns it off; speech captured while a command runs is queued, never lost.
+* Replies to read-back commands are spoken through the browser's speech synthesis; the speaker icon in the voice panel mutes it.
 
-**Voice states** (`voiceSlice.status`): `idle → listening → transcribing → processing → executing → confirmation_required | completed | error | cancelled`, each rendered in the floating assistant with its own indicator.
+---
 
-**Multi-turn.** If a required field is missing the executor sets a `pendingSlot` and asks (“What dosage?”). The next utterance that doesn't match a command answers that slot. A full medication phrase given as an answer is parsed into all its fields.
+## 7. Voice command reference
 
-**Context awareness.** With a patient open, “open medications/allergies/insurance” target that patient's tabs; “add medication” pre-fills the patient and opens the patient-scoped form. On the Prescriptions page (page 30) “add medication” opens the prescription form because it carries the same medication fields.
+**Navigation**
 
-**Confirmation boundary.** After filling, the executor produces a `pendingConfirmation` (summary shown in the panel and a banner inside the form). Only `save it / yes / submit / confirm` → `confirm` triggers `controller.submit()` — the exact handler the Save button calls. `cancel / no / never mind` closes without saving. `submit_form` without a pending confirmation *requests* one instead of saving.
+* "go to dashboard" · "open patient" · "open medications" · "go to page 5" · "go back"
+* "open summary" → "show me the diagnosis tab"
+* "open the inbox" · "open the radiology inbox" · "open the discharge summary inbox"
 
-**Urdu / Roman Urdu.** Commands can be spoken or typed in Urdu script or Roman Urdu (or a mix with English drug names). `services/ai/urdu/translator.ts` deterministically translates the utterance into the same English command language before the interpreter/LLM sees it, so every downstream piece (rules, Qwen prompt, executor, confirmation) is unchanged. Examples:
+**Patient context**
 
-| You say | Pipeline sees |
-|---|---|
-| `page number tees par jao or ek dawai add karo amoxicillin 500 mg twice daily paanch dino ke liay` | `go to page 30 and add medication amoxicillin 500 mg twice daily for 5 days` |
-| `پیج نمبر تیس پر جاؤ اور ایک دوائی ایڈ کرو اموکسیسلن 500 ملی گرام دن میں دو بار پانچ دن کے لیے` | same as above |
-| `ahmed khan ke liye dr sarah ke saath kal shaam 3 baje appointment banao seene mein dard ke liye` | `create appointment for ahmed khan with dr sarah tomorrow at 3 pm for chest pain` |
-| `mareez john smith kholo` · `john smith ki dawaiyan dikhao` | `open patient john smith` · `open john smith's medications` |
-| `dosage ko 250 mg karo` · `notes saaf karo` · `prn tick karo` | `set dosage to 250 mg` · `clear notes` · `check prn` |
-| `haan` / `theek hai` / `save karo` / `جی ہاں` — `nahi` / `rehne do` / `نہیں` | `yes` / `save it` — `cancel` |
+* "search patient Ahmed Khan" · "select patient Ahmed Khan" · "change patient to John Smith" · "clear the selected patient"
+* "show John Smith's medications" (switches patient *and* opens the module)
 
-Covered vocabulary: Urdu numbers 1–100 (both scripts), verb-final word order (`X par jao`, `X kholo`, `X add karo`), postpositions (`ke liye` → for, `ke saath` → with), frequency (`din mein do bar`, `subah shaam`, `raat ko`, `zaroorat par`), duration (`N din/hafte/mahine ke liye`), route (`muun se`, `malham`, `aankh ke qatre`), food instructions, symptoms (`bukhar`, `seene mein dard`, …), relative dates/times (`kal`, `parso`, `agle peer`, `shaam 3 baje`), demographics (`mard`, `32 saal`) and confirm/cancel phrases. Spelling variants are normalised (`paanch/panch`, `liay/liye`, `karo/kro/kar do`) and common drug misspellings are fixed. English input is never rewritten — translation only switches on when an Urdu marker word or Urdu-script character is present.
+**Creating records** (each opens the normal form, pre-filled, and waits for confirmation)
 
-For voice input in Urdu set `VITE_STT_LANGUAGE=ur-PK` (or pick **اردو** under *STT language* in the Voice Console): Chrome's recogniser then returns Urdu script, which the translator handles. The default `omi-med-stt` bridge model is English-only; for Urdu speech through the bridge swap in a multilingual model (e.g. Whisper) in `python/services/stt.py`. The Debug panel shows the original transcript and the provider line notes `Urdu → English` when a translation happened. Tests: `services/ai/__tests__/urdu.test.ts`; extend the lexicon in `services/ai/urdu/lexicon.ts` and phrase/structure rules in `translator.ts`.
+* "add amoxicillin 500 mg orally twice daily for seven days"
+* "add panadol and metformin twice daily for 10 days" (one tab per medication, saved together)
+* "add diagnosis hypertension"
+* "add task blood pressure monitoring due next Friday"
+* "set recall for blood pressure review in 3 months"
+* "book an appointment next Tuesday at 3 pm for chest pain"
+* "add patient Bilal Hussain, male, 32 years old"
 
-## 8. STT setup (omi-med-stt)
+**Updating**
 
-Speech-to-text uses **Omi Med STT v1** (0.6B, built from NVIDIA Parakeet-TDT 0.6B v2) through its official runtime package [`omi-med-stt`](https://pypi.org/project/omi-med-stt/). It is **not** a Whisper model — it needs the patched `parakeet.cpp` runtime (CPU) or `parakeet-mlx` (Apple Silicon), which the package installs.
+* "update medication metformin" (opens it for editing)
+* "change the metformin dosage to 1000 mg"
+* "mark the blood pressure task as completed" · "stop the metformin"
 
-| Machine | Engine (`CAREFLOW_STT_ENGINE`) | Model artifact |
-|---|---|---|
-| Windows / Linux CPU | `gguf` | `omi-health/omi-med-stt-v1-gguf` (`omi-med-stt-v1-q8_0.gguf`, 929 MB) |
-| Apple Silicon | `mlx-q8` (default on macOS) | `omi-health/omi-med-stt-v1-mlx-q8` |
-| Apple Silicon, full precision | `mlx` | `omi-health/omi-med-stt-v1-mlx` |
+**Deleting** — always staged, never silent
 
-`auto` (default) picks `mlx-q8` on Apple Silicon and `gguf` everywhere else.
+* "delete the metformin" → the record is shown, the assistant asks, and only "yes, delete it" removes it
+
+**Reading and summarising**
+
+* "read the medication list" · "list the tasks" · "read patient information"
+* "give me a summary of this patient"
+
+**Forms while open**
+
+* "set dosage to 250 mg" · "check as needed" · "clear the notes" · "add another" · "save it" · "cancel"
+
+Urdu and Roman Urdu are translated to the command language first, so *"panadol aur metformin din mein do bar das din ke liye add karo"* works the same way.
+
+---
+
+## 8. AI Summary
+
+`/summary/ai-summary` is the voice-driven entry point:
+
+1. **Dictate** one paragraph covering several things at once. The existing STT model transcribes it; the transcript is shown verbatim and stays editable, because the speech model can mishear.
+2. **Extract with AI** sends the paragraph to the local Qwen model with an extraction prompt (`services/ai/summaryExtractor.ts`). If no model is reachable, the same job is done by the deterministic parsers, so the feature never turns into a dead button. The badge shows which one produced the result.
+3. **Review**: extracted items are grouped into Medication, Diagnosis, Task, Recall and Appointment, each showing the fields the model understood and the words they came from. Anything the model was unsure about is listed as a question instead of being guessed.
+4. **Add**: each item opens its normal form, pre-filled, and is stored only when you save it. Nothing is written to the patient record automatically.
+
+Below that, **Patient overview** is a narrative built purely from the records that exist for the patient — no model output, so it cannot invent a medication or a diagnosis.
+
+---
+
+## 9. STT setup (omi-med-stt)
 
 ```bash
 cd python
-python -m venv .venv && .venv\Scripts\activate          # Windows   (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements.txt                          # includes omi-med-stt
-# Windows / Linux CPU: install parakeet.cpp + download the GGUF (one time, ~1 GB)
+python -m venv .venv && .venv/Scripts/activate      # Windows
+pip install -r requirements.txt
 omi-med-stt install-cpp --cpp-backend cpu
-# Apple Silicon instead:  pip install -U "omi-med-stt[mlx]"
-uvicorn app:app --host 127.0.0.1 --port 8765             # or: .\start.ps1
+uvicorn app:app --host 127.0.0.1 --port 8765
 ```
 
-Frontend `.env`: `VITE_STT_PROVIDER=http`, `VITE_STT_API_URL=http://127.0.0.1:8765/api/stt`.
+Then set `VITE_STT_PROVIDER=http` and `VITE_STT_API_URL=http://127.0.0.1:8765/api/stt`.
+Without the bridge, set `VITE_STT_PROVIDER=browser` to use the Web Speech API (Chrome/Edge).
 
-**GPU for STT?** `CAREFLOW_STT_BACKEND=cuda` (or `vulkan`) makes the bridge build parakeet.cpp with GPU support on first start — this needs CMake, a C++ compiler (MSVC Build Tools / GCC) and the CUDA Toolkit or Vulkan SDK on the machine. On a 4 GB card that is already holding Qwen it is counter-productive (VRAM contention pushes Qwen back to the CPU); the CPU engine already transcribes a 5-second utterance in ~0.8 s, so the default stays `cpu`.
+---
 
-The bridge loads the model **once** and keeps it resident (`CAREFLOW_STT_PRELOAD=1`), so a 5-second utterance transcribes in ~0.8 s on CPU. Browser audio (`webm/opus` from `MediaRecorder`) is decoded by the ffmpeg that ships with the package and resampled to 16 kHz mono. Verify with:
+## 10. Qwen setup
 
 ```bash
-curl http://127.0.0.1:8765/api/health
-# {"stt":{"engine":"gguf (omi-med-stt-v1-gguf / parakeet.cpp)","model":"omi-health/omi-med-stt-v1-gguf","ready":true,"resident":true}, ...}
-curl -F "audio=@speech.wav" http://127.0.0.1:8765/api/stt
-# {"text":"Add amoxicillin 500 mg twice daily for 7 days.","model":"omi-health/omi-med-stt-v1-gguf", ...}
-```
-
-## 9. Qwen 3.5 4B setup
-
-Any of these work — set `VITE_AI_MODE=local` and the matching provider:
-
-**Ollama (recommended on Windows/Linux)**
-```bash
-ollama pull qwen3.5:4b            # quantized build that fits typical local hardware
+ollama pull qwen3.5:4b
 ollama serve
 ```
-`.env`: `VITE_AI_MODE=local`, `VITE_LLM_PROVIDER=ollama`, `VITE_LLM_API_URL=http://127.0.0.1:11434`, `VITE_LLM_MODEL=qwen3.5:4b`. The app warms the model at start-up and keeps it resident (`keep_alive: 30m`); requests use JSON mode with a `{"commands":[...]}` envelope so multi-step utterances survive Ollama's single-object constraint.
 
-**GPU offload.** The app requests `num_gpu: 99` (all layers) and `num_ctx: 4096`; with those settings `qwen3.5:4b` (Q4_K_M, 3.1 GB) fits entirely in a 4 GB card (measured: GTX 1650 → 100 % GPU, ~4 s per command). Override with `VITE_LLM_NUM_GPU` / `VITE_LLM_NUM_CTX`; set `VITE_LLM_NUM_GPU=0` to force CPU. Check with `ollama ps` (PROCESSOR column should read `100% GPU`).
+`VITE_LLM_PROVIDER=ollama` with `VITE_LLM_API_URL=http://127.0.0.1:11434`. The provider warms the model at startup and keeps it resident; the system prompt is byte-for-byte static so the recurrent-state cache can be reused between commands (see the comment block in `services/ai/prompt.ts`).
 
-**Why ~4 s and not 0.3 s?** Qwen 3.5 is a hybrid (Gated-DeltaNet recurrent) architecture; Ollama cannot reuse a partial KV-cache prefix for it, so the ~1.3k-token system prompt is re-processed on every command. Pure-transformer models reuse the prefix and answer in ~0.3 s — but they were less accurate in our benchmark (22 website-wide commands): `qwen3.5:4b` 22/22, `qwen3:1.7b` 17/22, `qwen3:0.6b` ~14/22. If you prefer speed over accuracy set `VITE_LLM_MODEL=qwen3:1.7b`; the deterministic guards and rule-based fallback soften — but do not eliminate — its mistakes.
+Alternatives: `openai-compatible` (llama.cpp server, LM Studio, MLX, vLLM) or `http` (the Python bridge).
 
-**llama.cpp / LM Studio / MLX server (OpenAI-compatible)**
-```bash
-llama-server -m Qwen3.5-4B-Q4_K_M.gguf --port 8080 --jinja
-```
-`.env`: `VITE_LLM_PROVIDER=openai-compatible`, `VITE_LLM_API_URL=http://127.0.0.1:8080`, `VITE_LLM_MODEL=<served model name>`
+---
 
-**Python bridge** — `VITE_LLM_PROVIDER=http`, `VITE_LLM_API_URL=http://127.0.0.1:8765/api/llm` (bridge forwards to Ollama or llama.cpp; see `python/.env.example`).
+## 11. Environment variables
 
-The system prompt (`services/ai/prompt.ts`) lists every page id/number, every form with its fields and required markers, the current context, and few-shot examples. It instructs the model to output **only JSON**, never invent medical values, and never emit `submit_form` unless the user explicitly says save/submit.
+| Variable | Purpose |
+|----------|---------|
+| `VITE_AI_MODE` | `mock` (deterministic interpreter only) or `local` (use the configured models) |
+| `VITE_STT_PROVIDER` / `VITE_STT_API_URL` / `VITE_STT_LANGUAGE` | Speech-to-text source |
+| `VITE_LLM_PROVIDER` / `VITE_LLM_API_URL` / `VITE_LLM_MODEL` | Language model runtime |
+| `VITE_LLM_TIMEOUT_MS` / `VITE_LLM_NUM_GPU` / `VITE_LLM_NUM_CTX` | Model performance knobs |
+| `VITE_AI_FALLBACK_TO_RULES` | Fall back to the interpreter when the model is unreachable or invalid |
+| `VITE_AI_RULES_FIRST` | Run the interpreter first and only call the model when it cannot understand |
+| `VITE_ENABLE_VOICE` / `VITE_ENABLE_DEBUG_PANEL` | Feature flags |
 
-## 10. Local model requirements
+See `.env.example`.
 
-| Model | Size | Runtime | Notes |
-|---|---|---|---|
-| `omi-health/omi-med-stt-v1-gguf` | 0.6B (q8_0, 929 MB) | `omi-med-stt` → patched `parakeet.cpp` | Windows / Linux CPU; ~0.8 s per 5 s clip once resident |
-| `omi-health/omi-med-stt-v1-mlx-q8` | 0.6B (8-bit) | `omi-med-stt[mlx]` → `parakeet-mlx` | Apple Silicon default |
-| `omi-health/omi-med-stt-v1-mlx` | 0.6B (fp16) | `omi-med-stt[mlx]` | Apple Silicon, full precision |
-| `qwen3.5:4b` (Ollama, Q4_K_M ≈ 3.4 GB) | 4B | Ollama / llama.cpp / MLX | ~5–6 GB RAM; JSON mode, `think=false`, `num_ctx 8192`, `keep_alive 30m` |
+---
 
-Measured on this development machine (CPU only): Qwen first call ~15–30 s (model load + prompt cache), then ~5–12 s per command; a GPU brings this to about a second. Nothing leaves the machine in local mode.
+## 12. Mock mode and debugging
 
-## 11. Model runtime configuration
+* **Mock mode** (`VITE_AI_MODE=mock`) runs the entire voice workflow with no models installed — useful for development and for the test suite.
+* **Debug panel** (Ctrl+Shift+D) shows the raw transcript, the provider that answered, the raw model output, the parsed commands, every execution step and every field the assistant filled.
+* **Command palette** (Ctrl+K) runs the same commands as voice, so any voice action can be reproduced by keyboard.
 
-Runtime is chosen by `.env` and can be **overridden at runtime** in the Voice Test Console (page 90) — mode, LLM provider/endpoint/model, STT provider/endpoint — persisted in `localStorage` (`careflow.ai.override`). `VoiceController.reconfigure()` swaps adapters live.
+---
 
-If the local model is unreachable or returns invalid JSON and `VITE_AI_FALLBACK_TO_RULES=true`, the deterministic interpreter handles the utterance and the debug trace records the fallback reason.
+## 13. Safety model
 
-## 12. Environment variables
+* **Patient context is compulsory.** Two independent guards (route + executor) mean no record can be attached to the wrong patient or to no patient.
+* **Saving needs explicit confirmation.** The assistant fills forms and asks; only "save it" / the Save button submits.
+* **Deleting is staged.** A spoken delete resolves the record, shows exactly what will go, and waits for "yes, delete it". An ambiguous phrase is never guessed — the assistant lists the candidates and asks.
+* **The AI does not invent patient data.** Extraction only maps words that were actually said onto known fields; unknown fields are ignored and reported. The patient summary is generated from stored records only.
+* **Every mutation goes through the same form** the user sees, with the same validation.
 
-```env
-VITE_AI_MODE=local                # mock | local   (this repo's .env is set to local: Qwen + omi-med-stt)
-VITE_STT_PROVIDER=http            # mock | browser | http (http = omi-med-stt via python bridge)
-VITE_STT_API_URL=http://127.0.0.1:8765/api/stt
-VITE_LLM_PROVIDER=ollama          # mock | ollama | openai-compatible | http
-VITE_LLM_API_URL=http://127.0.0.1:11434
-VITE_LLM_MODEL=qwen3.5:4b
-VITE_LLM_TIMEOUT_MS=60000
-VITE_LLM_NUM_GPU=99               # layers on GPU (99 = all, 0 = CPU)
-VITE_LLM_NUM_CTX=4096             # context window (keep small to fit VRAM)
-VITE_AI_FALLBACK_TO_RULES=true
-VITE_ENABLE_VOICE=true
-VITE_ENABLE_DEBUG_PANEL=true
-VITE_APP_NAME=CareFlow PMS
-```
-No `localhost` URLs are hard-coded in application code; everything is read in `services/ai/config.ts`.
+---
 
-## 13. Mock mode
+## 14. Extending the app
 
-`VITE_AI_MODE=mock` (set it in `.env`; this repo ships with `local`). `MockLLMProvider` runs the rule-based interpreter (`services/ai/ruleBasedInterpreter.ts`) which understands navigation verbs, page numbers, patient lookup, medication/appointment/patient phrases, field-level edits, confirmations and multi-clause commands (“go to page 30 and add medication”). Everything downstream is the production path.
+* **A new field on a record:** add it to `registry/fieldRegistry.ts` (with aliases + synonyms so voice can fill it), render it in `components/forms/RecordForms.tsx`, and map it in `formValuesToRecord`.
+* **A new record type:** add the domain type, a service in `services/api`, a slice via `createRecordSlice`, a form definition, a page in the page registry, a route, and a `RecordModulePage`. The voice layer picks it up through `AIRecordKind`.
+* **A new voice phrasing:** add a pattern to `services/ai/ruleBasedInterpreter.ts` and an example to `services/ai/prompt.ts`; cover it in `src/services/ai/__tests__/interpreter.test.ts`.
 
-**Voice Test Console** (`/dev/voice-console`, page 90, or `Ctrl+K → Voice Test Console`): type a transcript, run it through the full pipeline or preview the interpretation only, run canned scenarios (multi-step navigation, slot filling, appointment booking, registration, error handling), inspect conversation history, and switch runtimes. The floating assistant also has a **keyboard mode** for typing commands when no microphone is available.
+---
 
-## 14. Debug mode
-
-`Ctrl+Shift+D` (or the bug icon) opens the **Debug Panel**: raw transcript, normalized transcript, provider used (incl. fallback reason), raw model output, validated commands, execution steps with tool names/status/timing, fields modified, confirmation state, context sent to the model, plus registry views (current page, mounted forms, page list). History keeps the last 20 traces.
-
-### How to confirm the local models are really being used
-
-1. Voice panel header shows `ollama:qwen3.5:4b` instead of `Mock mode`.
-2. Debug Panel (`Ctrl+Shift+D`) → header chips `STT: http-stt (…/api/stt)` and `LLM: ollama:qwen3.5:4b`; **Provider** row per command; **Raw model output** is Qwen's actual JSON. A line `→ fallback: rules (…)` means the model was *not* reachable.
-3. System Preferences (page 79) → "Active AI runtime" card.
-4. Browser DevTools → Network: `POST 127.0.0.1:11434/api/chat` (body `"model":"qwen3.5:4b"`) and `POST 127.0.0.1:8765/api/stt` (webm upload → `{"model":"omi-health/omi-med-stt-v1-gguf"}`).
-5. `ollama ps` lists `qwen3.5:4b` loaded; `curl http://127.0.0.1:8765/api/health` reports the STT engine/model.
-
-## 15. Adding new pages
-
-1. Register it in `src/registry/pageRegistry.ts`:
-   ```ts
-   p(86, 'billing-dashboard', '/billing', 'Billing Dashboard', 'reports', ['billing', 'invoices']),
-   ```
-   Add `requiresContext: 'patientId'` + `parentId/tab` for patient-scoped tabs.
-2. Create the page component and map it in `src/app/router.tsx` (`components['billing-dashboard'] = lazy(...)`). Routes, sidebar entries, breadcrumbs, palette commands and voice aliases are all derived from the registry.
-3. Use `<PageHeader title=… />` so the page number chip and breadcrumb render.
-
-## 16. Adding new voice commands
-
-- **A new page or alias:** add aliases in `pageRegistry.ts` — “go to X” resolves automatically.
-- **A new tool:** add a Zod schema + union member in `types/ai.ts`, a `case` in `CommandExecutor.execute`, a rule in `ruleBasedInterpreter.ts` (mock/fallback), and a line in `prompt.ts` so Qwen knows the shape. Add a test in `services/ai/__tests__`.
-- **A palette action:** add an `AppCommand` in `commandRegistry.ts`; it becomes available in `Ctrl+K` and can be triggered by voice through the same executor.
-- **An Urdu / Roman Urdu phrase:** add spellings to `services/ai/urdu/lexicon.ts` (Urdu-script and Roman variants map to one canonical token) and, if the phrase needs re-ordering, a rule in `translator.ts` (`SUB_PHRASES` for fragments like frequencies, `structure()` for whole commands). The English interpreter does the rest.
-
-## 17. Adding new forms
-
-1. Describe the form in `fieldRegistry.ts`: id, aliases, hosting `pages`, `fields` (name, label, type, aliases, options, synonyms, `required`, optional `normalize`), `submitLabel`, `sensitiveDescription`.
-2. Build the UI with `RegisteredFormDrawer` / `RegisteredFormCard` and the field primitives in `components/forms/fields.tsx` (they read labels/options/required from the registry). `useRegisteredForm` registers a `FormController` so voice can open, fill, validate, summarize and submit it.
-3. Nothing else is needed: “open <alias>”, “set <field> to <value>”, slot-filling and the confirmation flow work generically.
-
-## 18. Production integration notes
-
-- **Backend:** implement `Repository<T>` (`services/api/repository.ts`) over HTTP and swap `createMockRepository` calls in `services/api/index.ts`. Thunks in the slices and every page keep working.
-- **Auth:** `authService` returns an `AuthSession`; replace with your IdP flow. `RequireAuth` in the router guards all app routes.
-- **Voice in production:** keep `VITE_AI_FALLBACK_TO_RULES=true` for resilience; consider running the python bridge as a local service so audio never leaves the workstation; audit `submit`/`confirm` executions via the existing trace (`voice.traceHistory`).
-- **Persistence:** mock repositories write to `localStorage` keys `careflow.*`; clear them to reset demo data.
-
-## 19. Safety model
-
-- The model cannot execute code or touch the DOM — only validated `AICommand`s exist, and each maps to a fixed tool.
-- Unknown fields are ignored and reported (“ignored unknown field: colour”), never guessed.
-- Missing required clinical data triggers a question, never a default. The assistant enters exactly what the user said (normalized units/synonyms only).
-- Saving requires an explicit confirmation utterance or clicking Save; validation errors block saving.
-- Patient-scoped pages refuse to open without a patient in context and redirect to Patient Search with an explanation.
-
-## 20. Testing
-
-### End-to-end voice coverage (real models, GPU)
-
-Verified in Chrome against `qwen3.5:4b` (Ollama, 100 % GPU) — 25/25 commands:
-
-| Area | Commands |
-|---|---|
-| Patients | "Add patient Bilal Hussain, male, 32 years old, phone 512 555 0199" → "set email to bilal@example.com" → "Save it" (registered, DOB derived from age) · "Open John Smith" · "Go to medications" |
-| Medications / Rx | "Add Lisinopril 10 milligrams once daily for 30 days" → "Save it" · "Go to page 30 and add medication" → "Amoxicillin 500 milligrams orally twice daily for seven days" → "Cancel" |
-| Appointments | "Create an appointment for Ahmed Khan with Dr Sarah Ahmed tomorrow at 3 PM for blood pressure review" → "Yes, save it" · "Open the appointment calendar" · "Go to appointment queue" |
-| Configuration | "Go to configuration" · "Open medication configuration" · "Open security configuration" |
-| Users / Roster / Providers / Reports | "Open user management and create user" · "Go to roster and add shift" · "Open provider list" · "Go to reports" · "Go to page 72" · "Go back" |
-
-Every save went through the confirmation boundary; every cancel closed the form without saving.
-
+## 15. Testing
 
 ```bash
 npm test
 ```
-50 tests cover: page resolution (aliases, numbers, paths), navigation phrasing variations, multi-step splitting, patient search/open, medication/appointment/patient phrase parsing, date parsing, synonym normalization, required-field detection, confirmation/cancel boundary, slot answers, field-level edits, JSON extraction/validation, and the executor (navigate, context requirements, open patient, fill → ask → confirm, cancel without save, validation blocking save, unknown-field handling, batch stop at confirmation boundary).
+
+171 tests cover the deterministic interpreter (including Urdu/Roman Urdu), the command schema and parser, the medication-list guards, the microphone lifecycle, and the executor: the patient guard, record CRUD, the confirmation boundary for saving and deleting, ambiguity handling, and read-back.
+
+Three suites boot the real application in jsdom rather than mocking it: `appSmoke` (sign-in, the patient gate, the banner, the modules), `voiceIntegration` (a spoken command opens the real dialog and only a spoken confirmation writes), and `inbox` (the four queues, the reading pane, and proof that marking an item reviewed leaves the underlying record untouched).

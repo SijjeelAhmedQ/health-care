@@ -5,10 +5,27 @@
  */
 export type FormValue = string | number | boolean | null | undefined;
 
+/**
+ * Optional multi-entry support: a form that holds several records at once, one per tab
+ * (e.g. "add panadol and metformin" → two medications reviewed and saved together).
+ * The regular controller methods always address the active entry.
+ */
+export interface FormEntries {
+  count(): number;
+  active(): number;
+  setActive(index: number): void;
+  /** Add a new entry pre-filled with `values`, make it active and return its index. */
+  add(values: Record<string, FormValue>): number;
+  /** Values of every entry, the active one read live from the form. */
+  getAll(): Record<string, FormValue>[];
+}
+
 export interface FormController {
   formId: string;
   /** Optional instance key when several forms of the same type are mounted. */
   instanceKey?: string;
+  /** Present only on forms that can hold several records (see FormEntries). */
+  entries?: FormEntries;
   isOpen(): boolean;
   open(): void;
   close(): void;
@@ -61,7 +78,7 @@ class FormRegistryImpl {
     return this.order.map((k) => this.controllers.get(k)!).filter(Boolean);
   }
 
-  /** The form the user is currently interacting with (open drawer/modal or a page-level form). */
+  /** The form the user is currently interacting with (an open dialog or a page-level form). */
   active(): FormController | undefined {
     const open = this.mounted().filter((c) => c.isOpen());
     return open[open.length - 1];

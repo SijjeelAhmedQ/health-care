@@ -59,6 +59,33 @@ export function parseCommands(raw: string): AICommand[] {
   return result.data;
 }
 
+/**
+ * A model asked for "panadol, paracetamol and gabapentin" may answer with one add_medication per drug.
+ * Executed one by one, the first would stop the batch at its first question; merged, they become one
+ * medication form with a tab per drug. Consecutive add_medication commands are folded into the first.
+ */
+export function coalesceMedicationCommands(commands: AICommand[]): AICommand[] {
+  const medicationList = (cmd: AICommand) => {
+    if (cmd.action === 'add_record' && cmd.kind === 'medication') return cmd.records ?? (cmd.fields ? [cmd.fields] : []);
+    if (cmd.action === 'add_medication') return cmd.medications ?? (cmd.fields ? [cmd.fields] : []);
+    return null;
+  };
+
+  const out: AICommand[] = [];
+  for (const cmd of commands) {
+    const prev = out[out.length - 1];
+    const current = medicationList(cmd);
+    const previous = prev ? medicationList(prev) : null;
+    if (current && previous) {
+      const list = [...previous, ...current];
+      out[out.length - 1] = { action: 'add_record', kind: 'medication', fields: list[0], records: list };
+      continue;
+    }
+    out.push(cmd);
+  }
+  return out;
+}
+
 /** Validate an already-parsed object (used by tests and the dev console). */
 export function validateCommands(value: unknown): AICommand[] {
   const result = AICommandListSchema.safeParse(value);

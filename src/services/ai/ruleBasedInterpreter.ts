@@ -2,23 +2,28 @@
  * Deterministic natural-language interpreter.
  *
  * Used (a) as the "mock" LLM so the whole voice workflow can be developed and
- * tested without any model running, and (b) as a safety fallback when the
- * local Qwen model is unavailable or returns invalid output.
+ * tested without any model running, (b) as the fast path in front of Qwen, and
+ * (c) as a safety fallback when the model is unavailable or returns invalid
+ * output.
  *
  * It only produces structured AICommands — it never touches the UI.
  */
-import type { AICommand, AIContext, FieldValues } from '@/types/ai';
+import dayjs from 'dayjs';
+import type { AICommand, AIContext, AIRecordKind, FieldValues } from '@/types/ai';
 import { FieldRegistry, FREQUENCY_OPTIONS, normalizeDosage, normalizeDuration } from '@/registry/fieldRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
 import { ageToDob, parseDateTime } from './dateParser';
+import { isKnownDrug, protectCombinations, splitMedicationNames } from './drugLexicon';
 import { translateUrdu } from './urdu/translator';
 
-const NAV_VERBS = '(?:go to|goto|open|navigate to|take me to|show me|show|i want|i want to see|bring up|switch to|display|view|load|jump to|head to|let\'s go to|lets go to|move to)';
-const OTHER_FORM_WORDS = /^(?:patient|appointment|allergy|diagnosis|problem|referral|user|provider|shift|leave|lab|imaging|prescription|note|roster|room|location)\b/;
-const ACTION_VERB_START = /^(go|goto|open|add|create|fill|search|find|navigate|show|start|save|submit|book|schedule|register|select|set|check|uncheck|scroll|close|cancel|order|prescribe|look|take|switch|new|refer)\b/;
+const NAV_VERBS =
+  '(?:go to|goto|open|navigate to|take me to|show me|show|i want|i want to see|bring up|switch to|display|view|load|jump to|head to|let\'s go to|lets go to|move to)';
+const ACTION_VERB_START =
+  /^(go|goto|open|add|create|fill|search|find|navigate|show|start|save|submit|book|schedule|register|select|set|check|uncheck|scroll|close|cancel|prescribe|look|take|switch|new|record|log|enter|recall|delete|remove|update|change|edit|mark|complete|stop|read|tell|list|what|summarize|summarise|give)\b/;
 
 /** True when an utterance starts with an application verb (i.e. is a command, not a plain value). */
-export const looksLikeCommand = (text: string): boolean => ACTION_VERB_START.test(normalizeTranscript(text)) || CONFIRM_RE.test(normalizeTranscript(text)) || CANCEL_RE.test(normalizeTranscript(text));
+export const looksLikeCommand = (text: string): boolean =>
+  ACTION_VERB_START.test(normalizeTranscript(text)) || CONFIRM_RE.test(normalizeTranscript(text)) || CANCEL_RE.test(normalizeTranscript(text));
 
 /** Urdu / Roman Urdu is translated to the English command language first; English passes through. */
 export const normalizeTranscript = (raw: string): string =>
@@ -34,7 +39,7 @@ export const normalizeTranscript = (raw: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 
-/** Split "go to page 30 and add medication" into ordered clauses. */
+/** Split "open medications and add panadol" into ordered clauses. */
 export function splitClauses(text: string): string[] {
   const parts = text.split(/\s*(?:,\s*then|\band then\b|\bthen\b|;)\s*/);
   const out: string[] = [];
@@ -52,6 +57,44 @@ export function splitClauses(text: string): string[] {
     out.push(buffer);
   }
   return out.map((s) => s.trim()).filter(Boolean);
+}
+
+// ----------------------------------------------------------------------------
+// Record kinds
+// ----------------------------------------------------------------------------
+
+/** Spoken words -> record kind. Longest first so "medication review" never becomes "review". */
+const KIND_SYNONYMS: Array<[RegExp, AIRecordKind]> = [
+  [/\b(?:medications?|meds?|drugs?|medicines?|prescriptions?)\b/, 'medication'],
+  [/\b(?:diagnos(?:is|es|ises)|problems?|conditions?)\b/, 'diagnosis'],
+  [/\b(?:tasks?|to-?dos?)\b/, 'task'],
+  [/\b(?:recalls?|reminders?)\b/, 'recall'],
+  [/\b(?:appointments?|visits?|bookings?)\b/, 'appointment'],
+  [/\b(?:patients?)\b/, 'patient'],
+];
+
+export function kindFromText(text: string): AIRecordKind | undefined {
+  for (const [re, kind] of KIND_SYNONYMS) if (re.test(text)) return kind;
+  return undefined;
+}
+
+/** The record kind the current page is about — the default for "delete this one". */
+export function kindFromPage(pageId: string | null): AIRecordKind | undefined {
+  if (!pageId) return undefined;
+  const map: Record<string, AIRecordKind> = {
+    medications: 'medication',
+    'summary-medication': 'medication',
+    diagnoses: 'diagnosis',
+    'summary-diagnosis': 'diagnosis',
+    tasks: 'task',
+    'summary-task': 'task',
+    recalls: 'recall',
+    'summary-recall': 'recall',
+    appointments: 'appointment',
+    'summary-appointment': 'appointment',
+    patients: 'patient',
+  };
+  return map[pageId];
 }
 
 // ----------------------------------------------------------------------------
@@ -110,15 +153,176 @@ export function parseMedicationPhrase(phrase: string): FieldValues {
     text = text.replace(instr[0], ' | ');
   }
   // Whatever precedes the first separator is the medication name.
-  const namePart = text.split('|')[0].replace(/\b(medication|medicine|drug|the|a|an|of|patient|add|prescribe|new|with|fill|form)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const namePart = text
+    .split('|')[0]
+    .replace(/\b(medication|medicine|drug|the|a|an|of|patient|add|prescribe|new|with|fill|form)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (namePart) fields.medicationName = capitalize(namePart);
   return fields;
 }
 
-const capitalize = (s: string) => s.replace(/(^|\s)([a-z])/g, (_, sp: string, c: string) => sp + c.toUpperCase()).trim();
+/** Fields that, when spoken once at the end of a list, apply to every medication in it. */
+const SHARED_MED_FIELDS = ['frequency', 'duration', 'route', 'indication', 'instructions', 'isPRN'] as const;
+
+/**
+ * Parse a phrase that may name several medications into one field set per medication.
+ *
+ *   "panadol paracetamol metformin twice daily for 10 days"
+ *     -> Panadol / Paracetamol / Metformin, each Twice daily for 10 days
+ *   "panadol 500 mg twice daily and metformin 850 mg once daily"
+ *     -> two fully independent medications
+ *
+ * Dosage is never shared between medications; the schedule fields are shared only when
+ * exactly one medication in the list mentions them.
+ */
+export function parseMedicationList(phrase: string): FieldValues[] {
+  let text = protectCombinations(phrase.toLowerCase().trim());
+  if (!text) return [];
+  // A known drug name directly after a dose starts a new medication: "panadol 500 mg metformin 850 mg".
+  text = text.replace(/(\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml|units?|milligrams?|micrograms?))\s+([a-z][a-z/-]*)/g, (m, dose: string, next: string) =>
+    isKnownDrug(next) ? `${dose} and ${next}` : m,
+  );
+  const parts = text.split(/\s*(?:,|;)\s*|\s+(?:and|aur)\s+/).map((p) => p.trim()).filter(Boolean);
+  const chunks: string[] = [];
+  for (const part of parts) {
+    const prev = chunks[chunks.length - 1];
+    if (prev && !parseMedicationPhrase(part).medicationName) chunks[chunks.length - 1] = `${prev} ${part}`;
+    else chunks.push(part);
+  }
+  const meds: FieldValues[] = [];
+  for (const chunk of chunks) {
+    const parsed = parseMedicationPhrase(chunk);
+    const names = parsed.medicationName ? splitMedicationNames(String(parsed.medicationName)) : [];
+    if (names.length <= 1) {
+      meds.push(parsed);
+      continue;
+    }
+    const { medicationName: _name, ...rest } = parsed;
+    names.forEach((n) => meds.push({ medicationName: capitalize(n), ...rest }));
+  }
+  if (meds.length <= 1) return meds;
+  for (const key of SHARED_MED_FIELDS) {
+    const holders = meds.filter((m) => m[key] !== undefined);
+    if (holders.length === 1) for (const m of meds) if (m[key] === undefined) m[key] = holders[0][key];
+  }
+  return meds;
+}
+
+const capitalize = (s: string) => s.replace(/(^|[\s/])([a-z])/g, (_, sp: string, c: string) => sp + c.toUpperCase()).trim();
 
 // ----------------------------------------------------------------------------
-// Appointment phrase parsing: "for Ahmed with Dr Sarah tomorrow at 3 pm for chest pain"
+// Diagnosis: "hypertension", "type 2 diabetes, chronic"
+// ----------------------------------------------------------------------------
+export function parseDiagnosisPhrase(phrase: string): FieldValues {
+  const fields: FieldValues = {};
+  let text = ` ${phrase.toLowerCase().trim()} `;
+  const icd = text.match(/\b([a-z]\d{2}(?:\.\d{1,3})?)\b/i);
+  if (icd) {
+    fields.icd10 = icd[1].toUpperCase();
+    text = text.replace(icd[0], ' ');
+  }
+  const status = text.match(/\b(active|chronic|resolved|inactive)\b/);
+  if (status) {
+    fields.status = capitalize(status[1]);
+    text = text.replace(status[0], ' ');
+  }
+  const severity = text.match(/\b(mild|moderate|severe)\b/);
+  if (severity) {
+    fields.severity = capitalize(severity[1]);
+    text = text.replace(severity[0], ' ');
+  }
+  const dt = parseDateTime(text);
+  if (dt.date) {
+    fields.onsetDate = dt.date;
+    text = ` ${dt.rest} `;
+  }
+  const description = text
+    .replace(/\b(diagnosis|diagnoses|problem|condition|of|the|a|an|as|to|patient|add|new|icd|code|since|with)\b/g, ' ')
+    .replace(/[,;]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (description) fields.description = capitalize(description);
+  return fields;
+}
+
+// ----------------------------------------------------------------------------
+// Task: "blood pressure monitoring due next friday, high priority"
+// ----------------------------------------------------------------------------
+const TASK_CATEGORY_FIELD = FieldRegistry.getForm('task')!.fields.find((f) => f.name === 'category')!;
+
+export function parseTaskPhrase(phrase: string): FieldValues {
+  const fields: FieldValues = {};
+  const dt = parseDateTime(phrase);
+  if (dt.date) fields.dueDate = dt.date;
+  let text = ` ${dt.rest} `;
+
+  const after = text.match(/\b(?:due )?(?:in|within|after)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|twelve)\s+(day|week|month)s?\b/);
+  if (after && !fields.dueDate) {
+    const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12 };
+    const n = Number.isNaN(Number(after[1])) ? words[after[1]] : Number(after[1]);
+    if (n) fields.dueDate = dayjs().add(n, after[2] as 'day' | 'week' | 'month').format('YYYY-MM-DD');
+    text = text.replace(after[0], ' ');
+  }
+  const priority = text.match(/\b(low|normal|high|urgent)\s*(?:priority)?\b/);
+  if (priority && /priority|urgent/.test(priority[0])) {
+    fields.priority = capitalize(priority[1]);
+    text = text.replace(priority[0], ' ');
+  }
+  for (const [syn, value] of Object.entries(TASK_CATEGORY_FIELD.synonyms ?? {})) {
+    if (new RegExp(`\\b${syn}\\b`).test(text)) {
+      fields.category = value;
+      break;
+    }
+  }
+  const title = text
+    .replace(/\b(task|to-?do|due|by|on|for|the|a|an|create|add|new|set|please)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (title) fields.title = capitalize(title);
+  return fields;
+}
+
+// ----------------------------------------------------------------------------
+// Recall: "for blood pressure review in 3 months"
+// ----------------------------------------------------------------------------
+const RECALL_TYPE_FIELD = FieldRegistry.getForm('recall')!.fields.find((f) => f.name === 'type')!;
+
+export function parseRecallPhrase(phrase: string): FieldValues {
+  const fields: FieldValues = {};
+  const dt = parseDateTime(phrase);
+  if (dt.date) fields.dueDate = dt.date;
+  let text = ` ${dt.rest} `;
+  // "after 6 weeks" / "every 6 months" are recall intervals the date parser does not know.
+  const after = text.match(/\b(?:after|every|within|in)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|twelve)\s+(day|week|month|year)s?\b/);
+  if (after && !fields.dueDate) {
+    const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12 };
+    const n = Number.isNaN(Number(after[1])) ? words[after[1]] : Number(after[1]);
+    if (n) fields.dueDate = dayjs().add(n, after[2] as 'day' | 'week' | 'month' | 'year').format('YYYY-MM-DD');
+    text = text.replace(after[0], ' ');
+  }
+  const typeKeys = [...Object.keys(RECALL_TYPE_FIELD.synonyms ?? {}), ...(RECALL_TYPE_FIELD.options ?? []).map((o) => o.toLowerCase())].sort((a, b) => b.length - a.length);
+  for (const key of typeKeys) {
+    const re = new RegExp(`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    if (re.test(text)) {
+      fields.type = FieldRegistry.normalizeValue(RECALL_TYPE_FIELD, key);
+      break;
+    }
+  }
+  if (/\b(urgent|urgently|high priority)\b/.test(text)) {
+    fields.priority = 'High';
+    text = text.replace(/\b(urgent|urgently|high priority)\b/, ' ');
+  }
+  const reason = text
+    .replace(/\b(recall|reminder|the|a|an|of|patient|add|set|create|schedule|new|for|to|on|in|at|due)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (reason) fields.reason = capitalize(reason);
+  return fields;
+}
+
+// ----------------------------------------------------------------------------
+// Appointment: "with Dr Sarah tomorrow at 3 pm for chest pain"
 // ----------------------------------------------------------------------------
 export function parseAppointmentPhrase(phrase: string): FieldValues {
   const fields: FieldValues = {};
@@ -161,7 +365,7 @@ export function parseAppointmentPhrase(phrase: string): FieldValues {
 }
 
 // ----------------------------------------------------------------------------
-// Patient phrase parsing: "Ahmed Khan, male, 32 years old, phone 555 0100"
+// Patient: "Ahmed Khan, male, 32 years old, phone 555 0100"
 // ----------------------------------------------------------------------------
 export function parsePatientPhrase(phrase: string): FieldValues {
   const fields: FieldValues = {};
@@ -213,21 +417,41 @@ export function parsePatientPhrase(phrase: string): FieldValues {
   return fields;
 }
 
+/** Parse the detail phrase for whichever record kind is being added. */
+export function parseRecordPhrase(kind: AIRecordKind, phrase: string): FieldValues {
+  switch (kind) {
+    case 'medication':
+      return parseMedicationList(phrase)[0] ?? {};
+    case 'diagnosis':
+      return parseDiagnosisPhrase(phrase);
+    case 'task':
+      return parseTaskPhrase(phrase);
+    case 'recall':
+      return parseRecallPhrase(phrase);
+    case 'appointment': {
+      const fields = parseAppointmentPhrase(phrase);
+      delete fields.patientName; // appointments always belong to the selected patient
+      return fields;
+    }
+    case 'patient':
+      return parsePatientPhrase(phrase);
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Main interpreter
 // ----------------------------------------------------------------------------
-const CONFIRM_RE = /^(?:yes|yes,? (?:save|submit|confirm|do it|go ahead|please)(?: it)?|yeah|yep|save(?: it| this| the form| now)?|submit(?: it| the form)?|confirm(?: it)?|go ahead|proceed|do it|ok save(?: it)?|okay save(?: it)?|that's correct|correct|looks good|approve)$/;
-const CANCEL_RE = /^(?:no|nope|cancel(?: it| that| this)?|stop|never ?mind|discard(?: it)?|abort|forget it|don't save|do not save|undo|clear(?: the form| it)?|close(?: it| the form| this)?|dismiss)$/;
-const PATIENT_SECTION_MAP: Record<string, string> = {
-  medications: 'patient-medications',
-  'clinical-notes': 'patient-notes',
-  'clinical-documents': 'patient-documents',
-  diagnosis: 'patient-problems',
-};
+const CONFIRM_RE =
+  /^(?:yes|yes,? (?:save|submit|confirm|delete|do it|go ahead|please)(?: it)?|yeah|yep|save(?: it| this| the form| now)?|submit(?: it| the form)?|confirm(?: it)?|delete it|go ahead|proceed|do it|ok save(?: it)?|okay save(?: it)?|that's correct|correct|looks good|approve)$/;
+const CANCEL_RE =
+  /^(?:no|nope|cancel(?: it| that| this)?|stop|never ?mind|discard(?: it)?|abort|forget it|don't save|do not save|don't delete|undo|clear(?: the form| it)?|close(?: it| the form| this)?|dismiss)$/;
+
+const KIND_WORDS = 'medications?|meds?|drugs?|medicines?|diagnos(?:is|es)|problems?|conditions?|tasks?|to-?dos?|recalls?|reminders?|appointments?|visits?|patients?';
 
 export function interpretClause(clause: string, ctx: AIContext, rawClause?: string): AICommand[] {
   const t = clause.trim();
   if (!t) return [];
+  const pageKind = kindFromPage(ctx.currentPageId);
 
   // --- confirmation boundary ---
   if (CONFIRM_RE.test(t)) return [{ action: 'confirm' }];
@@ -240,72 +464,154 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
   // --- scrolling ---
   const scroll = t.match(/^scroll(?: to)?(?: the)? (up|down|top|bottom)$/) ?? t.match(/^(?:scroll|page) (up|down)$/);
   if (scroll) return [{ action: 'scroll', direction: scroll[1] as 'up' | 'down' | 'top' | 'bottom' }];
-  const scrollTo = t.match(/^scroll to (?:the )?(.+)$/) ?? t.match(/^(?:jump|go) to (?:the )?(.+?) section$/);
+  const scrollTo = t.match(/^scroll to (?:the )?(.+)$/);
   if (scrollTo) return [{ action: 'scroll', section: scrollTo[1] }];
 
   // --- page numbers ---
   const pageNum = t.match(new RegExp(`^(?:${NAV_VERBS}\\s+)?(?:the )?page (?:number )?(\\d{1,3})$`));
   if (pageNum) return [{ action: 'navigate', target: Number(pageNum[1]) }];
 
-  // --- tabs ---
-  const tab = t.match(/^(?:open|switch to|show|go to|select) (?:the )?(.+?) tab$/);
+  // --- summary tabs ---
+  const tab = t.match(/^(?:open|switch to|show me|show|go to|select|display)\s+(?:the\s+)?(.+?)\s+tab$/);
   if (tab) return [{ action: 'open_tab', tab: tab[1] }];
 
-  // --- appointment ---
-  if (/^(?:create|new|book|schedule|make|add|open)(?: an?| the)? (?:new )?appointment(?: form)?$/.test(t)) return [{ action: 'create_appointment' }];
-  const appt = t.match(/^(?:create|new|book|schedule|make|add|set up)(?: an?| the)? (?:new )?appointment\s+(.+)$/);
-  if (appt) return [{ action: 'create_appointment', fields: parseAppointmentPhrase(appt[1]) }];
-
-  // --- patient registration ---
-  if (/^(?:add|register|create|new)(?: a| the)? (?:new )?patient(?: registration| form)?$/.test(t)) return [{ action: 'register_patient' }];
-  const reg = t.match(/^(?:add|register|create|new)(?: a| the)? (?:new )?patient\s+(?:named |called )?(.+)$/);
-  if (reg) return [{ action: 'register_patient', fields: parsePatientPhrase(reg[1]) }];
-
-  // --- medication ---
-  if (/^(?:add|new|create|open|start)(?: a| the)? (?:new )?medication(?: form)?$/.test(t) || /^(?:add|new) (?:a )?(?:medication|med|drug)$/.test(t)) return [{ action: 'add_medication' }];
-  const medFill = t.match(/^(?:fill(?: in| out)? (?:the )?medication(?: form)? with|add (?:the )?medication|add (?:the )?med|add (?:the )?drug|prescribe|add|medication)\s+(.+)$/);
-  if (medFill && !OTHER_FORM_WORDS.test(medFill[1]) && looksLikeMedication(medFill[1])) return [{ action: 'add_medication', fields: parseMedicationPhrase(medFill[1]) }];
-
-  // --- prescription ---
-  if (/^(?:new|create|add|open|start|write)(?: a)? prescription(?: form)?$/.test(t)) return [{ action: 'open_form', formId: 'prescription' }];
-  const rx = t.match(/^(?:prescribe|write (?:a )?prescription for|new prescription(?: for)?|create (?:a )?prescription for)\s+(.+)$/);
-  if (rx && looksLikeMedication(rx[1])) return [{ action: 'open_form', formId: 'prescription' }, { action: 'fill_form', formId: 'prescription', fields: parseMedicationPhrase(rx[1]) }];
-
-  // --- search ---
-  const search = t.match(/^(?:search|find|look up|lookup|search for|look for)(?: (?:the |a )?patient)?(?: for| named| called)?\s+(.+)$/);
-  if (search) return [{ action: 'search_patient', query: capitalize(search[1].replace(/^patient\s+/, '')) }];
-  if (/^(?:search|find)(?: a)? patients?$/.test(t)) return [{ action: 'navigate', target: 'patient-search' }];
-
-  // --- generic forms: "open allergy form", "add allergy", "new referral" ---
-  const formOpen = t.match(/^(?:open|add|new|create|start|record|log)(?: an?| the)? (?:new )?(.+?)(?: form)?$/);
-  if (formOpen) {
-    const form = FieldRegistry.resolveForm(formOpen[1], ctx.currentPageId, true);
-    if (form && !PageRegistry.resolve(formOpen[1])?.aliases.includes(formOpen[1])) {
-      if (form.id === 'medication') return [{ action: 'add_medication' }];
-      if (form.id === 'appointment') return [{ action: 'create_appointment' }];
-      if (form.id === 'patient') return [{ action: 'register_patient' }];
-      return [{ action: 'open_form', formId: form.id }];
-    }
+  // --- patient summary / read-back ---
+  if (/^(?:give me |generate |read |tell me |show me )?(?:an? )?(?:patient |dashboard |clinical )?summary(?: of| for)?(?: this| the)?(?: patient)?$/.test(t) || /^summari[sz]e (?:this |the )?patient$/.test(t) || /^(?:what is|whats|tell me about) (?:the )?patient(?:'s)? (?:situation|status|overview)$/.test(t)) {
+    return [{ action: 'summarize_patient' }];
   }
-  const formOpenWithDetails = t.match(/^(?:add|record|log|new)(?: an?| the)? (allergy|diagnosis|problem|referral|lab order|shift|leave)(?: to| for| of)?\s+(.+)$/);
-  if (formOpenWithDetails) {
-    const form = FieldRegistry.resolveForm(formOpenWithDetails[1], ctx.currentPageId);
-    if (form) {
-      const primary = form.fields.find((f) => f.required) ?? form.fields[0];
-      const fields: FieldValues = { [primary.name]: capitalize(formOpenWithDetails[2]) };
-      if (form.id === 'allergy') {
-        const m = formOpenWithDetails[2].match(/^(.+?)(?:\s+(?:causes|causing|reaction|with)\s+(.+?))?(?:\s+(mild|moderate|severe|life[- ]threatening))?$/);
-        if (m) {
-          fields.allergen = capitalize(m[1]);
-          if (m[2]) fields.reaction = capitalize(m[2]);
-          if (m[3]) fields.severity = FieldRegistry.normalizeValue(FieldRegistry.resolveField('allergy', 'severity')!, m[3]);
-        }
+  const read = t.match(new RegExp(`^(?:read|read out|read me|tell me|list|show me|what are|what's|whats)\\s+(?:the |this |their |patient'?s? )*(${KIND_WORDS})(?:\\s+(?:list|information|info|details|record|records))?$`));
+  if (read) {
+    const kind = kindFromText(read[1]);
+    if (kind) return [{ action: 'read_records', kind }];
+  }
+  if (/^(?:read|tell me|show me)\s+(?:the )?patient(?:'s)? (?:information|info|details|demographics)$/.test(t)) return [{ action: 'read_records', kind: 'patient' }];
+
+  // --- patient context ---
+  const selectPatient = t.match(/^(?:select|switch to|change to|set|use|work on|choose|pick|load|open)\s+(?:the\s+)?patient\s+(.+)$/) ?? t.match(/^(?:change|switch)\s+patient\s+to\s+(.+)$/);
+  if (selectPatient) return [{ action: 'select_patient', name: capitalize(selectPatient[1].trim()) }];
+  if (/^(?:change|switch|select|choose) (?:the )?patient$/.test(t)) return [{ action: 'navigate', target: 'patients' }];
+  if (/^(?:clear|deselect|remove) (?:the )?(?:selected )?patient$/.test(t)) return [{ action: 'clear_patient' }];
+
+  const searchPatient = t.match(/^(?:search|find|look up|lookup|search for|look for)\s+(?:the |a )?patients?\s*(?:for|named|called)?\s*(.+)$/);
+  if (searchPatient) return [{ action: 'search_patient', query: capitalize(searchPatient[1].trim()) }];
+  if (/^(?:search|find)(?: a| the)? patients?$/.test(t)) return [{ action: 'navigate', target: 'patients' }];
+
+  // --- search within a module ---
+  const searchRecords = t.match(new RegExp(`^(?:search|find|filter|look for)\\s+(?:the\\s+)?(${KIND_WORDS})\\s+(?:for|named|called|matching|with)?\\s*(.+)$`));
+  if (searchRecords) {
+    const kind = kindFromText(searchRecords[1]);
+    if (kind) return kind === 'patient' ? [{ action: 'search_patient', query: capitalize(searchRecords[2]) }] : [{ action: 'search_records', kind, query: searchRecords[2].trim() }];
+  }
+
+  // --- delete ---
+  const del = t.match(new RegExp(`^(?:delete|remove|cancel)\\s+(?:the\\s+|this\\s+)?(?:(${KIND_WORDS})\\s+)?(.*)$`));
+  if (del && /^(?:delete|remove)/.test(t)) {
+    const kind = (del[1] && kindFromText(del[1])) || pageKind || kindFromText(del[2] ?? '');
+    // "remove the blood pressure task" — the kind word names the module, not the record.
+    const match = (del[2] ?? '')
+      .replace(/^(?:called|named|for)\s+/, '')
+      .replace(new RegExp(`\\b(?:${KIND_WORDS}|record|entry)\\b`, 'g'), ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (kind) return [{ action: 'delete_record', kind, ...(match ? { match } : {}) }];
+  }
+
+  // --- update: "mark the blood pressure task as completed", "stop the metformin" ---
+  const mark = t.match(new RegExp(`^(?:mark|set)\\s+(?:the\\s+)?(.+?)\\s+(?:${KIND_WORDS})?\\s*as\\s+(.+)$`)) ?? t.match(/^(?:mark|set)\s+(?:the\s+)?(.+?)\s+(?:to|as)\s+(completed|complete|done|cancelled|canceled|in progress|active|resolved|chronic|inactive|scheduled|discontinued|on hold)$/);
+  if (mark) {
+    const kind = kindFromText(t) ?? pageKind;
+    if (kind) {
+      const statusField = FieldRegistry.resolveField(kind, 'status');
+      if (statusField) {
+        const value = FieldRegistry.normalizeValue(statusField, mark[2].trim());
+        const match = mark[1].replace(new RegExp(`\\b(?:${KIND_WORDS})\\b`, 'g'), '').trim();
+        return [{ action: 'update_record', kind, match, fields: { status: value } }];
       }
-      return [{ action: 'open_form', formId: form.id }, { action: 'fill_form', formId: form.id, fields }];
+    }
+  }
+  const stop = t.match(/^(?:stop|discontinue)\s+(?:the\s+)?(.+?)(?:\s+medication)?$/);
+  if (stop && (pageKind === 'medication' || /medication|drug/.test(t) || isKnownDrug(stop[1].split(' ')[0]))) {
+    return [{ action: 'update_record', kind: 'medication', match: stop[1].trim(), fields: { status: 'Discontinued' } }];
+  }
+  const completeTask = t.match(/^(?:complete|finish)\s+(?:the\s+)?(?:task\s+)?(.+?)(?:\s+task)?$/);
+  if (completeTask && (pageKind === 'task' || /\btask\b/.test(t))) {
+    return [{ action: 'update_record', kind: 'task', match: completeTask[1].replace(/\btask\b/g, '').trim(), fields: { status: 'Completed' } }];
+  }
+
+  // "change the metformin dosage to 1000 mg"
+  const changeField = t.match(/^(?:change|update|edit|modify|set)\s+(?:the\s+)?(.+?)(?:'s)?\s+([a-z ]+?)\s+to\s+(.+)$/);
+  if (changeField && !ctx.openFormId) {
+    const kind = kindFromText(t) ?? pageKind;
+    if (kind) {
+      const field = FieldRegistry.resolveField(kind, changeField[2].trim());
+      if (field) {
+        const match = changeField[1].replace(new RegExp(`\\b(?:${KIND_WORDS})\\b`, 'g'), '').trim();
+        return [{ action: 'update_record', kind, match, fields: { [field.name]: changeField[3].trim() } }];
+      }
+    }
+  }
+  // "update the metformin" / "edit patient Ahmed Khan"
+  const openEdit = t.match(new RegExp(`^(?:update|edit|change|modify)\\s+(?:the\\s+)?(?:(${KIND_WORDS})\\s+)?(.+)$`));
+  if (openEdit) {
+    const kind = (openEdit[1] && kindFromText(openEdit[1])) || pageKind;
+    if (kind) return [{ action: 'update_record', kind, match: openEdit[2].trim() }];
+  }
+
+  // --- "add another" while a tabbed form is open ---
+  if (ctx.openFormId && /^(?:add|new|create)(?: an| one)? (?:another|more|next|second|third)(?: medication| med| drug| one| entry| tab)?$/.test(t)) {
+    return [{ action: 'add_entry', formId: ctx.openFormId }];
+  }
+
+  // --- add: "add medication panadol", "add diagnosis hypertension", "set recall ..." ---
+  // "open medications" is navigation; "open the medication form" opens the dialog.
+  const openFormBare = t.match(new RegExp(`^(?:open|start|show)\\s+(?:an?\\s+|the\\s+)?(?:new\\s+)?(${KIND_WORDS})\\s+form$`));
+  if (openFormBare) {
+    const kind = kindFromText(openFormBare[1]);
+    if (kind) return [{ action: 'add_record', kind }];
+  }
+  const addBare = t.match(new RegExp(`^(?:add|create|new|book|schedule|register|record|log|set)\\s+(?:an?\\s+|the\\s+)?(?:new\\s+)?(${KIND_WORDS})(?:\\s+form)?$`));
+  if (addBare) {
+    const kind = kindFromText(addBare[1]);
+    if (kind) return [{ action: 'add_record', kind }];
+  }
+  const addWithDetail = t.match(
+    new RegExp(`^(?:add|create|new|book|schedule|register|record|log|set|prescribe)\\s+(?:an?\\s+|the\\s+)?(?:new\\s+)?(${KIND_WORDS})\\s+(?:for|of|to|named|called|:)?\\s*(.+)$`),
+  );
+  if (addWithDetail) {
+    const kind = kindFromText(addWithDetail[1]);
+    if (kind) {
+      const phrase = addWithDetail[2].trim();
+      if (kind === 'medication') {
+        const list = parseMedicationList(phrase);
+        return [list.length > 1 ? { action: 'add_record', kind, fields: list[0], records: list } : { action: 'add_record', kind, fields: list[0] ?? {} }];
+      }
+      return [{ action: 'add_record', kind, fields: parseRecordPhrase(kind, phrase) }];
+    }
+  }
+  // "recall the patient in two weeks" — the verb itself names the kind.
+  const recallVerb = t.match(/^recall(?: the)?(?: patient)?(?: for| in| after)?\s+(.+)$/);
+  if (recallVerb) return [{ action: 'add_record', kind: 'recall', fields: parseRecallPhrase(recallVerb[1]) }];
+  // "prescribe amoxicillin 500 mg twice daily"
+  const prescribe = t.match(/^(?:prescribe|start (?:the )?(?:patient )?on|put (?:the )?patient on)\s+(.+)$/);
+  if (prescribe && looksLikeMedication(prescribe[1])) {
+    const list = parseMedicationList(prescribe[1]);
+    return [list.length > 1 ? { action: 'add_record', kind: 'medication', fields: list[0], records: list } : { action: 'add_record', kind: 'medication', fields: list[0] ?? {} }];
+  }
+  /**
+   * "add panadol and metformin twice daily" — no kind word spoken. The module the user is
+   * looking at decides; anywhere else, a phrase that reads like a drug is a medication.
+   */
+  const addGeneric = t.match(/^(?:add|create|new|record|log)\s+(?:an?\s+|the\s+)?(.+)$/);
+  if (addGeneric) {
+    const phrase = addGeneric[1].trim();
+    if (pageKind && pageKind !== 'medication') return [{ action: 'add_record', kind: pageKind, fields: parseRecordPhrase(pageKind, phrase) }];
+    if (looksLikeMedication(phrase)) {
+      const list = parseMedicationList(phrase);
+      return [list.length > 1 ? { action: 'add_record', kind: 'medication', fields: list[0], records: list } : { action: 'add_record', kind: 'medication', fields: list[0] ?? {} }];
     }
   }
 
-  // --- field level ---
+  // --- field level (a form is open) ---
   const setField = t.match(/^(?:set|change|update|make|put|enter|type|fill(?: in)?)(?: the)? (.+?) (?:to|as|with|=) (.+)$/) ?? t.match(/^(?:the )?(.+?) (?:is|should be|equals) (.+)$/);
   if (setField && ctx.openFormId) {
     const field = FieldRegistry.resolveField(ctx.openFormId, setField[1]);
@@ -321,7 +627,7 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
     const field = FieldRegistry.resolveField(ctx.openFormId, check[2]);
     if (field) return [{ action: 'set_checkbox', formId: ctx.openFormId, field: field.name, checked: /^(check|tick|enable|turn on)$/.test(check[1]) }];
   }
-  const clear = t.match(/^(?:clear|empty|remove|delete)(?: the)? (.+?)(?: field| value)?$/);
+  const clear = t.match(/^(?:clear|empty)(?: the)? (.+?)(?: field| value)?$/);
   if (clear && ctx.openFormId) {
     const field = FieldRegistry.resolveField(ctx.openFormId, clear[1]);
     if (field) return [{ action: 'clear_field', formId: ctx.openFormId, field: field.name }];
@@ -331,70 +637,59 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
     const field = FieldRegistry.resolveField(ctx.openFormId, focus[1]);
     if (field) return [{ action: 'focus_field', formId: ctx.openFormId, field: field.name }];
   }
+  if (/^(?:close|cancel)(?: the)? form$/.test(t)) return [{ action: 'close_form' }];
 
-  // --- navigation to a registered page wins over patient-name heuristics ---
-  const navEarly = t.match(new RegExp(`^${NAV_VERBS}\\s+(?:the |my )?(.+)$`));
-  if (navEarly) {
-    const target = navEarly[1].replace(/\s+(?:page|screen|section|module|view)$/, '').trim();
-    const page = PageRegistry.resolve(target);
-    if (page && (page.aliases.includes(target) || page.title.toLowerCase() === target || page.id === target.replace(/\s+/g, '-'))) {
-      const finalPage = ctx.currentPatientId && PATIENT_SECTION_MAP[page.id] ? PageRegistry.get(PATIENT_SECTION_MAP[page.id]) ?? page : page;
-      return [{ action: 'navigate', target: finalPage.id }];
-    }
+  // --- "show John Smith's medications" — switch patient and open that module ---
+  const possessive = t.match(/^(?:open|show|show me|go to|view|display)\s+(.+?)(?:'s|s')\s+(.+)$/);
+  if (possessive) {
+    const section = possessive[2].replace(/\s+(?:page|screen|section|module|view|list)$/, '').trim();
+    return [{ action: 'select_patient', name: capitalize(possessive[1]), section }];
   }
-
-  // --- explicit patient / provider ---
-  const openPatient = t.match(/^(?:open|show|load|pull up|bring up|go to|view)(?: the)? (?:patient|chart for|chart of|record for|record of|file for)\s+(.+)$/);
-  if (openPatient) {
-    const sec = openPatient[1].match(/^(.+?)(?:'s|s') (.+)$/);
-    if (sec) return [{ action: 'open_patient', name: capitalize(sec[1]), section: sec[2] }];
-    return [{ action: 'open_patient', name: capitalize(openPatient[1]) }];
-  }
-  const openProvider = t.match(/^(?:open|show|view|go to)(?: the)? (?:provider|doctor|dr\.?|clinician)\s+(.+?)(?: profile)?$/);
-  if (openProvider) return [{ action: 'open_provider', name: capitalize(openProvider[1]) }];
-  const possessive = t.match(/^(?:open|show|go to|view)\s+(.+?)(?:'s|s') (.+)$/);
-  if (possessive) return [{ action: 'open_patient', name: capitalize(possessive[1]), section: possessive[2] }];
 
   // --- navigation ---
   const nav = t.match(new RegExp(`^${NAV_VERBS}\\s+(?:the |my )?(.+)$`)) ?? (PageRegistry.resolve(t) ? [t, t] : null);
   if (nav) {
     const target = nav[1].replace(/\s+(?:page|screen|section|module|view)$/, '').trim();
-    let page = PageRegistry.resolve(target);
-    if (page) {
-      if (ctx.currentPatientId && PATIENT_SECTION_MAP[page.id]) page = PageRegistry.get(PATIENT_SECTION_MAP[page.id]) ?? page;
-      return [{ action: 'navigate', target: page.id }];
-    }
+    const page = PageRegistry.resolve(target);
+    if (page) return [{ action: 'navigate', target: page.id }];
     const form = FieldRegistry.resolveForm(target, ctx.currentPageId);
-    if (form) return [{ action: 'open_form', formId: form.id }];
-    // "open John Smith" — treat 1–3 capitalizable words as a patient name.
-    if (/^[a-z]+(?:\s[a-z]+){0,2}$/.test(target) && /^(?:open|show|load|pull up|bring up|view)/.test(t)) return [{ action: 'open_patient', name: capitalize(target) }];
+    if (form) return [{ action: 'add_record', kind: form.id as AIRecordKind }];
+    // "open Ahmed Khan" — 1–3 plain words are read as a patient name.
+    if (/^[a-z]+(?:\s[a-z]+){0,2}$/.test(target) && /^(?:open|show|load|pull up|bring up|view|switch to)/.test(t)) {
+      return [{ action: 'select_patient', name: capitalize(target) }];
+    }
     return [{ action: 'unknown', reason: `I couldn't find a page called "${target}".` }];
   }
 
   // --- save/submit without confirmation words ---
-  if (/^(?:save|submit|send|book|place)(?: the| this)? (?:form|medication|appointment|patient|prescription|order|referral|record|changes|it)$/.test(t)) return [{ action: 'submit_form' }];
+  if (/^(?:save|submit|send|book|place)(?: the| this)? (?:form|medication|appointment|patient|diagnosis|task|recall|record|changes|it)$/.test(t)) return [{ action: 'submit_form' }];
 
   // --- pending slot answer (multi-turn) ---
   if (ctx.pendingSlot) {
     const slotForm = ctx.pendingSlot.formId;
-    // A full medication phrase given in answer to "what medication?" is parsed into all its fields.
-    if ((slotForm === 'medication' || slotForm === 'prescription') && /\d+\s*(mg|mcg|g|ml|units?)\b/.test(t)) {
-      const parsed = parseMedicationPhrase(t);
-      if (parsed.medicationName && Object.keys(parsed).length > 1) return [{ action: 'fill_form', formId: slotForm, fields: parsed }];
+    if (slotForm === 'medication' && /\d+\s*(mg|mcg|g|ml|units?)\b/.test(t)) {
+      const list = parseMedicationList(t);
+      const parsed = list[0];
+      if (list.length > 1) return [{ action: 'fill_form', formId: slotForm, fields: parsed, entries: list }];
+      if (parsed?.medicationName && Object.keys(parsed).length > 1) return [{ action: 'fill_form', formId: slotForm, fields: parsed }];
     }
     return [{ action: 'fill_field', formId: slotForm, field: ctx.pendingSlot.field, value: (rawClause ?? clause).trim() }];
   }
 
-  // --- bare medication phrase while a medication form is open ---
-  if ((ctx.openFormId === 'medication' || ctx.openFormId === 'prescription') && looksLikeMedication(t)) {
-    return [{ action: 'fill_form', formId: ctx.openFormId, fields: parseMedicationPhrase(t) }];
+  // --- bare medication phrase while the medication form is open ---
+  if (ctx.openFormId === 'medication' && looksLikeMedication(t)) {
+    const list = parseMedicationList(t);
+    return [{ action: 'fill_form', formId: 'medication', fields: list[0] ?? {}, ...(list.length > 1 ? { entries: list } : {}) }];
   }
 
   return [{ action: 'unknown', reason: `I didn't understand "${clause}".` }];
 }
 
 function looksLikeMedication(phrase: string): boolean {
-  return /\d+\s*(mg|mcg|g|ml|units?)\b/.test(phrase) || /\b(daily|twice|once|bid|tid|qid|prn|as needed|every \d+ hours|tablet|capsule)\b/.test(phrase) || /^[a-z]+(?:\s[a-z]+)?$/.test(phrase.trim());
+  if (/\d+\s*(mg|mcg|g|ml|units?)\b/.test(phrase) || /\b(daily|twice|once|bid|tid|qid|prn|as needed|every \d+ hours|tablet|capsule)\b/.test(phrase)) return true;
+  const names = splitMedicationNames(phrase);
+  if (names.length > 1 || names.some((n) => n.split(' ').some(isKnownDrug))) return true;
+  return /^[a-z]+(?:\s[a-z]+)?$/.test(phrase.trim());
 }
 
 export function interpret(transcript: string, ctx: AIContext): AICommand[] {
@@ -412,13 +707,16 @@ export function interpret(transcript: string, ctx: AIContext): AICommand[] {
   for (const clause of clauses) {
     const cmds = interpretClause(clause, workingCtx, rawSingle);
     commands.push(...cmds);
-    // Carry forward context between clauses: "open medication form and set dosage to 500 mg".
+    // Carry context forward between clauses: "open medications and add panadol".
     for (const c of cmds) {
       if (c.action === 'open_form') workingCtx = { ...workingCtx, openFormId: c.formId };
+      if (c.action === 'add_record' || c.action === 'update_record') workingCtx = { ...workingCtx, openFormId: c.kind };
       if (c.action === 'add_medication') workingCtx = { ...workingCtx, openFormId: 'medication' };
       if (c.action === 'create_appointment') workingCtx = { ...workingCtx, openFormId: 'appointment' };
       if (c.action === 'register_patient') workingCtx = { ...workingCtx, openFormId: 'patient' };
-      if (c.action === 'navigate') workingCtx = { ...workingCtx, currentPageId: typeof c.target === 'string' ? c.target : PageRegistry.getByNumber(c.target)?.id ?? null };
+      if (c.action === 'navigate') {
+        workingCtx = { ...workingCtx, currentPageId: typeof c.target === 'string' ? c.target : (PageRegistry.getByNumber(c.target)?.id ?? null) };
+      }
     }
   }
   return commands;

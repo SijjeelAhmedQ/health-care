@@ -1,9 +1,9 @@
 import { useMemo, useState, type Key, type ReactNode } from 'react';
-import { Button, Card, Checkbox, Dropdown, Input, Select, Table, Tooltip, type TableProps } from 'antd';
+import { Badge, Button, Card, Checkbox, Dropdown, Input, Pagination, Select, Table, Tooltip, type TableProps } from 'antd';
 import type { ColumnsType, ColumnType } from 'antd/es/table';
-import { Columns3, Download, Search, X } from 'lucide-react';
+import { Columns3, Download, Filter, Search, X } from 'lucide-react';
 import { EmptyState } from '@/components/common';
-import { useDebouncedValue } from '@/hooks';
+import { useDebouncedValue, useResponsive } from '@/hooks';
 
 export interface FilterDef {
   key: string;
@@ -13,7 +13,14 @@ export interface FilterDef {
   accessor?: (row: never) => string;
 }
 
-export type DataColumn<T> = ColumnType<T> & { key: string; title: ReactNode; hideable?: boolean; defaultHidden?: boolean };
+export type DataColumn<T> = ColumnType<T> & {
+  key: string;
+  title: ReactNode;
+  hideable?: boolean;
+  defaultHidden?: boolean;
+  /** Mobile card layout: 'primary' is the card headline, 'hidden' is dropped, 'full' spans the card. */
+  mobile?: 'primary' | 'hidden' | 'full' | 'actions';
+};
 
 interface Props<T extends object> {
   columns: DataColumn<T>[];
@@ -29,7 +36,7 @@ interface Props<T extends object> {
   onSelectionChange?: (keys: Key[], rows: T[]) => void;
   toolbarExtra?: ReactNode;
   emptyTitle?: string;
-  emptyDescription?: string;
+  emptyDescription?: ReactNode;
   emptyAction?: ReactNode;
   pageSize?: number;
   size?: TableProps<T>['size'];
@@ -68,6 +75,7 @@ export function DataTable<T extends object>({
   expandable,
   summary,
 }: Props<T>) {
+  const { isMobile } = useResponsive();
   const [internalSearch, setInternalSearch] = useState('');
   const search = controlledSearch ?? internalSearch;
   const setSearch = (v: string) => (onSearchChange ? onSearchChange(v) : setInternalSearch(v));
@@ -75,6 +83,8 @@ export function DataTable<T extends object>({
   const [activeFilters, setActiveFilters] = useState<Record<string, string | undefined>>({});
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(columns.filter((c) => c.defaultHidden).map((c) => c.key)));
   const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const [mobilePage, setMobilePage] = useState(1);
 
   const filtered = useMemo(() => {
     if (!data) return [];
@@ -92,7 +102,9 @@ export function DataTable<T extends object>({
   }, [data, debounced, searchKeys, activeFilters, filters]);
 
   const visibleColumns = useMemo<ColumnsType<T>>(() => columns.filter((c) => !hidden.has(c.key)), [columns, hidden]);
-  const hasActiveFilters = Object.values(activeFilters).some(Boolean) || !!search;
+  const activeFilterCount = Object.values(activeFilters).filter(Boolean).length;
+  const hasActiveFilters = activeFilterCount > 0 || !!search;
+  const clearAll = () => { setActiveFilters({}); setSearch(''); setMobilePage(1); };
 
   const exportCsv = () => {
     const cols = visibleColumns.filter((c) => 'dataIndex' in c && c.dataIndex);
@@ -105,18 +117,160 @@ export function DataTable<T extends object>({
     a.click();
   };
 
+  const emptyNode = (
+    <EmptyState
+      title={emptyTitle ?? (hasActiveFilters ? 'No matching records' : 'No records yet')}
+      description={emptyDescription ?? (hasActiveFilters ? 'No results for the current search and filters. Try different words or clear the filters.' : undefined)}
+      action={hasActiveFilters ? <Button icon={<X size={14} />} onClick={clearAll}>Clear search and filters</Button> : emptyAction}
+    />
+  );
+
+  // ---------------------------------------------------------------- mobile
+  if (isMobile) {
+    const primary = columns.find((c) => c.mobile === 'primary') ?? columns.find((c) => c.hideable === false) ?? columns[0];
+    const actionsCol = columns.find((c) => c.mobile === 'actions') ?? columns.find((c) => c.key === 'a' || c.key === 'actions' || c.key === 'x');
+    const fieldCols = columns.filter(
+      (c) => c !== primary && c !== actionsCol && c.mobile !== 'hidden' && !hidden.has(c.key) && (c.title !== '' || c.mobile === 'full'),
+    );
+    const start = (mobilePage - 1) * pageSize;
+    const pageRows = filtered.slice(start, start + pageSize);
+
+    const renderCell = (col: DataColumn<T>, row: T, index: number): ReactNode => {
+      const value = 'dataIndex' in col && col.dataIndex ? (row as Record<string, unknown>)[col.dataIndex as string] : undefined;
+      return col.render ? (col.render(value, row, index) as ReactNode) : ((value as ReactNode) ?? '—');
+    };
+
+    const body = (
+      <>
+        <div className="data-table-mobile-toolbar">
+          {title && <div className="data-table-title">{title}</div>}
+          <div className="data-table-mobile-row">
+            {searchKeys && (
+              <Input
+                allowClear
+                size="large"
+                prefix={<Search size={16} className="muted" />}
+                placeholder={searchPlaceholder}
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setMobilePage(1); }}
+                aria-label="Search list"
+              />
+            )}
+            {filters.length > 0 && (
+              <Badge count={activeFilterCount} size="small">
+                <Button
+                  size="large"
+                  icon={<Filter size={16} />}
+                  onClick={() => setShowMobileFilters((v) => !v)}
+                  aria-expanded={showMobileFilters}
+                  aria-label="Filters"
+                />
+              </Badge>
+            )}
+          </div>
+          {showMobileFilters && filters.length > 0 && (
+            <div className="data-table-mobile-filters">
+              {filters.map((f) => (
+                <Select
+                  key={f.key}
+                  allowClear
+                  placeholder={f.label}
+                  value={activeFilters[f.key]}
+                  onChange={(v) => { setActiveFilters((prev) => ({ ...prev, [f.key]: v })); setMobilePage(1); }}
+                  options={f.options.map((o) => ({ value: o, label: o }))}
+                  aria-label={f.label}
+                />
+              ))}
+              {hasActiveFilters && (
+                <Button className="clear-all" icon={<X size={14} />} onClick={clearAll} block>
+                  Clear all filters
+                </Button>
+              )}
+            </div>
+          )}
+          {toolbarExtra && <div className="flex gap-2 wrap">{toolbarExtra}</div>}
+          <div className="data-table-mobile-summary">
+            <span>{loading ? 'Loading…' : `${filtered.length} result${filtered.length === 1 ? '' : 's'}`}</span>
+            {exportable && !loading && filtered.length > 0 && (
+              <Button type="link" size="small" icon={<Download size={14} />} onClick={exportCsv}>Export</Button>
+            )}
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="mobile-cards">
+            {[0, 1, 2].map((i) => <div key={i} className="mobile-card" style={{ height: 96 }} />)}
+          </div>
+        ) : pageRows.length ? (
+          <>
+            <div className="mobile-cards">
+              {pageRows.map((row, i) => {
+                const key = String((row as Record<string, unknown>)[rowKey]);
+                return (
+                  <div
+                    key={key}
+                    className={`mobile-card ${onRowClick ? 'is-clickable' : ''}`}
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    role={onRowClick ? 'button' : undefined}
+                    tabIndex={onRowClick ? 0 : undefined}
+                    onKeyDown={onRowClick ? (e) => { if (e.key === 'Enter') onRowClick(row); } : undefined}
+                  >
+                    <div className="mobile-card-head">
+                      <div className="mobile-card-primary">{renderCell(primary, row, start + i)}</div>
+                      {actionsCol && (
+                        <div className="mobile-card-actions" onClick={(e) => e.stopPropagation()}>
+                          {renderCell(actionsCol, row, start + i)}
+                        </div>
+                      )}
+                    </div>
+                    {fieldCols.length > 0 && (
+                      <div className="mobile-card-fields">
+                        {fieldCols.map((c) => (
+                          <div key={c.key} className={`mobile-card-field ${c.mobile === 'full' ? 'full' : ''}`}>
+                            <div className="mobile-card-field-label">{typeof c.title === 'string' ? c.title : c.key}</div>
+                            <div className="mobile-card-field-value">{renderCell(c, row, start + i)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {filtered.length > pageSize && (
+              <div className="mobile-cards-pagination">
+                <Pagination
+                  simple
+                  current={mobilePage}
+                  pageSize={pageSize}
+                  total={filtered.length}
+                  onChange={(p) => { setMobilePage(p); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                />
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="mobile-cards-empty">{emptyNode}</div>
+        )}
+      </>
+    );
+
+    return card ? <Card className="data-table-card">{body}</Card> : body;
+  }
+
+  // ---------------------------------------------------------------- desktop
   const table = (
     <>
       <div className="data-table-toolbar">
-        {title && <div style={{ fontWeight: 600, fontSize: 15, marginRight: 4 }}>{title}</div>}
+        {title && <div className="data-table-title">{title}</div>}
         {searchKeys && (
           <Input
             allowClear
+            className="data-table-search"
             prefix={<Search size={15} className="muted" />}
             placeholder={searchPlaceholder}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 260, maxWidth: '100%' }}
             aria-label="Search table"
           />
         )}
@@ -124,31 +278,35 @@ export function DataTable<T extends object>({
           <Select
             key={f.key}
             allowClear
+            className="data-table-filter"
             placeholder={f.label}
             value={activeFilters[f.key]}
             onChange={(v) => setActiveFilters((prev) => ({ ...prev, [f.key]: v }))}
             options={f.options.map((o) => ({ value: o, label: o }))}
-            style={{ minWidth: 150 }}
-            aria-label={f.label}
+            aria-label={`Filter by ${f.label}`}
           />
         ))}
         {hasActiveFilters && (
-          <Button type="text" size="small" icon={<X size={14} />} onClick={() => { setActiveFilters({}); setSearch(''); }}>
+          <Button type="text" icon={<X size={14} />} onClick={clearAll}>
             Clear
           </Button>
         )}
+        {!loading && data && <span className="data-table-result-count">{filtered.length} of {data.length}</span>}
         <div className="data-table-toolbar-spacer" />
-        {selectedKeys.length > 0 && <span className="text-secondary" style={{ fontSize: 13 }}>{selectedKeys.length} selected</span>}
+        {selectedKeys.length > 0 && <span className="data-table-selection">{selectedKeys.length} selected</span>}
         {toolbarExtra}
         {exportable && (
-          <Tooltip title="Export CSV">
+          <Tooltip title="Download the filtered rows as CSV">
             <Button icon={<Download size={15} />} onClick={exportCsv} aria-label="Export CSV" />
           </Tooltip>
         )}
         <Dropdown
           trigger={['click']}
           dropdownRender={() => (
-            <div style={{ background: '#fff', borderRadius: 8, boxShadow: 'var(--shadow-lg)', padding: 8, minWidth: 200 }}>
+            <div style={{ background: '#fff', borderRadius: 10, boxShadow: 'var(--shadow-lg)', padding: 10, minWidth: 220 }}>
+              <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, padding: '0 6px 6px' }}>
+                Show columns
+              </div>
               {columns.map((c) => (
                 <div key={c.key} style={{ padding: '4px 6px' }}>
                   <Checkbox
@@ -161,15 +319,15 @@ export function DataTable<T extends object>({
                       setHidden(next);
                     }}
                   >
-                    {typeof c.title === 'string' ? c.title : c.key}
+                    {typeof c.title === 'string' && c.title ? c.title : c.key}
                   </Checkbox>
                 </div>
               ))}
             </div>
           )}
         >
-          <Tooltip title="Columns">
-            <Button icon={<Columns3 size={15} />} aria-label="Toggle columns" />
+          <Tooltip title="Choose columns">
+            <Button icon={<Columns3 size={15} />} aria-label="Choose columns" />
           </Tooltip>
         </Dropdown>
       </div>
@@ -182,7 +340,13 @@ export function DataTable<T extends object>({
         expandable={expandable}
         summary={summary}
         scroll={{ x: 'max-content' }}
-        pagination={{ pageSize, showSizeChanger: true, showTotal: (t, r) => `${r[0]}–${r[1]} of ${t}`, size: 'small' }}
+        pagination={{
+          pageSize,
+          showSizeChanger: true,
+          showTotal: (t, r) => `${r[0]}–${r[1]} of ${t}`,
+          size: 'small',
+          hideOnSinglePage: filtered.length <= pageSize,
+        }}
         rowSelection={
           selectable
             ? {
@@ -195,7 +359,7 @@ export function DataTable<T extends object>({
             : undefined
         }
         onRow={onRowClick ? (row) => ({ onClick: () => onRowClick(row), className: 'table-row-clickable' }) : undefined}
-        locale={{ emptyText: loading ? ' ' : <EmptyState title={emptyTitle ?? (hasActiveFilters ? 'No matching records' : 'No records')} description={emptyDescription ?? (hasActiveFilters ? 'Try adjusting your search or filters.' : undefined)} action={emptyAction} /> }}
+        locale={{ emptyText: loading ? ' ' : emptyNode }}
       />
     </>
   );

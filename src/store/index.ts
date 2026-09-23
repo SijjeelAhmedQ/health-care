@@ -2,20 +2,24 @@ import { configureStore } from '@reduxjs/toolkit';
 import { useDispatch, useSelector, type TypedUseSelectorHook } from 'react-redux';
 import authReducer from './slices/authSlice';
 import patientReducer from './slices/patientSlice';
-import appointmentReducer from './slices/appointmentSlice';
 import providerReducer from './slices/providerSlice';
-import medicationReducer from './slices/medicationSlice';
 import uiReducer from './slices/uiSlice';
 import voiceReducer from './slices/voiceSlice';
 import navigationReducer from './slices/navigationSlice';
+import inboxReducer from './slices/inboxSlice';
+import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, tasksSlice } from './slices/recordSlices';
 
 export const store = configureStore({
   reducer: {
     auth: authReducer,
     patients: patientReducer,
-    appointments: appointmentReducer,
     providers: providerReducer,
-    medications: medicationReducer,
+    medications: medicationsSlice.reducer,
+    diagnoses: diagnosesSlice.reducer,
+    tasks: tasksSlice.reducer,
+    recalls: recallsSlice.reducer,
+    appointments: appointmentsSlice.reducer,
+    inbox: inboxReducer,
     ui: uiReducer,
     voice: voiceReducer,
     navigation: navigationReducer,

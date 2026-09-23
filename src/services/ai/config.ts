@@ -10,6 +10,12 @@ export interface AIConfig {
   stt: { provider: STTProviderKind; apiUrl: string; language: STTLanguage };
   llm: { provider: LLMProviderKind; apiUrl: string; model: string; timeoutMs: number; numGpu: number; numCtx: number };
   fallbackToRules: boolean;
+  /**
+   * Run the deterministic interpreter before the model and skip the model when it fully understands
+   * the utterance. Qwen 3.5 is a hybrid recurrent model, so Ollama cannot reuse the cached system
+   * prompt between commands: every model call re-reads ~1k tokens (several seconds on a 4 GB GPU).
+   */
+  rulesFirst: boolean;
   enableVoice: boolean;
   enableDebugPanel: boolean;
   appName: string;
@@ -36,6 +42,7 @@ export const aiConfig: AIConfig = {
     numCtx: Number(env.VITE_LLM_NUM_CTX || 4096),
   },
   fallbackToRules: bool(env.VITE_AI_FALLBACK_TO_RULES, true),
+  rulesFirst: bool(env.VITE_AI_RULES_FIRST, true),
   enableVoice: bool(env.VITE_ENABLE_VOICE, true),
   enableDebugPanel: bool(env.VITE_ENABLE_DEBUG_PANEL, true),
   appName: env.VITE_APP_NAME || 'CareFlow PMS',
@@ -51,6 +58,7 @@ export interface AIOverride {
   llmApiUrl?: string;
   sttApiUrl?: string;
   sttLanguage?: STTLanguage;
+  rulesFirst?: boolean;
 }
 export function getAIOverride(): AIOverride {
   try {
@@ -68,6 +76,7 @@ export function effectiveConfig(): AIConfig {
   return {
     ...aiConfig,
     mode,
+    rulesFirst: o.rulesFirst ?? aiConfig.rulesFirst,
     llm: { ...aiConfig.llm, provider: mode === 'mock' ? 'mock' : o.llmProvider ?? aiConfig.llm.provider, model: o.llmModel ?? aiConfig.llm.model, apiUrl: o.llmApiUrl ?? aiConfig.llm.apiUrl },
     stt: { ...aiConfig.stt, provider: o.sttProvider ?? (mode === 'mock' ? 'browser' : aiConfig.stt.provider), apiUrl: o.sttApiUrl ?? aiConfig.stt.apiUrl, language: o.sttLanguage ?? aiConfig.stt.language },
   };

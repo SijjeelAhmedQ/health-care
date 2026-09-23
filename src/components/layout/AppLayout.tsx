@@ -1,26 +1,30 @@
 import { Suspense, useEffect } from 'react';
-import { Drawer, Layout, Skeleton } from 'antd';
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Layout, Skeleton } from 'antd';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { uiActions } from '@/store/slices/uiSlice';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { fetchPatients } from '@/store/slices/patientSlice';
-import { fetchAppointments } from '@/store/slices/appointmentSlice';
 import { fetchProviders } from '@/store/slices/providerSlice';
-import { fetchMedications, fetchPrescriptions } from '@/store/slices/medicationSlice';
+import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, tasksSlice } from '@/store/slices/recordSlices';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
+import { PageRegistry } from '@/registry/pageRegistry';
 import { usePageTracking, useResponsive } from '@/hooks';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { aiConfig } from '@/services/ai/config';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { MobileNav } from './MobileNav';
+import { SelectedPatientBanner } from '@/components/patient/SelectedPatientBanner';
 import { VoiceAssistant } from '@/components/voice/VoiceAssistant';
+import { VoiceConfirmDialog } from '@/components/voice/VoiceConfirmDialog';
 import { CommandPalette } from '@/components/command-palette/CommandPalette';
 import { DebugPanel } from '@/components/debug/DebugPanel';
 
 function PageFallback() {
   return (
-    <div>
+    <div aria-busy="true" aria-live="polite">
+      <span className="sr-only">Loading page…</span>
       <Skeleton active paragraph={{ rows: 1 }} style={{ maxWidth: 400 }} />
       <div className="metric-grid" style={{ marginTop: 16 }}>
         {[0, 1, 2, 3].map((i) => (
@@ -37,9 +41,10 @@ function PageFallback() {
 export function AppLayout() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
-  const { isMobile } = useResponsive();
+  const location = useLocation();
+  const { isMobile, isTablet } = useResponsive();
   const collapsed = useAppSelector((s) => s.ui.sidebarCollapsed);
-  const mobileOpen = useAppSelector((s) => s.ui.mobileSidebarOpen);
+  const hasPatient = useAppSelector((s) => !!s.patients.currentPatientId);
   usePageTracking();
 
   // Install imperative navigation for the command executor.
@@ -47,13 +52,15 @@ export function AppLayout() {
     NavigationRegistry.install((to, options) => (typeof to === 'number' ? navigate(to) : navigate(to, options)));
   }, [navigate]);
 
-  // Bootstrap core datasets once.
+  // Bootstrap every dataset once — the banner and dashboard need all of them.
   useEffect(() => {
     dispatch(fetchPatients());
-    dispatch(fetchAppointments());
     dispatch(fetchProviders());
-    dispatch(fetchMedications());
-    dispatch(fetchPrescriptions());
+    dispatch(medicationsSlice.fetchAll());
+    dispatch(diagnosesSlice.fetchAll());
+    dispatch(tasksSlice.fetchAll());
+    dispatch(recallsSlice.fetchAll());
+    dispatch(appointmentsSlice.fetchAll());
   }, [dispatch]);
 
   // Global keyboard shortcuts.
@@ -81,25 +88,37 @@ export function AppLayout() {
     return () => window.removeEventListener('keydown', handler);
   }, [dispatch]);
 
+  // The mobile menu only exists on small screens — never leave it "open" behind a desktop layout.
+  useEffect(() => {
+    if (!isMobile) dispatch(uiActions.setMobileSidebarOpen(false));
+  }, [isMobile, dispatch]);
+
+  // On a tablet the full sidebar costs a third of the width, so start collapsed there.
+  useEffect(() => {
+    if (isTablet) dispatch(uiActions.setSidebarCollapsed(true));
+  }, [isTablet, dispatch]);
+
+  // The banner belongs to the patient workflow — it is shown wherever a patient
+  // is selected, so the active context is never in doubt.
+  const page = PageRegistry.matchPath(location.pathname);
+  const showBanner = hasPatient && page?.id !== undefined;
+
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout className="app-shell" style={{ minHeight: '100vh' }}>
       <a href="#main-content" className="skip-link">Skip to content</a>
-      {isMobile ? (
-        <Drawer open={mobileOpen} placement="left" onClose={() => dispatch(uiActions.setMobileSidebarOpen(false))} width={280} styles={{ body: { padding: 0, background: '#0e1f2b' }, header: { display: 'none' } }}>
-          <Sidebar collapsed={false} onCollapse={() => undefined} mobile onNavigate={() => dispatch(uiActions.setMobileSidebarOpen(false))} />
-        </Drawer>
-      ) : (
-        <Sidebar collapsed={collapsed} onCollapse={(c) => dispatch(uiActions.setSidebarCollapsed(c))} />
-      )}
+      {!isMobile && <Sidebar collapsed={collapsed} onCollapse={(c) => dispatch(uiActions.setSidebarCollapsed(c))} />}
       <Layout style={{ minWidth: 0 }}>
         <Header isMobile={isMobile} />
         <Layout.Content id="main-content" className="app-content" tabIndex={-1}>
+          {showBanner && <SelectedPatientBanner />}
           <Suspense fallback={<PageFallback />}>
             <Outlet />
           </Suspense>
         </Layout.Content>
       </Layout>
+      {isMobile && <MobileNav />}
       {aiConfig.enableVoice && <VoiceAssistant />}
+      <VoiceConfirmDialog />
       <CommandPalette />
       {aiConfig.enableDebugPanel && <DebugPanel />}
     </Layout>

@@ -1,121 +1,124 @@
-import { useMemo, useState } from 'react';
-import { Input, Layout, Menu, type MenuProps } from 'antd';
+import { Badge, Button, Layout, Menu, Tooltip, type MenuProps } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Activity, BarChart3, Building2, CalendarClock, CalendarDays, LayoutDashboard, Search, Settings, ShieldCheck, Stethoscope, UserRound, Users, Mic } from 'lucide-react';
-import { PageRegistry, moduleLabels, type PageModule } from '@/registry/pageRegistry';
+import { Activity, Lock, Mic, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { PageRegistry, moduleLabels } from '@/registry/pageRegistry';
 import { useAppSelector } from '@/store';
+import { selectCurrentPatient } from '@/store/slices/patientSlice';
+import { usePatientOverview } from '@/hooks/usePatientData';
 import { layout as layoutTokens } from '@/theme/tokens';
-
-const moduleOrder: PageModule[] = ['dashboard', 'patients', 'clinical', 'appointments', 'providers', 'roster', 'practice', 'users', 'reports', 'configuration'];
-const moduleIcons: Record<PageModule, JSX.Element> = {
-  dashboard: <LayoutDashboard size={16} />,
-  patients: <Users size={16} />,
-  clinical: <Stethoscope size={16} />,
-  appointments: <CalendarDays size={16} />,
-  providers: <UserRound size={16} />,
-  roster: <CalendarClock size={16} />,
-  practice: <Building2 size={16} />,
-  users: <ShieldCheck size={16} />,
-  configuration: <Settings size={16} />,
-  reports: <BarChart3 size={16} />,
-  dev: <Mic size={16} />,
-};
+import { moduleIcons } from './MobileNav';
 
 interface Props {
   collapsed: boolean;
   onCollapse: (c: boolean) => void;
-  mobile?: boolean;
-  onNavigate?: () => void;
 }
 
-export function Sidebar({ collapsed, onCollapse, mobile, onNavigate }: Props) {
+/**
+ * The whole application in eight entries. Patient-dependent modules are marked
+ * while no patient is selected, so the requirement is visible before the click.
+ */
+export function Sidebar({ collapsed, onCollapse }: Props) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [query, setQuery] = useState('');
+  const patient = useAppSelector(selectCurrentPatient);
   const voiceStatus = useAppSelector((s) => s.voice.status);
   const micOn = useAppSelector((s) => s.voice.micActive);
+  const { counts } = usePatientOverview();
   const currentPage = PageRegistry.matchPath(location.pathname);
   const activeKey = currentPage?.parentId ?? currentPage?.id;
 
-  const items = useMemo<MenuProps['items']>(() => {
-    const q = query.trim().toLowerCase();
-    if (q) {
-      return PageRegistry.sidebarPages()
-        .filter((p) => p.title.toLowerCase().includes(q) || p.aliases.some((a) => a.includes(q)) || String(p.number) === q)
-        .map((p) => ({ key: p.id, label: p.title, icon: moduleIcons[p.module] }));
-    }
-    return moduleOrder.map((module) => {
-      const pages = PageRegistry.byModule(module).filter((p) => !p.hideInSidebar);
-      return {
-        key: `module:${module}`,
-        icon: moduleIcons[module],
-        label: moduleLabels[module],
-        children: pages.map((p) => ({ key: p.id, label: p.title })),
-      };
-    });
-  }, [query]);
+  const badges: Record<string, number> = {
+    medications: counts.medication,
+    diagnoses: counts.diagnosis,
+    tasks: counts.task,
+    recalls: counts.recall,
+    appointments: counts.appointment,
+  };
 
-  const openKeys = currentPage ? [`module:${currentPage.module}`] : [];
-  const [openState, setOpenState] = useState<string[]>(openKeys);
+  const items: MenuProps['items'] = PageRegistry.sidebarPages().map((p) => {
+    const locked = !!p.requiresPatient && !patient;
+    const count = patient ? badges[p.id] : undefined;
+    return {
+      key: p.id,
+      icon: moduleIcons[p.module],
+      label: (
+        <span className="app-sider-item">
+          <span>{moduleLabels[p.module]}</span>
+          {locked ? (
+            <Tooltip title="Select a patient first">
+              <Lock size={12} className="app-sider-lock" aria-label="Requires a selected patient" />
+            </Tooltip>
+          ) : (
+            count !== undefined && count > 0 && <Badge count={count} overflowCount={99} color="rgba(255,255,255,0.18)" />
+          )}
+        </span>
+      ),
+    };
+  });
 
   return (
     <Layout.Sider
       className="app-sider"
       theme="dark"
       width={layoutTokens.sidebarWidth}
-      collapsedWidth={mobile ? 0 : layoutTokens.sidebarCollapsedWidth}
+      collapsedWidth={layoutTokens.sidebarCollapsedWidth}
       collapsed={collapsed}
       onCollapse={onCollapse}
       trigger={null}
-      breakpoint="lg"
       style={{ position: 'sticky', top: 0, height: '100vh', overflow: 'hidden' }}
     >
-      <div className="app-sider-brand">
+      <div className={`app-sider-brand ${collapsed ? 'collapsed' : ''}`}>
         <div className="app-sider-brand-mark">
           <Activity size={18} color="#fff" />
         </div>
         {!collapsed && (
           <div>
             <div className="app-sider-brand-title">CareFlow</div>
-            <div className="app-sider-brand-sub">Practice Management</div>
+            <div className="app-sider-brand-sub">Patient Management</div>
           </div>
         )}
       </div>
+
       {!collapsed && (
-        <div className="app-sider-search">
-          <Input
-            allowClear
-            size="small"
-            prefix={<Search size={13} color="#7f94a4" />}
-            placeholder="Search menu…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search navigation"
-          />
+        <div className="app-sider-context">
+          <div className="app-sider-context-label">Working on</div>
+          <div className="app-sider-context-value">{patient ? patient.fullName : 'No patient selected'}</div>
+          {patient && <div className="app-sider-context-meta">{patient.mrn} · {patient.age}y {patient.gender}</div>}
         </div>
       )}
+
       <Menu
         className="app-sider-menu"
         theme="dark"
         mode="inline"
         items={items}
         selectedKeys={activeKey ? [activeKey] : []}
-        openKeys={collapsed ? undefined : query ? undefined : openState}
-        onOpenChange={(keys) => setOpenState(keys as string[])}
         onClick={({ key }) => {
           const page = PageRegistry.get(String(key));
-          if (page && !page.requiresContext) {
-            navigate(page.path);
-            onNavigate?.();
-          }
+          if (page) navigate(page.path);
         }}
       />
-      {!collapsed && (
-        <div className="app-sider-footer">
-          <Mic size={13} color={micOn ? '#ff7a7a' : '#4fc3f7'} />
-          <span>{micOn ? 'Microphone on' : 'Voice assistant'} · {voiceStatus === 'idle' ? (micOn ? 'listening' : 'ready') : voiceStatus.replace('_', ' ')}</span>
-        </div>
-      )}
+
+      <div className={`app-sider-footer ${collapsed ? 'collapsed' : ''}`}>
+        {!collapsed && (
+          <span className="app-sider-status">
+            <Mic size={13} color={micOn ? '#ff7a7a' : '#4fc3f7'} />
+            <span>
+              {micOn ? 'Microphone on' : 'Voice ready'} · {voiceStatus === 'idle' ? (micOn ? 'listening' : 'idle') : voiceStatus.replace('_', ' ')}
+            </span>
+          </span>
+        )}
+        <Tooltip title={`${collapsed ? 'Expand' : 'Collapse'} sidebar (Ctrl+B)`} placement="right">
+          <Button
+            type="text"
+            className="app-sider-collapse-btn"
+            icon={collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+            onClick={() => onCollapse(!collapsed)}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!collapsed}
+          />
+        </Tooltip>
+      </div>
     </Layout.Sider>
   );
 }

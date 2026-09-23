@@ -1,9 +1,9 @@
 /**
- * Application command registry. Voice, the command palette (Ctrl+K) and
- * regular UI buttons all end up executing the same commands, so behaviour is
- * identical regardless of the input channel.
+ * Application command registry. Voice, the command palette (Ctrl+K) and regular
+ * UI buttons all execute the same commands, so behaviour is identical whichever
+ * way the user asks.
  */
-import type { AICommand } from '@/types/ai';
+import type { AICommand, AIRecordKind } from '@/types/ai';
 import { PageRegistry, moduleLabels, type PageDefinition } from './pageRegistry';
 
 export interface AppCommandContext {
@@ -23,52 +23,68 @@ export interface AppCommand {
   /** lucide icon name (resolved by the palette) */
   icon?: string;
   shortcut?: string;
-  /** Whether running this command is a data mutation (always confirmed). */
-  sensitive?: boolean;
   run(ctx: AppCommandContext): void | Promise<unknown>;
   pageId?: string;
 }
 
 const iconForModule: Record<PageDefinition['module'], string> = {
   dashboard: 'LayoutDashboard',
-  patients: 'Users',
-  clinical: 'Stethoscope',
-  appointments: 'CalendarDays',
-  providers: 'UserRound',
-  roster: 'CalendarClock',
-  practice: 'Building2',
-  users: 'ShieldCheck',
-  configuration: 'Settings',
-  reports: 'BarChart3',
-  dev: 'TerminalSquare',
+  patient: 'Users',
+  inbox: 'Inbox',
+  medication: 'Pill',
+  diagnosis: 'Stethoscope',
+  task: 'ListChecks',
+  recall: 'Repeat',
+  appointment: 'CalendarDays',
+  summary: 'ClipboardList',
 };
 
-const navigationCommands: AppCommand[] = PageRegistry.all()
-  .filter((pg) => !pg.requiresContext)
-  .map((pg) => ({
-    id: `nav:${pg.id}`,
-    title: `Go to ${pg.title}`,
-    group: moduleLabels[pg.module],
-    keywords: [pg.title.toLowerCase(), ...pg.aliases, `page ${pg.number}`, String(pg.number)],
-    icon: iconForModule[pg.module],
-    pageId: pg.id,
-    run: (ctx) => ctx.execute({ action: 'navigate', target: pg.id }),
-  }));
+const navigationCommands: AppCommand[] = PageRegistry.all().map((pg) => ({
+  id: `nav:${pg.id}`,
+  title: pg.parentId ? `Open ${pg.title}` : `Go to ${pg.title}`,
+  group: pg.parentId ? 'Summary tabs' : 'Modules',
+  keywords: [pg.title.toLowerCase(), ...pg.aliases, `page ${pg.number}`, String(pg.number)],
+  icon: iconForModule[pg.module],
+  pageId: pg.id,
+  run: (ctx) => ctx.execute({ action: 'navigate', target: pg.id }),
+}));
+
+const addCommands: AppCommand[] = (
+  [
+    ['medication', 'Add Medication', 'Pill', ['prescribe', 'drug', 'medicine']],
+    ['diagnosis', 'Add Diagnosis', 'Stethoscope', ['problem', 'condition', 'icd']],
+    ['task', 'Add Task', 'ListChecks', ['to do', 'todo', 'follow up']],
+    ['recall', 'Add Recall', 'Repeat', ['reminder', 'bring back', 'review']],
+    ['appointment', 'Add Appointment', 'CalendarPlus', ['book', 'schedule', 'visit']],
+    ['patient', 'Add Patient', 'UserPlus', ['register', 'new patient']],
+  ] as Array<[AIRecordKind, string, string, string[]]>
+).map(([kind, title, icon, keywords]) => ({
+  id: `act:add-${kind}`,
+  title,
+  group: 'Actions',
+  keywords: [kind, `add ${kind}`, `new ${kind}`, ...keywords],
+  icon,
+  run: (ctx) => ctx.execute({ action: 'add_record', kind }),
+}));
+
+const readCommands: AppCommand[] = (['medication', 'diagnosis', 'task', 'recall', 'appointment'] as AIRecordKind[]).map((kind) => ({
+  id: `act:read-${kind}`,
+  title: `Read ${moduleLabels[kind as keyof typeof moduleLabels] ?? kind} list aloud`,
+  group: 'Actions',
+  keywords: ['read', 'speak', 'aloud', kind],
+  icon: 'Volume2',
+  run: (ctx) => ctx.execute({ action: 'read_records', kind }),
+}));
 
 const actionCommands: AppCommand[] = [
-  { id: 'act:add-patient', title: 'Register New Patient', group: 'Actions', keywords: ['add patient', 'new patient', 'register'], icon: 'UserPlus', run: (ctx) => ctx.execute({ action: 'register_patient' }) },
-  { id: 'act:create-appointment', title: 'Create Appointment', group: 'Actions', keywords: ['book', 'schedule', 'new appointment'], icon: 'CalendarPlus', run: (ctx) => ctx.execute({ action: 'create_appointment' }) },
-  { id: 'act:add-medication', title: 'Add Medication', group: 'Actions', keywords: ['medication', 'prescribe', 'drug'], icon: 'Pill', run: (ctx) => ctx.execute({ action: 'add_medication' }) },
-  { id: 'act:search-patient', title: 'Search Patients', group: 'Actions', keywords: ['find', 'lookup', 'patient'], icon: 'Search', shortcut: '/', run: (ctx) => ctx.execute({ action: 'navigate', target: 'patient-search' }) },
-  { id: 'act:start-consultation', title: 'Start Consultation', group: 'Actions', keywords: ['encounter', 'visit', 'consult'], icon: 'ClipboardPlus', run: (ctx) => ctx.execute({ action: 'navigate', target: 'consultation' }) },
-  { id: 'act:order-lab', title: 'Order Lab Test', group: 'Actions', keywords: ['lab', 'order', 'test'], icon: 'FlaskConical', run: async (ctx) => { await ctx.execute({ action: 'navigate', target: 'lab-orders' }); await ctx.execute({ action: 'open_form', formId: 'lab-order' }); } },
-  { id: 'act:new-referral', title: 'New Referral', group: 'Actions', keywords: ['refer', 'referral'], icon: 'Send', run: async (ctx) => { await ctx.execute({ action: 'navigate', target: 'referrals' }); await ctx.execute({ action: 'open_form', formId: 'referral' }); } },
-  { id: 'act:add-user', title: 'Create User', group: 'Actions', keywords: ['user', 'invite', 'account'], icon: 'UserCog', run: (ctx) => ctx.execute({ action: 'navigate', target: 'create-user' }) },
+  { id: 'act:select-patient', title: 'Select / change patient', group: 'Actions', keywords: ['patient', 'switch', 'change', 'context'], icon: 'UserRoundCog', run: (ctx) => ctx.execute({ action: 'navigate', target: 'patients' }) },
+  { id: 'act:summary', title: 'Summarise this patient', group: 'Actions', keywords: ['summary', 'overview', 'brief'], icon: 'Sparkles', run: (ctx) => ctx.execute({ action: 'summarize_patient' }) },
+  ...addCommands,
+  ...readCommands,
   { id: 'sys:voice', title: 'Open Voice Assistant', group: 'System', keywords: ['voice', 'mic', 'speak', 'assistant'], icon: 'Mic', shortcut: 'Ctrl+Shift+V', run: (ctx) => ctx.openVoicePanel() },
   { id: 'sys:debug', title: 'Toggle Debug Panel', group: 'System', keywords: ['debug', 'developer', 'trace'], icon: 'Bug', shortcut: 'Ctrl+Shift+D', run: (ctx) => ctx.toggleDebugPanel() },
   { id: 'sys:sidebar', title: 'Toggle Sidebar', group: 'System', keywords: ['sidebar', 'menu', 'collapse'], icon: 'PanelLeft', shortcut: 'Ctrl+B', run: (ctx) => ctx.toggleSidebar() },
   { id: 'sys:back', title: 'Go Back', group: 'System', keywords: ['back', 'previous'], icon: 'ArrowLeft', run: (ctx) => ctx.execute({ action: 'go_back' }) },
-  { id: 'sys:voice-console', title: 'Open Voice Test Console', group: 'System', keywords: ['console', 'test', 'mock voice'], icon: 'TerminalSquare', run: (ctx) => ctx.execute({ action: 'navigate', target: 'voice-console' }) },
   { id: 'sys:signout', title: 'Sign Out', group: 'System', keywords: ['logout', 'sign out', 'exit'], icon: 'LogOut', run: (ctx) => ctx.signOut() },
 ];
 
