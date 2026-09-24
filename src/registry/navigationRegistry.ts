@@ -3,7 +3,9 @@
  * here so non-React code (command executor, palette) can navigate without
  * touching window.location.
  */
-type NavigateFn = (to: string | number, options?: { replace?: boolean; state?: unknown }) => void;
+import { primaryScroller } from '@/utils/scroll';
+
+type NavigateFn =(to: string | number, options?: { replace?: boolean; state?: unknown }) => void;
 
 let navigateImpl: NavigateFn | null = null;
 let currentPathname = '/';
@@ -41,9 +43,11 @@ export const NavigationRegistry = {
   },
   scrollTargets: () => [...scrollTargets.entries()].map(([id, t]) => ({ id, label: t.label })),
   scrollBy(direction: 'up' | 'down' | 'top' | 'bottom') {
-    const el = document.scrollingElement ?? document.documentElement;
+    // The page itself never scrolls — move whichever region is scrolling.
+    const el = primaryScroller();
+    const step = (el.clientHeight || window.innerHeight) * 0.7;
     if (direction === 'top') el.scrollTo({ top: 0, behavior: 'smooth' });
     else if (direction === 'bottom') el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    else el.scrollBy({ top: direction === 'down' ? window.innerHeight * 0.7 : -window.innerHeight * 0.7, behavior: 'smooth' });
+    else el.scrollBy({ top: direction === 'down' ? step : -step, behavior: 'smooth' });
   },
 };

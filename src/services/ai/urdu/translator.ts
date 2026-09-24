@@ -328,6 +328,13 @@ function structure(c: string): string {
   if (m(/^(?:madad|help)(?: karo| chahiye| karein| kro)?$/) || m(/^(?:main )?kya (?:kar|bol|keh) sakta (?:hoon|ho|hai)$/) || m(/^kya kya (?:kar|bol) sakta (?:hoon|ho|hai)$/) || m(/^commands$/)) return 'help';
   if (m(/^(?:sidebar|menu|side bar) (?:band karo|chupao|chhota karo|hide karo|collapse karo|kholo|dikhao|toggle karo|band|khol do|dikha do|band kardo|chupa do|hatao)$/)) return 'toggle sidebar';
 
+  // --- dashboard summary widget (the panel on the right)
+  // It has to be matched before the generic "X band karo" / "X dikhao" rules below,
+  // which would otherwise read it as unticking or opening a field called "summary".
+  const DOCK = '(?:(?:patient )?dashboard (?:ka |ki )?summary(?: widget| panel)?|summary (?:widget|panel))';
+  if (m(new RegExp(`^${DOCK} (?:${OPEN_END}|khol do|dikha do|chahiye)$`)) || m(new RegExp(`^${OPEN_END} ${DOCK}$`))) return 'show dashboard summary';
+  if (m(new RegExp(`^${DOCK} (?:ko |ka )?(?:band karo|band kardo|band|close karo|close|chupao|chupa do|hatao|hata do)$`))) return 'close dashboard summary';
+
   // --- tabs
   if ((r = m(/^(.+?) (?:wala |wali |wale )?tab (?:kholo|par jao|pe jao|dikhao|par chalo|select karo|chuno|open karo|par lejao|kholo do)$/))) return `open ${r[1]} tab`;
 

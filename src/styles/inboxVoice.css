@@ -1,0 +1,69 @@
+/* =========================================================================
+   Inbox voice control — the Inbox page's side of the Voice Assistant: the
+   header controls (confirm-filing switch, voice commands), the selected-patient
+   toggle, row numbers while the microphone is on, and the command sheet.
+   ========================================================================= */
+.ibx-head-sep { width: 1px; height: 20px; margin: 0 4px; background: var(--color-border); }
+.ibx-voice-setting { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px; font-size: 12.5px; color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; }
+.ibx-voice-help-btn { height: 30px; border-radius: 999px; }
+/* Tablet and phone: the controls keep their icons and lose their words. */
+@media (max-width: 991.98px) {
+  .ibx-voice-setting span, .ibx-voice-help-text { display: none; }
+  .ibx-head-sep { display: none; }
+}
+/* ---- selected patient only / all patients ------------------------------- */
+.ibx-scope-toggle {
+  display: inline-flex; align-items: center; gap: 7px; height: 30px; max-width: 260px; padding: 0 6px 0 11px; border-radius: 999px;
+  border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary);
+  font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
+}
+.ibx-scope-toggle:hover { border-color: var(--color-border-strong); background: var(--color-surface-subtle); }
+.ibx-scope-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.ibx-scope-toggle svg { flex-shrink: 0; }
+.ibx-scope-toggle-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ibx-scope-toggle.is-on { color: var(--color-primary); background: var(--color-primary-soft); border-color: var(--color-primary-soft-strong); font-weight: 600; }
+/* A small switch inside the pill says plainly that it is on or off. */
+.ibx-scope-toggle-track {
+  position: relative; flex-shrink: 0; width: 26px; height: 16px; border-radius: 999px; background: var(--color-border-strong);
+  transition: background var(--duration-fast) var(--ease);
+}
+.ibx-scope-toggle-track span {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.2);
+  transition: transform var(--duration-fast) var(--ease);
+}
+.ibx-scope-toggle.is-on .ibx-scope-toggle-track { background: var(--color-primary); }
+.ibx-scope-toggle.is-on .ibx-scope-toggle-track span { transform: translateX(10px); }
+@media (max-width: 767.98px) {
+  .ibx-scope-toggle { max-width: 200px; }
+}
+
+/* ---- row numbers while the microphone is on ------------------------------ */
+.ibx-row-pos {
+  flex-shrink: 0; min-width: 20px; height: 20px; margin-top: 6px; padding: 0 5px; border-radius: 6px;
+  display: grid; place-items: center; font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: var(--color-primary); background: var(--color-primary-soft); border: 1px solid var(--color-primary-soft-strong);
+  animation: ibxPosIn 0.2s var(--ease, ease-out);
+}
+.ibx-row.is-selected .ibx-row-pos { color: #fff; background: var(--color-primary); border-color: var(--color-primary); }
+.ibx.is-compact .ibx-row-pos { margin-top: 3px; }
+@keyframes ibxPosIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: none; } }
+
+/* ---- "what can I say?" ---------------------------------------------------- */
+.ibx-vhelp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ibx-vhelp-group { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 12px 14px; background: var(--color-surface); min-width: 0; }
+.ibx-vhelp-group h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 650; color: var(--color-text); }
+.ibx-vhelp-icon { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: var(--color-primary-soft); color: var(--color-primary); }
+.ibx-vhelp-group > p { margin: 5px 0 8px; font-size: 12px; color: var(--color-text-muted); }
+.ibx-vhelp-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ibx-vhelp-group li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.ibx-vhelp-say {
+  border: none; background: none; padding: 3px 6px; margin-left: -6px; border-radius: 6px; text-align: left;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--color-text); cursor: pointer;
+}
+.ibx-vhelp-say:hover, .ibx-vhelp-say:focus-visible { background: var(--color-primary-soft); color: var(--color-primary); outline: none; }
+.ibx-vhelp-does { font-size: 12px; color: var(--color-text-muted); text-align: right; flex-shrink: 0; max-width: 48%; }
+.ibx-vhelp-note { margin: 14px 0 0; font-size: 12px; color: var(--color-text-muted); }
+@media (max-width: 767.98px) {
+  .ibx-vhelp { grid-template-columns: minmax(0, 1fr); }
+}

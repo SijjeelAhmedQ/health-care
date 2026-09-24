@@ -90,6 +90,7 @@ function makeDeps(state: Partial<ExecutorState> = {}, records: Partial<Record<AI
     pendingConfirmation: null,
     pendingSlot: null,
     sidebarCollapsed: false,
+    dashboardSummaryOpen: false,
     ...state,
   };
   const data: Partial<Record<AIRecordKind, AnyRecord[]>> = { medication: MEDS, task: TASKS, ...records };
@@ -123,6 +124,7 @@ function makeDeps(state: Partial<ExecutorState> = {}, records: Partial<Record<AI
     setPendingSlot: vi.fn((p) => { s.pendingSlot = p; }),
     setPatientSearch: vi.fn(),
     toggleSidebar: vi.fn(),
+    setDashboardSummary: vi.fn((open: boolean) => { s.dashboardSummaryOpen = open; }),
     resolvePatientByName: vi.fn(async (name: string) =>
       name.toLowerCase() === 'john smith'
         ? [PATIENT]
@@ -287,6 +289,29 @@ describe('CommandExecutor', () => {
     const r = await new CommandExecutor(deps).execute({ action: 'summarize_patient' });
     expect(r.message).toContain('John Smith');
     expect(spoken[0]).toContain('Hypertension');
+  });
+
+  it('open_dashboard_summary opens the Dashboard and docks the summary; close hides it again', async () => {
+    const { deps, state } = makeDeps();
+    const ex = new CommandExecutor(deps);
+    const opened = await ex.execute({ action: 'open_dashboard_summary' });
+    expect(opened.ok).toBe(true);
+    expect(deps.navigate).toHaveBeenCalledWith('/dashboard');
+    expect(state.dashboardSummaryOpen).toBe(true);
+    expect(opened.message).toContain('John Smith');
+
+    const closed = await ex.execute({ action: 'close_dashboard_summary' });
+    expect(closed.ok).toBe(true);
+    expect(state.dashboardSummaryOpen).toBe(false);
+  });
+
+  it('the dashboard summary needs a selected patient', async () => {
+    const { deps, state } = makeDeps({ currentPatientId: null, currentPatientName: null });
+    const r = await new CommandExecutor(deps).execute({ action: 'open_dashboard_summary' });
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('No patient is selected');
+    expect(state.dashboardSummaryOpen).toBe(false);
+    expect(deps.navigate).toHaveBeenCalledWith('/patients');
   });
 
   it('validation errors block saving', async () => {

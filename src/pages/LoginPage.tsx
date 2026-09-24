@@ -17,8 +17,8 @@ export default function LoginPage() {
   const [form] = Form.useForm();
 
   // Signing in always lands on the patient list first — you pick who you are
-  // working on before anything else opens. Only a patient already in context
-  // (remembered from last time) goes straight to where the user was headed.
+  // working on before anything else opens. Signing in clears any earlier
+  // selection, so the previous session's patient is never carried over.
   if (status === 'authenticated') {
     return <Navigate to={hasPatient ? (location.state?.from ?? '/dashboard') : '/patients'} replace />;
   }

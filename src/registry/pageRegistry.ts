@@ -73,6 +73,9 @@ export const pages: PageDefinition[] = [
   }),
 
   // Inbox categories — real routes, so "open the radiology inbox" lands on a URL.
+  p(20, 'inbox-all', '/inbox/all', 'Inbox — All', 'inbox', ['all inbox', 'inbox all', 'whole inbox', 'everything in the inbox', 'all tab'], {
+    parentId: 'inbox', tab: 'all', hideInSidebar: true,
+  }),
   p(16, 'inbox-lab', '/inbox/lab', 'Inbox — Lab', 'inbox', ['lab inbox', 'lab results inbox', 'inbox lab', 'lab tab'], {
     parentId: 'inbox', tab: 'lab', hideInSidebar: true,
   }),

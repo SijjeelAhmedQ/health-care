@@ -98,7 +98,42 @@ const ConfirmSchema = z.object({ action: z.literal('confirm') });
 const CancelSchema = z.object({ action: z.literal('cancel') });
 const AskUserSchema = z.object({ action: z.literal('ask_user'), question: z.string(), field: z.string().optional(), formId: z.string().optional() });
 const ToggleSidebarSchema = z.object({ action: z.literal('toggle_sidebar') });
+/** Open the docked dashboard summary on the right of the screen (navigates to the Dashboard first). */
+const OpenDashboardSummarySchema = z.object({ action: z.literal('open_dashboard_summary') });
+const CloseDashboardSummarySchema = z.object({ action: z.literal('close_dashboard_summary') });
 const HelpSchema = z.object({ action: z.literal('help') });
+
+// ---- voice -----------------------------------------------------------------
+/** "Stop listening", "mic off", "exit voice mode": the microphone goes off until the user turns it on again. */
+const StopListeningSchema = z.object({ action: z.literal('stop_listening') });
+const StartListeningSchema = z.object({ action: z.literal('start_listening') });
+/** "Open the first patient" — the Nth patient in the current patient search. */
+const SelectPatientAtSchema = z.object({
+  action: z.literal('select_patient_at'),
+  position: z.number().int().positive(),
+  /** "Open patient" with no number: only act when the search found exactly one patient. */
+  single: z.boolean().optional(),
+});
+
+// ---- inbox -----------------------------------------------------------------
+export const InboxViewSchema = z.enum(['all', 'lab', 'radiology', 'referral', 'discharge']);
+/**
+ * Which Inbox record a command is about: a 1-based position in the list on
+ * screen, a step from the open record, or the open record itself.
+ */
+export const InboxTargetSchema = z.union([z.number().int().positive(), z.enum(['this', 'next', 'previous', 'last'])]);
+export type InboxTarget = z.infer<typeof InboxTargetSchema>;
+const InboxViewCommandSchema = z.object({ action: z.literal('inbox_view'), view: InboxViewSchema });
+const InboxSearchSchema = z.object({ action: z.literal('inbox_search'), query: z.string(), view: InboxViewSchema.optional() });
+const InboxClearSearchSchema = z.object({ action: z.literal('inbox_clear_search') });
+const InboxOpenSchema = z.object({ action: z.literal('inbox_open'), target: InboxTargetSchema, category: InboxViewSchema.optional() });
+const InboxCloseSchema = z.object({ action: z.literal('inbox_close') });
+/** File (file: true) or unfile (file: false) one record. Staged for confirmation when the user asked for that. */
+const InboxFileSchema = z.object({ action: z.literal('inbox_file'), file: z.boolean(), target: InboxTargetSchema.optional(), category: InboxViewSchema.optional() });
+/** Limit the Inbox to the selected patient's items, or show every patient again. */
+const InboxScopeSchema = z.object({ action: z.literal('inbox_scope'), scope: z.enum(['patient', 'all']) });
+/** Make the open record's patient the selected patient. */
+const InboxSelectPatientSchema = z.object({ action: z.literal('inbox_select_patient') });
 const RespondSchema = z.object({ action: z.literal('respond'), message: z.string() });
 const UnknownSchema = z.object({ action: z.literal('unknown'), reason: z.string().optional() });
 
@@ -108,7 +143,9 @@ export const AICommandSchema = z.discriminatedUnion('action', [
   AddRecordSchema, UpdateRecordSchema, DeleteRecordSchema, SearchRecordsSchema, ReadRecordsSchema, SummarizePatientSchema,
   AddMedicationSchema, CreateAppointmentSchema, RegisterPatientSchema,
   OpenFormSchema, CloseFormSchema, FillFormSchema, AddEntrySchema, FillFieldSchema, SelectDropdownSchema, SetCheckboxSchema, FocusFieldSchema, ClearFieldSchema, SubmitFormSchema,
-  ScrollSchema, OpenTabSchema, ConfirmSchema, CancelSchema, AskUserSchema, ToggleSidebarSchema, HelpSchema, RespondSchema, UnknownSchema,
+  ScrollSchema, OpenTabSchema, ConfirmSchema, CancelSchema, AskUserSchema, ToggleSidebarSchema, OpenDashboardSummarySchema, CloseDashboardSummarySchema, HelpSchema, RespondSchema, UnknownSchema,
+  StopListeningSchema, StartListeningSchema, SelectPatientAtSchema,
+  InboxViewCommandSchema, InboxSearchSchema, InboxClearSearchSchema, InboxOpenSchema, InboxCloseSchema, InboxFileSchema, InboxScopeSchema, InboxSelectPatientSchema,
 ]);
 
 export type AICommand = z.infer<typeof AICommandSchema>;
@@ -166,8 +203,8 @@ export interface ExecutionStep {
  * deleting a record. Nothing destructive happens until `confirm` arrives.
  */
 export interface PendingConfirmation {
-  /** 'form' = save what is in the open form. 'delete' = remove an existing record. */
-  kind: 'form' | 'delete';
+  /** 'form' = save what is in the open form. 'delete' = remove an existing record. 'inbox_file' = file / unfile Inbox items. */
+  kind: 'form' | 'delete' | 'inbox_file';
   /** Form id for a save; record kind for a delete. */
   formId: string;
   formTitle: string;
@@ -175,6 +212,10 @@ export interface PendingConfirmation {
   description: string;
   recordKind?: AIRecordKind;
   recordId?: string;
+  /** Inbox items to file or unfile (kind 'inbox_file'). */
+  inboxItemIds?: string[];
+  /** True to file, false to move back to unfiled (kind 'inbox_file'). */
+  inboxFile?: boolean;
 }
 
 export interface DebugTrace {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { configureStore } from '@reduxjs/toolkit';
 import authReducer from '@/store/slices/authSlice';
 import patientReducer from '@/store/slices/patientSlice';
@@ -7,7 +7,7 @@ import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, task
 import uiReducer from '@/store/slices/uiSlice';
 import voiceReducer from '@/store/slices/voiceSlice';
 import navigationReducer from '@/store/slices/navigationSlice';
-import { VoiceController } from '../voiceController';
+import { VoiceController, isClinicalParagraph } from '../voiceController';
 import { MockLLMProvider } from '../providers/llmProviders';
 import type { ListeningCallbacks, ListeningSession, MicrophoneRecognizer } from '../providers/sttProviders';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
@@ -111,6 +111,17 @@ describe('microphone lifecycle — stays on until the user turns it off', () => 
     expect(store.getState().voice.status).toBe('idle');
   });
 
+  it('audio flushed after Mic Off does not leave the status on "Transcribing…"', () => {
+    controller.startListening();
+    const { callbacks } = mic.current;
+    controller.stopListening(); // e.g. the user switched to the keyboard
+    callbacks.onInterim?.('Hearing you…');
+    callbacks.onTranscribing?.(); // the HTTP recorder transcribes its last segment on stop
+    callbacks.onFinal('go to');
+    expect(store.getState().voice.status).toBe('idle');
+    expect(store.getState().voice.interimTranscript).toBe('');
+  });
+
   it('stops on explicit Cancel', () => {
     controller.startListening();
     controller.cancel();
@@ -172,6 +183,99 @@ describe('microphone lifecycle — stays on until the user turns it off', () => 
     expect(controller.isMicActive).toBe(true);
     controller.toggleListening();
     expect(controller.isMicActive).toBe(false);
+  });
+});
+
+describe('clinical paragraph — a pause ends it, mic off, AI Summary extracts it', () => {
+  const PARAGRAPH =
+    'Start the patient on metformin, Panadol, paracetamol 500 mg twice daily for 30 days, add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks, and schedule a follow-up appointment next Tuesday at 3 pm.';
+  const original = VoiceController.SILENCE_MS;
+  let store: ReturnType<typeof makeStore>;
+  let mic: FakeRecognizer;
+  let controller: VoiceController;
+
+  beforeEach(() => {
+    VoiceController.SILENCE_MS = 300;
+    store = makeStore();
+    mic = new FakeRecognizer();
+    NavigationRegistry.install((to) => NavigationRegistry.setPathname(String(to)));
+    controller = new VoiceController(store as never, { stt: mic, llm: new MockLLMProvider() });
+  });
+  afterEach(() => {
+    VoiceController.SILENCE_MS = original;
+  });
+
+  it('recognises the dictated note but not ordinary commands', () => {
+    expect(isClinicalParagraph(PARAGRAPH)).toBe(true);
+    expect(isClinicalParagraph('add metformin 500 mg twice daily')).toBe(false);
+    expect(isClinicalParagraph('go to patient search')).toBe(false);
+  });
+
+  it('collects the note, then after the pause turns the mic off and hands it to the AI Summary tab', async () => {
+    controller.startListening();
+    mic.current.callbacks.onFinal(PARAGRAPH);
+    await flush(150);
+    expect(controller.isCapturingParagraph).toBe(true);
+    expect(controller.isMicActive).toBe(true);
+    expect(store.getState().voice.history).toHaveLength(0); // not executed as commands
+    await flush(300);
+    expect(controller.isMicActive).toBe(false);
+    expect(mic.current.stopped).toBe(true);
+    expect(store.getState().voice.summaryHandoff?.text).toBe(PARAGRAPH);
+    expect(NavigationRegistry.pathname()).toBe('/summary/ai-summary');
+  });
+
+  it('keeps listening while the user is still talking and joins every segment', async () => {
+    controller.startListening();
+    mic.current.callbacks.onFinal('add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks');
+    await flush(200);
+    mic.current.callbacks.onInterim?.('and schedule');
+    await flush(200);
+    mic.current.callbacks.onFinal('and schedule a follow-up appointment next Tuesday at 3 pm');
+    await flush(200);
+    expect(controller.isMicActive).toBe(true);
+    await flush(200);
+    expect(controller.isMicActive).toBe(false);
+    expect(store.getState().voice.summaryHandoff?.text).toBe(
+      'add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks and schedule a follow-up appointment next Tuesday at 3 pm',
+    );
+  });
+
+  it('typed into the assistant: goes straight to the AI Summary instead of opening the medication form', async () => {
+    const results = await controller.handleTranscript(`“${PARAGRAPH}”`);
+    expect(results).toEqual([]);
+    expect(store.getState().voice.commands).toEqual([]);
+    expect(store.getState().navigation.openFormId).toBeNull();
+    expect(store.getState().voice.summaryHandoff?.text).toBe(PARAGRAPH);
+    expect(NavigationRegistry.pathname()).toBe('/summary/ai-summary');
+  });
+
+  it('turns the mic off after a pause with no speech', async () => {
+    controller.startListening();
+    await flush(150);
+    expect(controller.isMicActive).toBe(true);
+    await flush(250);
+    expect(controller.isMicActive).toBe(false);
+    expect(mic.current.stopped).toBe(true);
+    expect(store.getState().voice.micActive).toBe(false);
+  });
+
+  it('speech restarts the pause countdown', async () => {
+    controller.startListening();
+    await flush(200);
+    mic.current.callbacks.onInterim?.('go to');
+    await flush(200);
+    expect(controller.isMicActive).toBe(true); // 400 ms since start, but only 200 since speech
+    await flush(200);
+    expect(controller.isMicActive).toBe(false);
+  });
+
+  it('Cancel throws the note away', async () => {
+    controller.startListening();
+    mic.current.callbacks.onFinal(PARAGRAPH);
+    controller.cancel();
+    await flush(400);
+    expect(store.getState().voice.summaryHandoff).toBeNull();
   });
 });
 

@@ -108,6 +108,54 @@ describe('voice control against the real application', () => {
     expect(await waitUntil(() => pageText().includes(second.fullName))).toBe(true);
   }, TIMEOUT);
 
+  it('docks the dashboard summary on the right and closes it again', async () => {
+    await renderAppAt('/medications');
+
+    await say('please show me dashboard summary');
+    await waitUntil(() => store.getState().ui.dashboardSummaryOpen);
+
+    // It moved to the dashboard and the widget is on screen with the patient's data.
+    expect(store.getState().navigation.currentPageId).toBe('dashboard');
+    expect(store.getState().ui.dashboardSummaryOpen).toBe(true);
+    const dock = document.querySelector('.dash-dock');
+    expect(dock).not.toBeNull();
+    expect(dock?.textContent).toContain('Dashboard Summary');
+    expect(dock?.textContent).toContain(patientSelectors.selectAll(store.getState())[0].fullName);
+
+    await say('close dashboard summary');
+    await waitUntil(() => !store.getState().ui.dashboardSummaryOpen);
+    expect(document.querySelector('.dash-dock')).toBeNull();
+  }, TIMEOUT);
+
+  it('still understands the dashboard summary when the engine hears "somebody"', async () => {
+    await renderAppAt('/medications');
+
+    // What Chrome actually sends back when the user says "summary".
+    await say('please show me dashboard somebody');
+    await waitUntil(() => store.getState().ui.dashboardSummaryOpen);
+
+    expect(store.getState().navigation.currentPageId).toBe('dashboard');
+    expect(document.querySelector('.dash-dock')).not.toBeNull();
+    // The panel shows what was understood, and the debug trace keeps what was heard.
+    expect(store.getState().voice.transcript).toBe('please show me dashboard summary');
+    expect(store.getState().voice.trace?.rawTranscript).toBe('please show me dashboard somebody');
+
+    await say('close dashboard somebody');
+    await waitUntil(() => !store.getState().ui.dashboardSummaryOpen);
+    expect(document.querySelector('.dash-dock')).toBeNull();
+  }, TIMEOUT);
+
+  it('will not dock the dashboard summary without a patient', async () => {
+    store.dispatch(setCurrentPatient(null));
+    await renderAppAt('/patients');
+
+    await say('show dashboard summary');
+
+    expect(store.getState().voice.response).toContain('No patient is selected');
+    expect(store.getState().ui.dashboardSummaryOpen).toBe(false);
+    expect(document.querySelector('.dash-dock')).toBeNull();
+  }, TIMEOUT);
+
   it('reads a record list back for the selected patient', async () => {
     await renderAppAt('/dashboard');
     await say('read the diagnosis list');

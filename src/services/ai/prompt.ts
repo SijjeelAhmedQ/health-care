@@ -44,18 +44,23 @@ RULES
 - submit_form only on explicit save/submit/send. "save it"/"yes"/"theek hai"→confirm. "cancel"/"no"→cancel.
 - Choosing who to work on → select_patient{name}. Looking someone up → search_patient{query}.
 - Reading data aloud → read_records{kind}. A whole-patient overview → summarize_patient.
+- "dashboard summary" (the panel on the right) → open_dashboard_summary / close_dashboard_summary. A spoken overview stays summarize_patient.
 - Summary tabs → open_tab{tab} with tab one of: ai-summary, medication, recall, appointment, diagnosis, task.
 - navigate target = page NUMBER the user said, else the closest id from PAGES.
 - Several drugs in one sentence → ONE add_record{kind:"medication"} with "records":[one per drug]; shared frequency/duration on each. Never join names.
 - If a pending question is open and the user gives a plain value → fill_field; if they give more (a full medication phrase) → fill_form with every field said.
+- INBOX (lab, radiology, referral, discharge items): category → inbox_view{view}; search → inbox_search{query,view?}; "open the second record"/"next" → inbox_open{target:2|"next"|"previous"|"this"|"last",category?}; "file this"/"unfile it" → inbox_file{file:true|false,target?}. Positions count the list on screen.
+- "stop listening"/"mic off"/"exit voice mode" → stop_listening. "open first patient" → select_patient_at{position:1}.
 - Unmappable → {"action":"unknown","reason":"..."}.
 
 COMMANDS
-navigate{target} · go_back · go_home · open_tab{tab} · scroll{direction|section} · toggle_sidebar
+navigate{target} · go_back · go_home · open_tab{tab} · scroll{direction|section} · toggle_sidebar · open_dashboard_summary · close_dashboard_summary
 select_patient{name} · search_patient{query} · clear_patient
 add_record{kind,fields?,records?[]} · update_record{kind,match,fields?} · delete_record{kind,match} · search_records{kind,query} · read_records{kind} · summarize_patient
 open_form{formId} · close_form · fill_form{formId?,fields} · fill_field{field,value} · select_dropdown{field,value} · set_checkbox{field,checked} · clear_field{field} · focus_field{field} · add_entry
 submit_form · confirm · cancel · ask_user{question,field?} · respond{message} · unknown{reason}
+inbox_view{view:all|lab|radiology|referral|discharge} · inbox_search{query,view?} · inbox_clear_search · inbox_open{target,category?} · inbox_close · inbox_file{file,target?,category?} · inbox_scope{scope:patient|all} · inbox_select_patient
+stop_listening · start_listening · select_patient_at{position} · help
 
 PAGES (number id)
 ${pageIds}
@@ -77,10 +82,14 @@ EXAMPLES (CONTEXT omitted; today = 2026-01-10 where a date matters)
 "delete the metformin" → {"commands":[{"action":"delete_record","kind":"medication","match":"metformin"}]}
 "read the medication list" → {"commands":[{"action":"read_records","kind":"medication"}]}
 "give me a summary of this patient" → {"commands":[{"action":"summarize_patient"}]}
+"show me dashboard summary" → {"commands":[{"action":"open_dashboard_summary"}]}
+"close dashboard summary" → {"commands":[{"action":"close_dashboard_summary"}]}
 "open summary and show me the diagnosis tab" → {"commands":[{"action":"navigate","target":"summary"},{"action":"open_tab","tab":"diagnosis"}]}
 "add patient bilal hussain, male, 32 years old" → {"commands":[{"action":"add_record","kind":"patient","fields":{"firstName":"Bilal","lastName":"Hussain","gender":"Male","age":32}}]}
 "set dosage to 250 mg" → {"commands":[{"action":"fill_field","field":"dosage","value":"250 mg"}]}
-"save it" → {"commands":[{"action":"confirm"}]}`;
+"save it" → {"commands":[{"action":"confirm"}]}
+"open the second referral" → {"commands":[{"action":"inbox_open","target":2,"category":"referral"}]}
+"file this" → {"commands":[{"action":"inbox_file","file":true,"target":"this"}]}`;
 }
 
 /** The per-request part: runtime context on one line, then the transcript. */

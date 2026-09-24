@@ -9,6 +9,7 @@ import { useSelectedPatient } from '@/hooks/usePatientData';
 import type { EntryStore } from '@/hooks';
 import type { AIRecordKind, FieldValues } from '@/types/ai';
 import type { Appointment, Diagnosis, Medication, Recall, Task } from '@/types/domain';
+import { FieldRegistry } from '@/registry/fieldRegistry';
 import { FormGrid, FormSection } from '@/components/common';
 import { RegisteredFormModal } from './RegisteredForm';
 import { CheckboxField, DateField, NumberField, ProviderSelectField, SelectField, TextField, TimeField } from './fields';
@@ -31,6 +32,53 @@ const titles: Record<RecordKind, string> = {
   recall: 'Recall',
   appointment: 'Appointment',
 };
+
+/**
+ * Prefills reach a form as plain strings — from the Inbox cards, the AI Summary
+ * extraction, and anything else that hands over values it read as text. Ant
+ * Design's date and time pickers only accept Dayjs objects (a string makes them
+ * call `.isValid()` on it and throw), so every incoming value is converted to
+ * what its field actually expects before it is used as an initial value.
+ *
+ * Values the form has no field for are dropped rather than passed through.
+ */
+export function toFormInitialValues(formId: string, values: Record<string, unknown> = {}): AnyValues {
+  const out: AnyValues = {};
+  for (const [key, raw] of Object.entries(values)) {
+    if (raw === undefined || raw === null || raw === '') continue;
+    const field = FieldRegistry.resolveField(formId, key);
+    if (!field) continue;
+    if (dayjs.isDayjs(raw)) {
+      out[field.name] = raw;
+      continue;
+    }
+    switch (field.type) {
+      case 'date': {
+        const parsed = dayjs(String(raw));
+        if (parsed.isValid()) out[field.name] = parsed;
+        break;
+      }
+      case 'time': {
+        const text = String(raw).trim();
+        const parsed = dayjs(`2000-01-01T${text.length === 4 ? `0${text}` : text}`);
+        if (parsed.isValid()) out[field.name] = parsed;
+        break;
+      }
+      case 'number': {
+        const n = Number(String(raw).replace(/[^\d.-]/g, ''));
+        if (!Number.isNaN(n)) out[field.name] = n;
+        break;
+      }
+      case 'checkbox':
+      case 'switch':
+        out[field.name] = raw === true || raw === 'true' || raw === 'Yes';
+        break;
+      default:
+        out[field.name] = typeof raw === 'boolean' ? raw : String(raw);
+    }
+  }
+  return out;
+}
 
 const asDate = (v: unknown): string | undefined => (dayjs.isDayjs(v) ? (v as Dayjs).format('YYYY-MM-DD') : typeof v === 'string' && v ? v : undefined);
 const asTime = (v: unknown): string | undefined => (dayjs.isDayjs(v) ? (v as Dayjs).format('HH:mm') : typeof v === 'string' && v ? v : undefined);
@@ -240,7 +288,7 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
 
   const initialValues = useMemo<AnyValues>(() => {
     if (record) return recordToFormValues(kind, record);
-    return { ...defaultValues(kind, authorName), ...(prefill ?? {}) };
+    return { ...defaultValues(kind, authorName), ...toFormInitialValues(kind, prefill) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, record, authorName, JSON.stringify(prefill ?? {})]);
 

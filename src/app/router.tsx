@@ -64,7 +64,7 @@ export const router = createBrowserRouter([
           // the patient is chosen, and the Inbox is a provider workqueue that spans
           // patients (it makes each item's patient explicit instead).
           { path: '/patients', Component: PatientModulePage },
-          { path: '/inbox', element: <Navigate to="/inbox/lab" replace /> },
+          { path: '/inbox', element: <Navigate to="/inbox/all" replace /> },
           { path: '/inbox/:category', Component: InboxPage },
           {
             // Everything below is patient-dependent and is not rendered at all

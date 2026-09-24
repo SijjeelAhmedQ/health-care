@@ -52,7 +52,7 @@ export default function DashboardPage() {
   const hasAnyData = counts.medication + counts.diagnosis + counts.task + counts.recall + counts.appointment > 0;
 
   return (
-    <>
+    <div className="page">
       <PageHeader
         title="Dashboard"
         subtitle={patient ? `Everything recorded for ${patient.fullName}, at a glance.` : 'Select a patient to see their overview.'}
@@ -199,6 +199,6 @@ export default function DashboardPage() {
           </div>
         </>
       )}
-    </>
+    </div>
   );
 }

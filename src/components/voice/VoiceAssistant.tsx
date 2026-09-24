@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Button, Input, Tag, Tooltip } from 'antd';
 import { AlertCircle, Bug, Check, CheckCircle2, Keyboard, Loader2, Mic, MicOff, Send, Volume2, VolumeX, X } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
@@ -7,6 +8,7 @@ import { uiActions } from '@/store/slices/uiSlice';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { aiConfig } from '@/services/ai/config';
 import { getSpeakReplies, isSpeechSupported, setSpeakReplies, stopSpeaking } from '@/services/ai/speech';
+import { PageRegistry } from '@/registry/pageRegistry';
 
 const statusMeta: Record<VoiceStatus, { label: string; color: string }> = {
   idle: { label: 'Ready', color: '#5b6b7a' },
@@ -20,6 +22,9 @@ const statusMeta: Record<VoiceStatus, { label: string; color: string }> = {
   cancelled: { label: 'Cancelled', color: '#5b6b7a' },
 };
 
+/** The panel sits above antd's default tooltip layer (1070), so its tooltips must sit higher still. */
+const TOOLTIP_Z = 1300;
+
 const hints = [
   'Select patient John Smith',
   'Open medications',
@@ -32,9 +37,13 @@ const hints = [
   'Open summary and show me the diagnosis tab',
 ];
 
+/** In the Inbox the assistant suggests Inbox commands. */
+const inboxHints = ['Open the first record', 'File this', 'Next', 'Show Lab', 'Search blood test', 'Clear search', 'What can I say?'];
+
 export function VoiceAssistant() {
   const dispatch = useAppDispatch();
   const voice = useAppSelector((s) => s.voice);
+  const inInbox = PageRegistry.matchPath(useLocation().pathname)?.module === 'inbox';
   const [typed, setTyped] = useState('');
   const [showTyping, setShowTyping] = useState(false);
   // Read-back commands ("read the medication list") are spoken unless the user mutes them.
@@ -44,6 +53,11 @@ export function VoiceAssistant() {
   // The microphone switch is owned by the user (micActive) — not by the transcription lifecycle.
   const micOn = voice.micActive;
   const controller = getVoiceController();
+
+  // Typing or changing the spoken-reply setting means the user is not talking: the mic goes off.
+  const micOffForOtherInput = () => {
+    if (controller.isMicActive) controller.stopListening();
+  };
 
   const submitTyped = () => {
     if (!typed.trim()) return;
@@ -67,7 +81,7 @@ export function VoiceAssistant() {
               {voice.llmProvider.startsWith('mock') ? 'Mock mode' : voice.llmProvider}
             </Tag>
             {aiConfig.enableDebugPanel && (
-              <Tooltip title="Debug">
+              <Tooltip title="Debug" zIndex={TOOLTIP_Z}>
                 <Button type="text" size="small" icon={<Bug size={14} />} onClick={() => dispatch(uiActions.setDebugPanelOpen(true))} aria-label="Open debug panel" />
               </Tooltip>
             )}
@@ -97,7 +111,7 @@ export function VoiceAssistant() {
             {voice.interimTranscript || voice.transcript ? (
               <div className="voice-transcript">“{voice.interimTranscript || voice.transcript}”</div>
             ) : (
-              <div className="voice-transcript placeholder">{micOn ? 'Listening — speak whenever you are ready. The mic stays on until you press Stop.' : voice.micSupported ? 'Tap the microphone and speak a command…' : 'Microphone not supported here — type a command below.'}</div>
+              <div className="voice-transcript placeholder">{micOn ? 'Listening — speak whenever you are ready. The mic turns off after a 10 second pause.' : voice.micSupported ? 'Tap the microphone and speak a command…' : 'Microphone not supported here — type a command below.'}</div>
             )}
 
             {voice.pendingSlot && voice.status !== 'error' && (
@@ -115,7 +129,9 @@ export function VoiceAssistant() {
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>
                   {voice.pendingConfirmation.kind === 'delete'
                     ? `${voice.pendingConfirmation.formTitle} — confirm deletion`
-                    : `${voice.pendingConfirmation.formTitle} — ready to save`}
+                    : voice.pendingConfirmation.kind === 'inbox_file'
+                      ? voice.pendingConfirmation.formTitle
+                      : `${voice.pendingConfirmation.formTitle} — ready to save`}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', marginBottom: 8 }}>
                   {voice.pendingConfirmation.summary.slice(0, 8).map((s) => (
@@ -129,7 +145,9 @@ export function VoiceAssistant() {
                 <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
                   {voice.pendingConfirmation.kind === 'delete'
                     ? 'This cannot be undone. Say “yes, delete it” or “cancel”.'
-                    : 'Review the form, then confirm. Say “save it” or “cancel”.'}
+                    : voice.pendingConfirmation.kind === 'inbox_file'
+                      ? 'Say “yes” to confirm or “cancel”.'
+                      : 'Review the form, then confirm. Say “save it” or “cancel”.'}
                 </div>
                 <div className="flex gap-2">
                   <Button
@@ -139,7 +157,13 @@ export function VoiceAssistant() {
                     icon={<Check size={14} />}
                     onClick={() => void controller.handleTranscript('yes')}
                   >
-                    {voice.pendingConfirmation.kind === 'delete' ? 'Delete' : 'Save'}
+                    {voice.pendingConfirmation.kind === 'delete'
+                      ? 'Delete'
+                      : voice.pendingConfirmation.kind === 'inbox_file'
+                        ? voice.pendingConfirmation.inboxFile === false
+                          ? 'Yes, unfile'
+                          : 'Yes, file'
+                        : 'Save'}
                   </Button>
                   <Button size="small" onClick={() => void controller.handleTranscript('cancel')}>
                     Cancel
@@ -152,7 +176,7 @@ export function VoiceAssistant() {
               <div>
                 <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Try saying</div>
                 <div className="voice-hint-chips">
-                  {hints.map((h) => (
+                  {(inInbox ? inboxHints : hints).map((h) => (
                     <Tag key={h} className="voice-hint-chip" onClick={() => void controller.handleTranscript(h)}>
                       {h}
                     </Tag>
@@ -209,11 +233,12 @@ export function VoiceAssistant() {
             )}
             <div style={{ flex: 1 }} />
             {isSpeechSupported() && (
-              <Tooltip title={speakReplies ? 'Spoken replies on — click to mute' : 'Spoken replies muted'}>
+              <Tooltip title={speakReplies ? 'Spoken replies on — click to mute' : 'Spoken replies muted'} zIndex={TOOLTIP_Z}>
                 <Button
                   type="text"
                   icon={speakReplies ? <Volume2 size={15} /> : <VolumeX size={15} />}
                   onClick={() => {
+                    micOffForOtherInput();
                     const next = !speakReplies;
                     setSpeak(next);
                     setSpeakReplies(next);
@@ -225,20 +250,28 @@ export function VoiceAssistant() {
               </Tooltip>
             )}
             {voice.micSupported && (
-              <Tooltip title={showTyping ? 'Use microphone' : 'Type instead'}>
-                <Button type="text" icon={showTyping ? <Mic size={15} /> : <Keyboard size={15} />} onClick={() => setShowTyping((v) => !v)} aria-label="Toggle typing mode" />
+              <Tooltip title={showTyping ? 'Use microphone' : 'Type instead'} zIndex={TOOLTIP_Z}>
+                <Button
+                  type="text"
+                  icon={showTyping ? <Mic size={15} /> : <Keyboard size={15} />}
+                  onClick={() => {
+                    if (!showTyping) micOffForOtherInput();
+                    setShowTyping((v) => !v);
+                  }}
+                  aria-label="Toggle typing mode"
+                />
               </Tooltip>
             )}
           </div>
         </div>
       )}
 
-      <Tooltip title={micOn ? 'Turn microphone off' : 'Turn microphone on (Ctrl+Shift+V)'} placement="left">
+      <Tooltip title={micOn ? 'Turn microphone off' : 'Turn microphone on (Ctrl+Shift+V)'} placement="left" zIndex={TOOLTIP_Z}>
         <button
           type="button"
           className={`voice-fab ${micOn ? 'listening' : ''}`}
           onClick={() => {
-            // Explicit user toggle — the only thing that switches the mic off besides Cancel.
+            // Explicit user toggle.
             if (micOn) controller.stopListening();
             else if (voice.micSupported) controller.startListening();
             else dispatch(voiceActions.setPanelOpen(!voice.panelOpen));

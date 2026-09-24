@@ -2,10 +2,14 @@ import { createAsyncThunk, createEntityAdapter, createSlice, type PayloadAction 
 import { patientService } from '@/services/api';
 import type { Patient } from '@/types/domain';
 import type { RootState } from '..';
+import { hasPersistedSession, login, logout } from './authSlice';
 
 const adapter = createEntityAdapter<Patient>({ sortComparer: (a, b) => a.lastName.localeCompare(b.lastName) });
 
-/** The selected patient survives a reload — it is the context the whole app works in. */
+/**
+ * The selected patient survives a reload — it is the context the whole app works in.
+ * It never survives a sign-out: every sign-in starts with no patient selected.
+ */
 const SELECTED_KEY = 'careflow.selectedPatientId';
 const readSelected = (): string | null => {
   try {
@@ -32,10 +36,13 @@ interface PatientExtraState {
   lastSearch: string;
 }
 
+// A stored selection without a signed-in session (signed out, or the session expired) is stale.
+if (!hasPersistedSession()) writeSelected(null);
+
 const initialState = adapter.getInitialState<PatientExtraState>({
   status: 'idle',
   error: null,
-  currentPatientId: readSelected(),
+  currentPatientId: hasPersistedSession() ? readSelected() : null,
   recentPatientIds: [],
   lastSearch: '',
 });
@@ -66,7 +73,19 @@ const patientSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    /** Patient safety: no patient context outlives the session it was chosen in. */
+    const clearContext = (state: typeof initialState) => {
+      state.currentPatientId = null;
+      state.recentPatientIds = [];
+      state.lastSearch = '';
+      writeSelected(null);
+    };
     builder
+      // Cleared the moment sign-out starts, not after the server answers.
+      .addCase(logout.pending, clearContext)
+      .addCase(logout.fulfilled, clearContext)
+      // A new sign-in always starts with no patient selected.
+      .addCase(login.fulfilled, clearContext)
       .addCase(fetchPatients.pending, (state) => {
         state.status = 'loading';
       })

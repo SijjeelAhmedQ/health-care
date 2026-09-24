@@ -1,44 +1,88 @@
 /* =========================================================================
    Patient context — banner, picker, and the "select a patient" gate
    ========================================================================= */
+/*
+ * The banner answers "who am I working on?" without eating the screen: one
+ * row (identity · record overview · switch) where there is room, two rows
+ * where there is not, and a sideways-scrolling overview strip on a phone.
+ * It sizes itself from its own width (container query), not the viewport's,
+ * so opening the dashboard dock or collapsing the sidebar re-flows it.
+ */
 .patient-banner {
+  container: patient-banner / inline-size;
   background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm); padding: 14px 16px; margin-bottom: 18px;
-  display: flex; flex-direction: column; gap: 12px;
+  box-shadow: var(--shadow-sm); padding: 12px 14px; margin-bottom: 16px;
 }
-.patient-banner-identity { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.patient-banner-who { flex: 1 1 260px; min-width: 0; }
-.patient-banner-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
-.patient-banner-demographics { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: 13px; color: var(--color-text-secondary); }
-.patient-banner-contacts { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; font-size: 12.5px; color: var(--color-text-muted); }
-.patient-banner-contacts span { display: inline-flex; align-items: center; gap: 6px; }
-.patient-banner-switch { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.patient-banner-grid {
+  display: grid; align-items: center; gap: 12px 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "identity switch" "stats stats";
+}
+.patient-banner-identity { grid-area: identity; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.patient-banner-who { flex: 1 1 auto; min-width: 0; }
+.patient-banner-name { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; font-size: 16px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.3; }
+.patient-banner-name .ant-tag { margin: 0; font-weight: 500; }
+.patient-banner-fullname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.patient-banner-demographics, .patient-banner-contacts { display: flex; flex-wrap: wrap; align-items: center; margin-top: 2px; line-height: 1.5; }
+.patient-banner-demographics { font-size: 12.5px; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.patient-banner-demographics strong { color: var(--color-text); font-weight: 600; }
+.patient-banner-contacts { font-size: 12px; color: var(--color-text-muted); }
+.patient-banner-switch { grid-area: switch; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+
 .patient-banner-stats {
-  list-style: none; margin: 0; padding: 12px 0 0; display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px; border-top: 1px solid var(--color-border);
+  /* positioned, so the visually-hidden hints inside are clipped with the strip instead of widening the page */
+  position: relative;
+  grid-area: stats; list-style: none; margin: 0; padding: 10px 0 0; border-top: 1px solid var(--color-border);
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px;
 }
+.patient-banner-stats > li { min-width: 0; }
 .patient-banner-stat {
-  width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer;
+  width: 100%; height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 10px; cursor: pointer;
   background: var(--color-surface-subtle); border: 1px solid var(--color-border); border-radius: var(--radius-md);
   font: inherit; color: inherit; text-align: left;
   transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
 }
 .patient-banner-stat:hover { border-color: var(--color-primary); background: var(--color-primary-soft); }
+.patient-banner-stat:focus-visible { outline-offset: 1px; }
 .patient-banner-stat.is-warning { border-color: #f0d9a8; background: var(--color-warning-soft); }
 .patient-banner-stat.is-warning:hover { border-color: var(--color-warning); }
 .patient-banner-stat-icon {
-  display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px;
+  display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px;
   background: var(--color-primary-soft); color: var(--color-primary); flex-shrink: 0;
 }
 .patient-banner-stat.is-warning .patient-banner-stat-icon { background: #fff; color: var(--color-warning); }
-.patient-banner-stat-body { display: flex; flex-direction: column; min-width: 0; }
-.patient-banner-stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted); font-weight: 600; }
-.patient-banner-stat-value { font-size: 16px; font-weight: 700; line-height: 1.2; }
-@media (max-width: 767.98px) {
-  .patient-banner { padding: 12px; }
-  .patient-banner-switch { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; }
+.patient-banner-stat-body { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.patient-banner-stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.patient-banner-stat-value { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Wide: everything on one line. */
+@container patient-banner (min-width: 1180px) {
+  .patient-banner-grid { grid-template-columns: minmax(260px, 1fr) auto auto; grid-template-areas: "identity stats switch"; }
+  .patient-banner-stats { grid-template-columns: repeat(5, auto); padding: 0 0 0 16px; border-top: none; border-left: 1px solid var(--color-border); }
+  .patient-banner-switch { padding-left: 4px; }
+}
+/* Medium: e-mail is the least needed fact on a narrower banner. */
+@container patient-banner (max-width: 760px) {
+  .patient-banner-email { display: none !important; }
+  .patient-banner-stat { padding: 0 10px; }
+  .patient-banner-stat-icon { display: none; }
+}
+/* Phone: the switch moves under the name, the overview becomes a swipeable strip. */
+@container patient-banner (max-width: 560px) {
+  .patient-banner-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "identity" "switch" "stats"; gap: 10px; }
   .patient-banner-contacts { display: none; }
-  .patient-banner-stats { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+  .patient-banner-switch { flex-direction: row; align-items: center; justify-content: space-between; }
+  .patient-banner-stats {
+    display: flex; overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+    margin-inline: -14px; padding: 10px 14px 0; gap: 6px;
+  }
+  .patient-banner-stats::-webkit-scrollbar { display: none; }
+  .patient-banner-stats > li { flex: 0 0 auto; scroll-snap-align: start; }
+  .patient-banner-stat { width: auto; min-width: 104px; }
+  .patient-banner-stat-icon { display: grid; }
+}
+@media (max-width: 767.98px) {
+  .patient-banner { padding: 12px 14px; margin-bottom: 14px; }
 }
 
 .patient-picker-heading { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; color: var(--color-text-muted); }
@@ -112,7 +156,17 @@
 .mini-list-main { display: flex; flex-direction: column; min-width: 0; font-size: 13.5px; }
 .mini-list-main .muted { font-size: 12.5px; }
 
-.summary-tabs .ant-tabs-nav { margin-bottom: 18px; }
+.summary-tabs .ant-tabs-nav { margin-bottom: 16px; }
+/* In the workspace layout the tab strip stays put and only the open tab scrolls. */
+@media (min-width: 768px) and (min-height: 760px) {
+  .page-fill > .summary-tabs { display: flex; flex-direction: column; }
+  .page-fill > .summary-tabs > .ant-tabs-nav { flex-shrink: 0; margin-bottom: 0; }
+  .page-fill > .summary-tabs > .ant-tabs-content-holder {
+    flex: 0 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+    /* room for the focus ring of the first card, and for the voice button under the last one */
+    padding: 16px 2px 72px; margin-inline: -2px;
+  }
+}
 .summary-tab-label { display: inline-flex; align-items: center; gap: 7px; }
 .summary-tab-count {
   font-size: 11px; font-weight: 600; background: var(--color-surface-muted); border-radius: 999px;

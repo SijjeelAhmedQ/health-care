@@ -7,6 +7,8 @@ interface UiState {
   debugPanelOpen: boolean;
   globalSearchQuery: string;
   notificationsOpen: boolean;
+  /** The dashboard summary docked to the right of the screen ("show dashboard summary"). */
+  dashboardSummaryOpen: boolean;
   /** Generic overlay registry state: id -> open */
   overlays: Record<string, boolean>;
 }
@@ -18,6 +20,7 @@ const initialState: UiState = {
   debugPanelOpen: false,
   globalSearchQuery: '',
   notificationsOpen: false,
+  dashboardSummaryOpen: false,
   overlays: {},
 };
 
@@ -45,6 +48,9 @@ const uiSlice = createSlice({
     },
     setNotificationsOpen(state, action: PayloadAction<boolean>) {
       state.notificationsOpen = action.payload;
+    },
+    setDashboardSummaryOpen(state, action: PayloadAction<boolean>) {
+      state.dashboardSummaryOpen = action.payload;
     },
     setOverlay(state, action: PayloadAction<{ id: string; open: boolean }>) {
       state.overlays[action.payload.id] = action.payload.open;

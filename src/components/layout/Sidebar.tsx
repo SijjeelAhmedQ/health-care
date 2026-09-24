@@ -65,7 +65,7 @@ export function Sidebar({ collapsed, onCollapse }: Props) {
       collapsed={collapsed}
       onCollapse={onCollapse}
       trigger={null}
-      style={{ position: 'sticky', top: 0, height: '100vh', overflow: 'hidden' }}
+      style={{ height: '100%', overflow: 'hidden' }}
     >
       <div className={`app-sider-brand ${collapsed ? 'collapsed' : ''}`}>
         <div className="app-sider-brand-mark">

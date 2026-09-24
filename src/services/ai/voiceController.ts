@@ -23,6 +23,8 @@ import { effectiveConfig } from './config';
 import { createLLMProvider, MockLLMProvider, ModelUnavailableError } from './providers/llmProviders';
 import { createSTTProvider, type ListeningSession, type MicrophoneRecognizer } from './providers/sttProviders';
 import { interpret, looksLikeCommand, normalizeTranscript } from './ruleBasedInterpreter';
+import { isCompleteShortCommand, isInboxPage } from './inboxGrammar';
+import { correctMisheardCommand } from './speechCorrections';
 import { speak } from './speech';
 import { translateUrdu } from './urdu/translator';
 
@@ -32,6 +34,31 @@ function patientRecords(state: RootState, kind: AIRecordKind): AnyRecord[] {
   const patientId = state.patients.currentPatientId;
   if (!patientId) return [];
   return recordSlices[kind].selectors.selectAll(state).filter((r) => r.patientId === patientId) as AnyRecord[];
+}
+
+const KIND_CUES: Array<[AIRecordKind, RegExp]> = [
+  ['medication', /\b(?:start(?:ed)?\s+(?:the\s+|him\s+|her\s+)?(?:patient\s+)?on|prescribe[ds]?|medications?|medicines?|tablets?|capsules?|\d+\s*(?:mg|ml|mcg)|(?:once|twice|three times)\s+(?:a\s+)?da(?:il)?y)\b/i],
+  ['diagnosis', /\bdiagnos(?:is|es|e|ed)\b/i],
+  ['task', /\btasks?\b/i],
+  ['recall', /\brecall\b/i],
+  ['appointment', /\b(?:appointments?|follow[\s-]?up|schedule[ds]?)\b/i],
+];
+
+/** Which record kinds a spoken sentence talks about. */
+function mentionedKinds(text: string): Set<AIRecordKind> {
+  const urdu = translateUrdu(text);
+  const english = correctMisheardCommand(urdu.detected ? urdu.text : text);
+  return new Set(KIND_CUES.filter(([, re]) => re.test(english)).map(([kind]) => kind));
+}
+
+/**
+ * A dictated clinical note ("start metformin …, add hypertension as a diagnosis, recall the patient …")
+ * rather than a command: it covers three or more record kinds, or two in a long run of speech.
+ */
+export function isClinicalParagraph(text: string): boolean {
+  const kinds = mentionedKinds(text).size;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  return kinds >= 3 || (kinds >= 2 && words >= 18);
 }
 
 let counter = 0;
@@ -56,6 +83,37 @@ export class VoiceController {
     this.stt = overrides?.stt ?? createSTTProvider(config);
     this.executor = new CommandExecutor(this.buildDeps());
     this.publishProviders();
+    // Signing out ends voice control at once: the microphone goes off and nothing
+    // said about the last patient is left on screen for the next user.
+    let signedIn = !!store.getState().auth?.token;
+    store.subscribe(() => {
+      const now = !!this.store.getState().auth?.token;
+      const signedOut = signedIn && !now;
+      // Updated before shutting down: shutdown dispatches, which calls this listener again.
+      signedIn = now;
+      if (signedOut) this.shutdown();
+    });
+  }
+
+  /** Sign-out: microphone off, pending work dropped, conversation cleared — silently. */
+  shutdown() {
+    this.cancelled = true;
+    this.micActive = false;
+    if (this.fragmentTimer) clearTimeout(this.fragmentTimer);
+    this.fragment = null;
+    this.fragmentTimer = null;
+    this.clearSilenceTimer();
+    this.paragraph = null;
+    this.dictation = null;
+    const session = this.session;
+    this.session = null;
+    session?.cancel();
+    const { dispatch } = this.store;
+    dispatch(voiceActions.setMicActive(false));
+    dispatch(voiceActions.resetVoice());
+    dispatch(voiceActions.clearHistory());
+    dispatch(voiceActions.setPanelOpen(false));
+    dispatch(voiceActions.setHelpOpen(false));
   }
 
   /** Re-create providers after the dev console changed the configuration. */
@@ -101,21 +159,30 @@ export class VoiceController {
     dispatch(voiceActions.setResponse(null));
     if (!this.busy) dispatch(voiceActions.setStatus('listening'));
     this.openSession();
+    this.armSilenceTimer();
   }
 
   private openSession() {
     const { dispatch } = this.store;
     this.session = this.stt.start({
+      // After Mic Off the engine may still flush its last bit of audio. That speech is dropped
+      // (see onFinal), so it must not flip the status back to "Transcribing…" either.
       onInterim: (text) => {
+        if (!this.micActive) return;
         dispatch(voiceActions.setInterimTranscript(text));
         this.dictation?.onInterim?.(text);
+        // Still talking — the 10 s pause starts over.
+        if (text && this.micActive) this.armSilenceTimer();
       },
       onTranscribing: () => {
+        if (!this.micActive) return;
+        this.armSilenceTimer();
         if (!this.busy) dispatch(voiceActions.setStatus('transcribing'));
       },
       // A completed utterance segment: process it, but keep the microphone open.
       onFinal: (text) => {
         if (!this.micActive) return;
+        this.armSilenceTimer();
         this.acceptSegment(text);
       },
       onError: (error, fatal) => {
@@ -194,7 +261,26 @@ export class VoiceController {
       dispatch(voiceActions.setInterimTranscript(''));
       return;
     }
+    // A clinical paragraph is being dictated: keep collecting until the user pauses.
+    if (this.paragraph) {
+      const clean = text.trim();
+      if (clean) this.paragraph.push(clean);
+      dispatch(voiceActions.setInterimTranscript(''));
+      dispatch(voiceActions.setTranscript(this.paragraph.join(' ')));
+      this.armSilenceTimer();
+      return;
+    }
     const state = getState().voice;
+    if (!state.pendingSlot && !state.pendingConfirmation) {
+      const withFragment = this.fragment ? `${this.fragment} ${text}`.trim() : text.trim();
+      if (isClinicalParagraph(withFragment)) {
+        if (this.fragmentTimer) clearTimeout(this.fragmentTimer);
+        this.fragment = null;
+        this.fragmentTimer = null;
+        this.beginParagraph(withFragment);
+        return;
+      }
+    }
     const combined = this.fragment ? `${this.fragment} ${text}`.trim() : text.trim();
     if (this.fragmentTimer) clearTimeout(this.fragmentTimer);
     this.fragmentTimer = null;
@@ -202,7 +288,8 @@ export class VoiceController {
 
     const words = combined.split(/\s+/).filter(Boolean).length;
     const expectsAnswer = !!state.pendingSlot || !!state.pendingConfirmation;
-    const isShortFragment = words < 3 && !looksLikeCommand(combined) && !expectsAnswer;
+    // "Next", "file it", "mic off" are whole commands however short they are.
+    const isShortFragment = words < 3 && !looksLikeCommand(combined) && !expectsAnswer && !isCompleteShortCommand(normalizeTranscript(combined), this.buildContext());
     if (isShortFragment) {
       this.fragment = combined;
       dispatch(voiceActions.setInterimTranscript(`${combined} …`));
@@ -217,9 +304,107 @@ export class VoiceController {
     void this.handleTranscript(combined);
   }
 
-  /** Explicit "Mic off": the only ways the mic turns off are this, cancel(), or a fatal device error. */
+  /** Segments of a clinical paragraph being dictated to the assistant (null when not capturing). */
+  private paragraph: string[] | null = null;
+  private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A pause this long turns the microphone off (and finishes a dictated clinical paragraph). */
+  static SILENCE_MS = 10000;
+
+  get isCapturingParagraph() {
+    return this.paragraph !== null;
+  }
+
+  /**
+   * The user is dictating a whole clinical note ("start metformin …, add hypertension …, recall …")
+   * rather than giving a command. Instead of executing it clause by clause, collect everything they
+   * say until a 10 s pause, then hand the paragraph to the AI Summary tab for extraction.
+   */
+  private beginParagraph(text: string) {
+    const { dispatch, getState } = this.store;
+    const voice = getState().voice;
+    // Speech engines split long sentences at breaths, so the opening clause ("start the patient on
+    // metformin …") may already have gone down the command pipeline. Pull it back into the paragraph.
+    const previous = this.busy ? voice.transcript : voice.history[0] && Date.now() - voice.history[0].timestamp < VoiceController.SILENCE_MS ? voice.history[0].transcript : '';
+    const parts = previous && mentionedKinds(previous).size > 0 ? [previous, text] : [text];
+    if (parts.length > 1) {
+      if (this.busy) {
+        this.cancelled = true;
+        void this.chain.then(() => {
+          this.cancelled = false;
+        });
+      }
+      dispatch(voiceActions.setPendingConfirmation(null));
+      dispatch(voiceActions.setPendingSlot(null));
+      dispatch(navigationActions.setOpenForm(null));
+    }
+    this.paragraph = parts;
+    dispatch(voiceActions.setPanelOpen(true));
+    dispatch(voiceActions.setError(null));
+    dispatch(voiceActions.setTranscript(parts.join(' ')));
+    dispatch(voiceActions.setStatus('listening'));
+    dispatch(voiceActions.setCurrentAction('Taking a clinical note — keep talking, pause for 10 seconds when you are done…'));
+    this.armSilenceTimer();
+  }
+
+  /** (Re)start the 10 s pause countdown; any speech resets it. */
+  private armSilenceTimer() {
+    if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    this.silenceTimer = setTimeout(() => this.onSilence(), VoiceController.SILENCE_MS);
+  }
+
+  private clearSilenceTimer() {
+    if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    this.silenceTimer = null;
+  }
+
+  /** Nobody spoke for 10 s: turn the mic off. A command still running gets its turn first. */
+  private onSilence() {
+    this.silenceTimer = null;
+    // The AI Summary dictation box runs its own pause timer (and extracts afterwards).
+    if (!this.micActive || this.dictation) return;
+    // Reading a result takes longer than 10 s. In the Inbox the microphone stays on until
+    // the user says "stop listening" (or presses Mic Off) — a clinical note still finishes.
+    const inInbox = isInboxPage(this.store.getState().navigation?.currentPageId);
+    if (this.busy || (inInbox && !this.paragraph)) {
+      this.armSilenceTimer();
+      return;
+    }
+    this.stopListening();
+  }
+
+  /** Mic off, open the AI Summary tab and let it extract the paragraph ("Dictate" + "Extract with AI"). */
+  private finishParagraph() {
+    this.clearSilenceTimer();
+    const parts = this.paragraph;
+    this.paragraph = null;
+    if (!parts) return;
+    const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+    const { dispatch, getState } = this.store;
+    if (this.micActive) this.stopListening();
+    dispatch(voiceActions.setCurrentAction(null));
+    if (!text) return;
+    dispatch(voiceActions.setSummaryHandoff({ id: uid('note'), text }));
+    NavigationRegistry.navigate('/summary/ai-summary');
+    const response = getState().patients.currentPatientId
+      ? 'Opened the AI Summary and extracting what you said.'
+      : 'Opened the AI Summary and extracting what you said. Select a patient before saving the items.';
+    dispatch(voiceActions.setResponse(response));
+    dispatch(voiceActions.setStatus('completed'));
+    dispatch(voiceActions.pushHistory({ id: uid('turn'), transcript: text, response, status: 'ok', timestamp: Date.now() }));
+    setTimeout(() => {
+      if (this.store.getState().voice.status === 'completed') dispatch(voiceActions.setStatus(this.micActive ? 'listening' : 'idle'));
+    }, 2500);
+  }
+
+  /** "Mic off": the user pressed it, switched to typing/speaker, or paused for 10 s. */
   stopListening() {
     const { dispatch } = this.store;
+    // Turning the mic off in the middle of a clinical note finishes it straight away.
+    if (this.paragraph) {
+      this.finishParagraph();
+      return;
+    }
+    this.clearSilenceTimer();
     this.micActive = false;
     if (this.fragmentTimer) clearTimeout(this.fragmentTimer);
     const held = this.fragment;
@@ -241,6 +426,8 @@ export class VoiceController {
     if (this.fragmentTimer) clearTimeout(this.fragmentTimer);
     this.fragment = null;
     this.fragmentTimer = null;
+    this.clearSilenceTimer();
+    this.paragraph = null;
     const session = this.session;
     this.session = null;
     session?.cancel();
@@ -268,6 +455,13 @@ export class VoiceController {
    */
   handleTranscript(rawTranscript: string): Promise<ExecutionResult[]> {
     if (!rawTranscript.trim()) return Promise.resolve([]);
+    // A typed / pasted clinical note has no pause to wait for: send it to the AI Summary right away.
+    const voice = this.store.getState().voice;
+    if (!voice.pendingSlot && !voice.pendingConfirmation && isClinicalParagraph(rawTranscript)) {
+      this.paragraph = [...(this.paragraph ?? []), rawTranscript.trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')];
+      this.finishParagraph();
+      return Promise.resolve([]);
+    }
     const run = this.chain.then(() => this.processTranscript(rawTranscript), () => this.processTranscript(rawTranscript));
     this.chain = run.catch(() => undefined);
     return run;
@@ -277,12 +471,19 @@ export class VoiceController {
     const { dispatch } = this.store;
     this.busy = true;
     this.cancelled = false;
-    const transcript = rawTranscript.trim();
-    const normalized = normalizeTranscript(transcript);
+    const heard = rawTranscript.trim();
     const context = this.buildContext();
+    /*
+     * The speech engine has no idea what this application's words are and hands
+     * back everyday English instead ("somebody" for "summary"), so a command is
+     * put right before anything reads it. While a field value is being dictated
+     * the words ARE the value, so there nothing is touched.
+     */
+    const transcript = context.pendingSlot ? heard : correctMisheardCommand(heard);
+    const normalized = normalizeTranscript(transcript);
 
     const trace: DebugTrace = {
-      rawTranscript: transcript,
+      rawTranscript: heard,
       normalizedTranscript: normalized,
       provider: this.llm.name,
       rawModelOutput: '',
@@ -331,7 +532,7 @@ export class VoiceController {
       const step: ExecutionStep = { id: uid('step'), command, tool: command.action, status: 'running', message: '', startedAt: Date.now() };
       dispatch(voiceActions.updateTraceStep(step));
       dispatch(voiceActions.setCurrentAction(describeAction(command)));
-      const result = await this.executor.execute(command);
+      const result = await this.executor.execute(command, 'voice');
       results.push(result);
       const done: ExecutionStep = { ...step, tool: result.tool, status: result.requiresConfirmation ? 'awaiting_confirmation' : result.ok ? 'done' : 'failed', message: result.message, finishedAt: Date.now() };
       dispatch(voiceActions.updateTraceStep(done));
@@ -370,6 +571,7 @@ export class VoiceController {
       }, 2500);
     }
     this.busy = false;
+    if (this.micActive) this.armSilenceTimer();
     return results;
   }
 
@@ -514,6 +716,7 @@ export class VoiceController {
           pendingConfirmation: s.voice.pendingConfirmation,
           pendingSlot: s.voice.pendingSlot,
           sidebarCollapsed: s.ui.sidebarCollapsed,
+          dashboardSummaryOpen: s.ui.dashboardSummaryOpen,
         };
       },
       navigate: (path: string) => NavigationRegistry.navigate(path),
@@ -525,6 +728,7 @@ export class VoiceController {
       setPendingSlot: (s: PendingSlot | null) => dispatch(voiceActions.setPendingSlot(s)),
       setPatientSearch: (q: string) => dispatch(setLastSearch(q)),
       toggleSidebar: () => dispatch(uiActions.toggleSidebar()),
+      setDashboardSummary: (open: boolean) => dispatch(uiActions.setDashboardSummaryOpen(open)),
       resolvePatientByName: (name: string) => patientService.resolveByName(name),
       getPatient: () => currentPatient(),
       getRecords: (kind: AIRecordKind) => patientRecords(getState(), kind),
@@ -533,6 +737,22 @@ export class VoiceController {
         else await dispatch(recordSlices[kind].remove(id)).unwrap();
       },
       speak: (text: string) => speak(text),
+      stopListening: () => this.stopListening(),
+      startListening: () => this.startListening(),
+      openHelp: () => dispatch(voiceActions.setHelpOpen(true)),
+      // On the patient list the search box is mirrored in the URL (?q=), including what was typed by hand.
+      getPatientSearch: () => {
+        const s = getState();
+        if (s.navigation.currentPageId === 'patients' && typeof window !== 'undefined') return new URLSearchParams(window.location.search).get('q') ?? '';
+        return s.patients.lastSearch;
+      },
+      // The same match the patient table applies to its search box, in the same order.
+      findPatients: (query: string) => {
+        const q = query.trim().toLowerCase();
+        const all = patientSelectors.selectAll(getState());
+        if (!q) return all;
+        return all.filter((p) => [p.fullName, p.mrn, p.phone, p.email, p.primaryProviderName].some((v) => String(v ?? '').toLowerCase().includes(q)));
+      },
       describePatient: () => {
         const s = getState();
         const patient = currentPatient();
@@ -575,6 +795,10 @@ function describeAction(command: AICommand): string {
       return `Reading the ${command.kind} list…`;
     case 'summarize_patient':
       return 'Building the patient summary…';
+    case 'open_dashboard_summary':
+      return 'Opening the dashboard summary…';
+    case 'close_dashboard_summary':
+      return 'Closing the dashboard summary…';
     case 'open_form':
       return 'Opening form…';
     case 'fill_form':
@@ -596,6 +820,22 @@ function describeAction(command: AICommand): string {
       return 'Cancelling…';
     case 'scroll':
       return 'Scrolling…';
+    case 'inbox_view':
+      return 'Switching Inbox category…';
+    case 'inbox_search':
+      return command.query ? `Searching the Inbox for “${command.query}”…` : 'Filtering the Inbox…';
+    case 'inbox_clear_search':
+      return 'Clearing the search…';
+    case 'inbox_open':
+      return 'Opening the record…';
+    case 'inbox_close':
+      return 'Closing the record…';
+    case 'inbox_file':
+      return command.file ? 'Filing…' : 'Unfiling…';
+    case 'select_patient_at':
+      return 'Selecting the patient…';
+    case 'stop_listening':
+      return 'Turning the microphone off…';
     default:
       return 'Working…';
   }

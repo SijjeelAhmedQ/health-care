@@ -10,8 +10,11 @@
  *   1. Nothing that depends on a patient runs without a selected patient.
  *   2. Nothing is saved or deleted without an explicit confirmation.
  */
-import type { AICommand, AIRecordKind, FieldValues, PendingConfirmation } from '@/types/ai';
+import type { AICommand, AIRecordKind, FieldValues, InboxTarget, PendingConfirmation } from '@/types/ai';
 import type { Patient } from '@/types/domain';
+import dayjs from 'dayjs';
+import { categoryMeta, type InboxItem, type InboxView } from '@/services/inbox/inboxModel';
+import { InboxVoiceRegistry, getConfirmFiling, inboxNoun, ordinalWord, type InboxVoiceController } from '@/services/inbox/inboxVoice';
 import { FieldRegistry, type FieldDefinition, type FormDefinition } from '@/registry/fieldRegistry';
 import { FormRegistry, type FormController } from '@/registry/formRegistry';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
@@ -32,6 +35,7 @@ export interface ExecutorState {
   pendingConfirmation: PendingConfirmation | null;
   pendingSlot: PendingSlot | null;
   sidebarCollapsed: boolean;
+  dashboardSummaryOpen: boolean;
 }
 
 export interface ExecutorDeps {
@@ -45,6 +49,8 @@ export interface ExecutorDeps {
   setPendingSlot(s: PendingSlot | null): void;
   setPatientSearch(query: string): void;
   toggleSidebar(): void;
+  /** Show or hide the dashboard summary docked to the right of the screen. */
+  setDashboardSummary(open: boolean): void;
   resolvePatientByName(name: string): Promise<Patient[]>;
   /** The selected patient, or undefined. */
   getPatient(): Patient | undefined;
@@ -55,7 +61,18 @@ export interface ExecutorDeps {
   speak(text: string): void;
   /** A narrative overview of the selected patient, built from real data only. */
   describePatient(): string;
+  /** Turn the microphone off / on ("stop listening", "start listening"). */
+  stopListening?(): void;
+  startListening?(): void;
+  /** Show the voice command reference. */
+  openHelp?(): void;
+  /** The text in the patient search, and the patients it shows — in on-screen order. */
+  getPatientSearch?(): string;
+  findPatients?(query: string): Patient[];
 }
+
+/** Where a command came from: spoken (or typed to the assistant), or a button / the command palette. */
+export type CommandOrigin = 'voice' | 'ui';
 
 export interface ExecutionResult {
   ok: boolean;
@@ -85,6 +102,11 @@ async function waitFor<T>(probe: () => T | undefined | null | false, timeoutMs =
 const PATIENT_SCOPED: ReadonlySet<AIRecordKind> = new Set(['medication', 'diagnosis', 'task', 'recall', 'appointment']);
 
 export class CommandExecutor {
+  /** Who asked for the command being executed. Voice opens the Inbox on the selected patient. */
+  private origin: CommandOrigin = 'ui';
+  /** Where the last record opened by voice sat in the list — "next" after it was filed out of view. */
+  private lastInboxIndex = -1;
+
   constructor(private readonly deps: ExecutorDeps) {}
 
   /** Execute a batch in order. Stops at confirmation boundaries / errors. */
@@ -99,12 +121,15 @@ export class CommandExecutor {
     return results;
   }
 
-  async execute(command: AICommand): Promise<ExecutionResult> {
+  async execute(command: AICommand, origin: CommandOrigin = 'ui'): Promise<ExecutionResult> {
+    this.origin = origin;
     try {
       switch (command.action) {
         case 'navigate':
           return this.navigate(command.target);
         case 'go_back':
+          // In the Inbox, "go back" by voice leaves the open record — like the "‹ Inbox" button.
+          if (this.origin === 'voice' && InboxVoiceRegistry.get()?.snapshot().openItem) return this.inboxClose();
           this.deps.back();
           return ok('go_back', 'Going back.');
         case 'go_home':
@@ -180,7 +205,42 @@ export class CommandExecutor {
           return this.scroll(command.direction, command.section);
         case 'open_tab':
           return this.openTab(command.tab);
+        case 'open_dashboard_summary':
+          return this.openDashboardSummary();
+        case 'close_dashboard_summary':
+          return this.closeDashboardSummary();
+        case 'stop_listening':
+          this.deps.stopListening?.();
+          return ok('stop_listening', 'Voice control is off. Tap the microphone to start again.');
+        case 'start_listening':
+          this.deps.startListening?.();
+          return ok('start_listening', 'Listening — say a command.');
+        case 'select_patient_at':
+          return this.selectPatientAt(command.position, command.single);
+
+        // ---- inbox ----
+        case 'inbox_view':
+          return this.inboxView(command.view);
+        case 'inbox_search':
+          return this.inboxSearch(command.query, command.view);
+        case 'inbox_clear_search':
+          return this.inboxClearSearch();
+        case 'inbox_open':
+          return this.inboxOpen(command.target, command.category);
+        case 'inbox_close':
+          return this.inboxClose();
+        case 'inbox_file':
+          return this.inboxFile(command.file, command.target ?? 'this', command.category);
+        case 'inbox_scope':
+          return this.inboxScope(command.scope);
+        case 'inbox_select_patient':
+          return this.inboxSelectPatient();
+
         case 'help':
+          if (InboxVoiceRegistry.get()) {
+            this.deps.openHelp?.();
+            return ok('help', 'Here is what you can say in the Inbox — for example "open the first record", "file this", "next", "search blood test" or "stop listening".');
+          }
           return ok(
             'help',
             'Try: "select patient Ahmed Khan", "open medications", "add diagnosis hypertension", "add task blood pressure monitoring due next Friday", "set recall for review in 3 months", "read the medication list", "give me a summary of this patient", "delete the metformin", "save it", "cancel".',
@@ -219,6 +279,8 @@ export class CommandExecutor {
   }
 
   private async navigateToPage(page: PageDefinition): Promise<ExecutionResult> {
+    // "Open Inbox" by voice opens it on the selected patient (buttons and the palette keep the whole queue).
+    if (page.module === 'inbox' && this.origin === 'voice') return this.inboxView((page.tab as InboxView | undefined) ?? 'all');
     if (page.requiresPatient) {
       const blocked = this.requirePatient(`open ${page.title}`);
       if (blocked) return blocked;
@@ -689,6 +751,8 @@ export class CommandExecutor {
     const pending = state.pendingConfirmation;
     if (!pending) return { ok: false, tool: 'confirm', message: 'There is nothing waiting for confirmation.', stop: true };
 
+    if (pending.kind === 'inbox_file') return this.confirmInboxFile(pending);
+
     if (pending.kind === 'delete' && pending.recordKind && pending.recordId) {
       await this.deps.deleteRecord(pending.recordKind, pending.recordId);
       this.deps.setPendingConfirmation(null);
@@ -712,10 +776,12 @@ export class CommandExecutor {
   private async cancel(): Promise<ExecutionResult> {
     const state = this.deps.getState();
     const wasDelete = state.pendingConfirmation?.kind === 'delete';
+    const wasFiling = state.pendingConfirmation?.kind === 'inbox_file' ? state.pendingConfirmation : null;
     const hadPending = !!state.pendingConfirmation || !!state.pendingSlot;
     this.deps.setPendingConfirmation(null);
     this.deps.setPendingSlot(null);
     if (wasDelete) return ok('cancel_command', 'Cancelled — nothing was deleted.');
+    if (wasFiling) return ok('cancel_command', `Cancelled — the record was not ${wasFiling.inboxFile ? 'filed' : 'moved back to unfiled'}.`);
     const active = FormRegistry.active();
     if (active) {
       active.close();
@@ -758,6 +824,273 @@ export class CommandExecutor {
     if (target) return this.navigateToPage(target);
     return { ok: false, tool: 'open_tab', message: `There is no "${tab}" tab. The Summary module has AI Summary, Medication, Recall, Appointment, Diagnosis and Task.`, stop: true };
   }
+
+  /**
+   * "Show dashboard summary" — open the Dashboard and dock the summary of it to
+   * the right of the screen. It is a patient view, so a patient must be selected.
+   */
+  private async openDashboardSummary(): Promise<ExecutionResult> {
+    const blocked = this.requirePatient('show the dashboard summary');
+    if (blocked) return blocked;
+    const navigated = await this.navigateToPage(PageRegistry.get('dashboard')!);
+    if (!navigated.ok) return navigated;
+    this.deps.setDashboardSummary(true);
+    const name = this.deps.getState().currentPatientName ?? 'this patient';
+    return ok('open_dashboard_summary', `Opened the dashboard summary for ${name} on the right. Say "close dashboard summary" to close it.`);
+  }
+
+  private async closeDashboardSummary(): Promise<ExecutionResult> {
+    if (!this.deps.getState().dashboardSummaryOpen) return ok('close_dashboard_summary', 'The dashboard summary is not open.');
+    this.deps.setDashboardSummary(false);
+    return ok('close_dashboard_summary', 'Closed the dashboard summary.');
+  }
+
+  // ------------------------------------------------------------ patient list
+
+  /** "Open the first patient" — the Nth row of the patient search, exactly as it is on screen. */
+  private async selectPatientAt(position: number, single?: boolean): Promise<ExecutionResult> {
+    const query = (this.deps.getPatientSearch?.() ?? '').trim();
+    const onList = this.deps.getState().currentPageId === 'patients';
+    if (!query && !onList) return fail('select_patient_at', 'Search for a patient first — say "search patient" followed by a name or MRN.');
+    const matches = this.deps.findPatients?.(query) ?? [];
+    const what = query ? ` matching “${query}”` : '';
+    if (!matches.length) return fail('select_patient_at', `No patient${what} was found. Try another name, or search by MRN.`);
+    if (single && matches.length > 1) {
+      return fail('select_patient_at', `${matches.length} patients match${query ? ` “${query}”` : ''}. Say "open the first patient", "open the second patient", or the full name.`);
+    }
+    if (position > matches.length) {
+      return fail('select_patient_at', `There is no ${ordinalWord(position)} patient in the list — there ${matches.length === 1 ? 'is only one' : `are ${matches.length}`}.`);
+    }
+    return this.selectPatient({ patientId: matches[position - 1].id });
+  }
+
+  // ------------------------------------------------------------------- inbox
+
+  /** Nothing the Inbox does for a patient happens without one selected. */
+  private requireInboxPatient(): ExecutionResult | null {
+    if (this.deps.getState().currentPatientId) return null;
+    return fail('require_patient', 'Please select a patient first. Say "search patient" followed by a name.');
+  }
+
+  /** The mounted Inbox — opened first (on the selected patient) when it is not on screen. */
+  private async ensureInbox(view: InboxView = 'all'): Promise<InboxVoiceController | ExecutionResult> {
+    let controller = InboxVoiceRegistry.get();
+    if (!controller) {
+      const patientId = this.deps.getState().currentPatientId;
+      this.deps.navigate(`/inbox/${view}${patientId ? `?patient=${encodeURIComponent(patientId)}` : ''}`);
+      controller = await waitFor(() => InboxVoiceRegistry.get(), 5000);
+      if (!controller) return fail('open_inbox', 'I couldn’t open the Inbox.');
+    }
+    const ready = controller;
+    await waitFor(() => !ready.snapshot().loading, 5000);
+    return ready;
+  }
+
+  private async showView(controller: InboxVoiceController, view: InboxView) {
+    if (controller.snapshot().view === view) return;
+    controller.setView(view);
+    await waitFor(() => controller.snapshot().view === view, 2500);
+    await sleep(40);
+  }
+
+  private describeList(controller: InboxVoiceController): string {
+    const snap = controller.snapshot();
+    const noun = inboxNoun[snap.view];
+    const unfiled = snap.items.filter((i) => !snap.isFiled(i.id)).length;
+    const scope = snap.scopePatientId && snap.scopePatientId === this.deps.getState().currentPatientId ? ` for ${this.deps.getState().currentPatientName ?? 'the selected patient'}` : '';
+    if (!snap.items.length) return `There are no ${noun.many}${scope} in the current list.`;
+    return `${snap.items.length} ${snap.items.length === 1 ? noun.one : noun.many}${scope}, ${unfiled} unfiled.`;
+  }
+
+  private async inboxView(view: InboxView): Promise<ExecutionResult> {
+    const controller = await this.ensureInbox(view);
+    if ('ok' in controller) return controller;
+    await this.showView(controller, view);
+    const label = view === 'all' ? 'all Inbox items' : categoryMeta[view].label;
+    return ok('inbox_view', `Showing ${label}. ${this.describeList(controller)}`);
+  }
+
+  private async inboxSearch(query: string, view?: InboxView): Promise<ExecutionResult> {
+    const controller = await this.ensureInbox(view);
+    if ('ok' in controller) return controller;
+    if (view) await this.showView(controller, view);
+    controller.setQuery(query);
+    await waitFor(() => controller.snapshot().query === query, 2000);
+    await sleep(40);
+    const snap = controller.snapshot();
+    const where = snap.view === 'all' ? 'the Inbox' : categoryMeta[snap.view].label;
+    if (!query) return ok('inbox_search', `Showing ${where}. ${this.describeList(controller)}`);
+    if (!snap.items.length) return ok('inbox_search', `Nothing in ${where} matches “${query}”. Say "clear search" to see everything again.`);
+    const noun = inboxNoun[snap.view];
+    return ok('inbox_search', `Found ${snap.items.length} ${snap.items.length === 1 ? noun.one : noun.many} matching “${query}” in ${where}. Say "open the first record" to read one.`);
+  }
+
+  private async inboxClearSearch(): Promise<ExecutionResult> {
+    const controller = InboxVoiceRegistry.get();
+    if (!controller) return fail('inbox_clear_search', 'The Inbox is not open — say "open Inbox" first.');
+    controller.setQuery('');
+    await waitFor(() => controller.snapshot().query === '', 2000);
+    return ok('inbox_clear_search', `Search cleared. ${this.describeList(controller)}`);
+  }
+
+  /** Resolve "this", "next", "the second referral" against the list on screen — or explain why not. */
+  private resolveInboxTarget(controller: InboxVoiceController, target: InboxTarget, category: InboxView | undefined, verb: 'open' | 'file' | 'unfile'): { item: InboxItem; position?: number; noun: string } | ExecutionResult {
+    const snap = controller.snapshot();
+    const kind = category ?? 'all';
+    const noun = inboxNoun[kind];
+    const list = kind === 'all' ? snap.items : snap.items.filter((i) => i.category === kind);
+
+    if (target === 'this') {
+      if (snap.openItem) return { item: snap.openItem, noun: noun.one };
+      const ticked = snap.checkedIds.length === 1 ? snap.items.find((i) => i.id === snap.checkedIds[0]) : undefined;
+      if (ticked) return { item: ticked, noun: noun.one };
+      return fail(`inbox_${verb}`, 'Please open or select a record first — for example say "open the first record".');
+    }
+    if (!list.length) {
+      return fail(`inbox_${verb}`, kind === 'all' ? 'There are no Inbox records to open in the current list.' : `There are no ${noun.many} in the current list.`);
+    }
+    if (target === 'next' || target === 'previous') {
+      const open = snap.openItem;
+      let index = open ? list.findIndex((i) => i.id === open.id) : -1;
+      // The open record left the list (filed under "Unfiled only"): its neighbour moved into its place.
+      if (open && index < 0 && this.lastInboxIndex >= 0) index = target === 'next' ? this.lastInboxIndex - 1 : this.lastInboxIndex;
+      if (!open) {
+        if (target === 'previous') return fail(`inbox_${verb}`, 'Please open a record first — for example say "open the first record".');
+        return { item: list[0], position: 1, noun: noun.one };
+      }
+      const next = index + (target === 'next' ? 1 : -1);
+      if (next >= list.length) return fail(`inbox_${verb}`, `That was the last ${noun.one} in the list.`);
+      if (next < 0) return fail(`inbox_${verb}`, `This is the first ${noun.one} in the list.`);
+      return { item: list[next], position: next + 1, noun: noun.one };
+    }
+    const position = target === 'last' ? list.length : target;
+    if (position > list.length) {
+      return fail(`inbox_${verb}`, `There is no ${ordinalWord(position)} ${noun.one} in the current list — there ${list.length === 1 ? 'is only one' : `are ${list.length}`}.`);
+    }
+    return { item: list[position - 1], position, noun: noun.one };
+  }
+
+  private async inboxOpen(target: InboxTarget, category?: InboxView): Promise<ExecutionResult> {
+    const blocked = this.requireInboxPatient();
+    if (blocked) return blocked;
+    const controller = await this.ensureInbox();
+    if ('ok' in controller) return controller;
+    const snap = controller.snapshot();
+    if (target === 'this' && snap.openItem) return ok('inbox_open', `“${snap.openItem.subject}” is already open.`);
+
+    const found = this.resolveInboxTarget(controller, target, category, 'open');
+    if ('ok' in found) return found;
+    const { item, position } = found;
+    controller.open(item);
+    await waitFor(() => controller.snapshot().openItem?.id === item.id, 2500);
+    this.lastInboxIndex = controller.snapshot().items.findIndex((i) => i.id === item.id);
+
+    const state = this.deps.getState();
+    const which = position ? `the ${ordinalWord(position)} ${found.noun}` : 'the record';
+    const filed = controller.snapshot().isFiled(item.id) ? ' It is already filed.' : '';
+    const otherPatient = state.currentPatientId && item.patientId !== state.currentPatientId ? ` Note: this belongs to ${item.patientName}, not the selected patient.` : '';
+    return ok('inbox_open', `Opened ${which}: ${categoryMeta[item.category].singular} “${item.subject}” for ${item.patientName}.${filed}${otherPatient}`);
+  }
+
+  private async inboxClose(): Promise<ExecutionResult> {
+    const controller = InboxVoiceRegistry.get();
+    if (!controller) return fail('inbox_close', 'The Inbox is not open.');
+    if (!controller.snapshot().openItem) return ok('inbox_close', 'No record is open.');
+    controller.close();
+    await waitFor(() => !controller.snapshot().openItem, 2000);
+    return ok('inbox_close', 'Closed the record.');
+  }
+
+  private async inboxFile(file: boolean, target: InboxTarget, category?: InboxView): Promise<ExecutionResult> {
+    const verb = file ? 'file' : 'unfile';
+    const blocked = this.requireInboxPatient();
+    if (blocked) return blocked;
+    const controller = InboxVoiceRegistry.get();
+    if (!controller) return fail(`inbox_${verb}`, 'Open the Inbox first — say "open Inbox".');
+    const found = this.resolveInboxTarget(controller, target, category, verb);
+    if ('ok' in found) return found;
+    const { item } = found;
+
+    // Patient safety: filing acts on the selected patient's records only.
+    const state = this.deps.getState();
+    if (item.patientId !== state.currentPatientId) {
+      return fail(
+        `inbox_${verb}`,
+        `This record belongs to ${item.patientName}, not the selected patient${state.currentPatientName ? ` (${state.currentPatientName})` : ''}. Nothing was ${file ? 'filed' : 'changed'}. Say "select this patient" first if you mean ${item.patientName}.`,
+      );
+    }
+    const isFiled = controller.snapshot().isFiled(item.id);
+    if (file && isFiled) return ok(`inbox_${verb}`, `“${item.subject}” is already filed.`);
+    if (!file && !isFiled) return ok(`inbox_${verb}`, `“${item.subject}” is not filed.`);
+
+    if (getConfirmFiling()) {
+      this.deps.setPendingSlot(null);
+      this.deps.setPendingConfirmation({
+        kind: 'inbox_file',
+        formId: 'inbox',
+        formTitle: file ? 'File this record?' : 'Unfile this record?',
+        summary: [
+          { label: 'Record', value: item.subject },
+          { label: 'Type', value: categoryMeta[item.category].singular.replace(/^./, (c) => c.toUpperCase()) },
+          { label: 'Patient', value: item.patientName },
+          { label: 'Received', value: dayjs(item.receivedAt).format('D MMM YYYY') },
+        ],
+        description: file ? 'Mark this record as reviewed and filed' : 'Move this record back to the unfiled queue',
+        inboxItemIds: [item.id],
+        inboxFile: file,
+      });
+      return {
+        ok: true,
+        tool: 'request_inbox_file_confirmation',
+        message: `${file ? 'File' : 'Unfile'} “${item.subject}” for ${item.patientName}? Say “yes” to confirm or “cancel”.`,
+        requiresConfirmation: true,
+        stop: true,
+      };
+    }
+    controller.file([item.id], file);
+    return ok(`inbox_${verb}`, file ? `Record filed — “${item.subject}”.` : `Record moved back to unfiled — “${item.subject}”.`);
+  }
+
+  private async confirmInboxFile(pending: PendingConfirmation): Promise<ExecutionResult> {
+    this.deps.setPendingConfirmation(null);
+    const controller = InboxVoiceRegistry.get();
+    if (!controller) return fail('confirm', 'The Inbox is no longer open, so nothing was changed.');
+    if (!this.deps.getState().currentPatientId) return fail('confirm', 'Please select a patient first. Nothing was changed.');
+    const ids = pending.inboxItemIds ?? [];
+    if (!ids.length) return fail('confirm', 'There is no record to file.');
+    controller.file(ids, pending.inboxFile !== false);
+    return ok('inbox_file_after_confirmation', pending.inboxFile !== false ? 'Record filed successfully.' : 'Record moved back to unfiled.');
+  }
+
+  private async inboxScope(scope: 'patient' | 'all'): Promise<ExecutionResult> {
+    const controller = await this.ensureInbox();
+    if ('ok' in controller) return controller;
+    if (scope === 'all') {
+      controller.setPatientScope(null);
+      await waitFor(() => controller.snapshot().scopePatientId === null, 2000);
+      return ok('inbox_scope', `Showing every patient's items. ${this.describeList(controller)}`);
+    }
+    const blocked = this.requireInboxPatient();
+    if (blocked) return blocked;
+    const patientId = this.deps.getState().currentPatientId!;
+    controller.setPatientScope(patientId);
+    await waitFor(() => controller.snapshot().scopePatientId === patientId, 2000);
+    return ok('inbox_scope', `Showing ${this.deps.getState().currentPatientName ?? 'the selected patient'}'s items only. ${this.describeList(controller)}`);
+  }
+
+  private async inboxSelectPatient(): Promise<ExecutionResult> {
+    const controller = InboxVoiceRegistry.get();
+    const item = controller?.snapshot().openItem;
+    if (!item) return fail('inbox_select_patient', 'Please open a record first — its patient is the one I will select.');
+    if (!item.patientId) return fail('inbox_select_patient', 'This record is not linked to a patient.');
+    if (item.patientId === this.deps.getState().currentPatientId) return ok('inbox_select_patient', `${item.patientName} is already the selected patient.`);
+    this.deps.setCurrentPatient(item.patientId);
+    return ok('inbox_select_patient', `${item.patientName} is now the selected patient.`);
+  }
+}
+
+function fail(tool: string, message: string): ExecutionResult {
+  return { ok: false, tool, message, stop: true };
 }
 
 function ok(tool: string, message: string, fieldsModified?: ExecutionResult['fieldsModified']): ExecutionResult {

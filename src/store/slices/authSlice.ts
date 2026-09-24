@@ -22,6 +22,9 @@ function loadSession(): AuthSession | null {
 
 const persisted = loadSession();
 
+/** True when this page load continues a signed-in session (a reload), not a fresh sign-in. */
+export const hasPersistedSession = () => persisted !== null;
+
 const initialState: AuthState = {
   user: persisted?.user ?? null,
   token: persisted?.token ?? null,

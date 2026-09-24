@@ -57,7 +57,7 @@ export function RecordModulePage<K extends RecordKind>({
   const metricCards = metrics(rows);
 
   return (
-    <>
+    <div className="page page-fill">
       <PageHeader
         title={title}
         subtitle={subtitle}
@@ -101,6 +101,6 @@ export function RecordModulePage<K extends RecordKind>({
       />
 
       {formModal}
-    </>
+    </div>
   );
 }

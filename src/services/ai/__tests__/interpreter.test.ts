@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { correctMisheardCommand } from '../speechCorrections';
 import {
   interpret,
+  normalizeTranscript,
   parseAppointmentPhrase,
   parseDiagnosisPhrase,
   parseMedicationList,
@@ -140,6 +142,59 @@ describe('record commands', () => {
   });
   it('searches within a module', () => {
     expect(interpret('search medications for metformin', ctx())).toEqual([{ action: 'search_records', kind: 'medication', query: 'metformin' }]);
+  });
+});
+
+describe('what the speech engine misheard', () => {
+  it('reads "somebody" (and the other near-misses) as "summary"', () => {
+    expect(normalizeTranscript('show me somebody')).toBe('show me summary');
+    expect(normalizeTranscript('Show me dashboard somebody')).toBe('show me dashboard summary');
+    expect(normalizeTranscript('close dashboard some body')).toBe('close dashboard summary');
+    expect(normalizeTranscript('open the dashboard summery')).toBe('open the dashboard summary');
+    expect(normalizeTranscript('go to the dash board')).toBe('go to the dashboard');
+  });
+  it('drives the real commands from the misheard words', () => {
+    expect(interpret('please show me dashboard somebody', ctx())).toEqual([{ action: 'open_dashboard_summary' }]);
+    expect(interpret('dashboard some body', ctx())).toEqual([{ action: 'open_dashboard_summary' }]);
+    expect(interpret('close dashboard somebody', ctx())).toEqual([{ action: 'close_dashboard_summary' }]);
+    expect(interpret('somebody', ctx())).toEqual([{ action: 'summarize_patient' }]);
+    expect(interpret('open somebody', ctx())).toEqual([{ action: 'navigate', target: 'summary' }]);
+  });
+  it('never rewrites words inside dictated free text', () => {
+    // "somebody" here is the task title, not a command.
+    expect(correctMisheardCommand('add task call somebody about the results')).toBe('add task call somebody about the results');
+    expect(correctMisheardCommand('search patient somebody')).toBe('search patient somebody');
+    expect(interpret('add task call somebody tomorrow', ctx())[0]).toMatchObject({ action: 'add_record', kind: 'task' });
+    expect(JSON.stringify(interpret('add task call somebody tomorrow', ctx())).toLowerCase()).toContain('call somebody');
+  });
+});
+
+describe('dashboard summary widget', () => {
+  it('opens the dock however the user phrases it', () => {
+    for (const phrase of [
+      'please show me dashboard summary',
+      'show dashboard summary',
+      'show me the dashboard summary',
+      'open dashboard summary',
+      'display the patient dashboard summary',
+      'dashboard summary',
+      'open the dashboard summary widget',
+      'show me the summary panel',
+    ]) {
+      expect(interpret(phrase, ctx())).toEqual([{ action: 'open_dashboard_summary' }]);
+    }
+  });
+  it('closes the dock', () => {
+    for (const phrase of ['close dashboard summary', 'close the dashboard summary', 'hide the dashboard summary', 'close the summary widget']) {
+      expect(interpret(phrase, ctx())).toEqual([{ action: 'close_dashboard_summary' }]);
+    }
+  });
+  it('leaves the spoken patient summary and the Summary module alone', () => {
+    expect(interpret('give me a summary of this patient', ctx())).toEqual([{ action: 'summarize_patient' }]);
+    // "summary" on its own has always been the spoken overview; only the module is navigation.
+    expect(interpret('summary', ctx())).toEqual([{ action: 'summarize_patient' }]);
+    expect(interpret('open summary', ctx())).toEqual([{ action: 'navigate', target: 'summary' }]);
+    expect(interpret('go to the summary module', ctx())).toEqual([{ action: 'navigate', target: 'summary' }]);
   });
 });
 

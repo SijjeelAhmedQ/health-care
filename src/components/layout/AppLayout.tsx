@@ -16,6 +16,7 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { MobileNav } from './MobileNav';
 import { SelectedPatientBanner } from '@/components/patient/SelectedPatientBanner';
+import { DashboardSummaryWidget } from '@/components/dashboard/DashboardSummaryWidget';
 import { VoiceAssistant } from '@/components/voice/VoiceAssistant';
 import { VoiceConfirmDialog } from '@/components/voice/VoiceConfirmDialog';
 import { CommandPalette } from '@/components/command-palette/CommandPalette';
@@ -45,6 +46,9 @@ export function AppLayout() {
   const { isMobile, isTablet } = useResponsive();
   const collapsed = useAppSelector((s) => s.ui.sidebarCollapsed);
   const hasPatient = useAppSelector((s) => !!s.patients.currentPatientId);
+  // "show dashboard summary" docks the dashboard to the right; it belongs to the
+  // selected patient, so it is only on screen while there is one.
+  const dashboardSummaryOpen = useAppSelector((s) => s.ui.dashboardSummaryOpen) && hasPatient;
   usePageTracking();
 
   // Install imperative navigation for the command executor.
@@ -82,6 +86,7 @@ export function AppLayout() {
         dispatch(uiActions.toggleSidebar());
       } else if (e.key === 'Escape') {
         dispatch(voiceActions.setPanelOpen(false));
+        dispatch(uiActions.setDashboardSummaryOpen(false));
       }
     };
     window.addEventListener('keydown', handler);
@@ -99,15 +104,20 @@ export function AppLayout() {
   }, [isTablet, dispatch]);
 
   // The banner belongs to the patient workflow — it is shown wherever a patient
-  // is selected, so the active context is never in doubt.
+  // is selected, so the active context is never in doubt. The Inbox is the
+  // exception: it spans every patient and names each item's own patient, so a
+  // banner for a different (selected) patient above it would invite a
+  // wrong-patient mistake. The selection stays visible in the header and sidebar.
   const page = PageRegistry.matchPath(location.pathname);
-  const showBanner = hasPatient && page?.id !== undefined;
+  const showBanner = hasPatient && page?.id !== undefined && page.module !== 'inbox';
 
   return (
-    <Layout className="app-shell" style={{ minHeight: '100vh' }}>
+    // The shell is exactly one viewport tall: the header, sidebar and mobile nav
+    // stay put, and only #main-content (or a region inside a workspace page) scrolls.
+    <Layout className={`app-shell${dashboardSummaryOpen ? ' has-right-dock' : ''}`}>
       <a href="#main-content" className="skip-link">Skip to content</a>
       {!isMobile && <Sidebar collapsed={collapsed} onCollapse={(c) => dispatch(uiActions.setSidebarCollapsed(c))} />}
-      <Layout style={{ minWidth: 0 }}>
+      <Layout className="app-main">
         <Header isMobile={isMobile} />
         <Layout.Content id="main-content" className="app-content" tabIndex={-1}>
           {showBanner && <SelectedPatientBanner />}
@@ -116,6 +126,7 @@ export function AppLayout() {
           </Suspense>
         </Layout.Content>
       </Layout>
+      {dashboardSummaryOpen && <DashboardSummaryWidget />}
       {isMobile && <MobileNav />}
       {aiConfig.enableVoice && <VoiceAssistant />}
       <VoiceConfirmDialog />

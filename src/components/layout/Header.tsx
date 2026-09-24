@@ -8,6 +8,7 @@ import { selectCurrentPatient } from '@/store/slices/patientSlice';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { aiConfig } from '@/services/ai/config';
 import { PatientPicker } from '@/components/patient/PatientPicker';
+import { useResponsive } from '@/hooks';
 import { GlobalSearch } from './GlobalSearch';
 
 export function Header({ isMobile }: { isMobile: boolean }) {
@@ -18,7 +19,10 @@ export function Header({ isMobile }: { isMobile: boolean }) {
   const debugOpen = useAppSelector((s) => s.ui.debugPanelOpen);
   const [searchOpen, setSearchOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-
+  // A tablet has no room for the full search box next to the patient chip, so it
+  // gets the same search dialog as a phone, opened from a compact trigger.
+  const { isTablet } = useResponsive();
+  const compact = isMobile || isTablet;
   return (
     <Layout.Header className="app-header">
       <div className="app-header-left">
@@ -29,6 +33,11 @@ export function Header({ isMobile }: { isMobile: boolean }) {
             </div>
             CareFlow
           </div>
+        ) : isTablet ? (
+          <button type="button" className="app-header-search-trigger" onClick={() => setSearchOpen(true)} aria-label="Search">
+            <Search size={16} aria-hidden />
+            <span>Search patients and records</span>
+          </button>
         ) : (
           <GlobalSearch />
         )}
@@ -101,7 +110,7 @@ export function Header({ isMobile }: { isMobile: boolean }) {
             <AntAvatar style={{ background: user?.avatarColor ?? '#0f6e8c', fontWeight: 600 }} size={34}>
               {user ? `${user.firstName[0]}${user.lastName[0]}` : 'U'}
             </AntAvatar>
-            {!isMobile && (
+            {!compact && (
               <span style={{ textAlign: 'left' }}>
                 <span className="app-account-name" style={{ display: 'block' }}>{user?.fullName ?? 'User'}</span>
                 <span className="app-account-role" style={{ display: 'block' }}>{user?.role ?? ''}</span>
@@ -112,7 +121,7 @@ export function Header({ isMobile }: { isMobile: boolean }) {
       </div>
 
       {/* Mobile search opens as a dialog so the header stays uncluttered on small screens. */}
-      <Modal open={searchOpen} onCancel={() => setSearchOpen(false)} footer={null} title="Search" className="app-modal search-modal" style={{ top: 12 }} width="calc(100vw - 24px)" destroyOnHidden>
+      <Modal open={searchOpen} onCancel={() => setSearchOpen(false)} footer={null} title="Search" className="app-modal search-modal" style={{ top: 12 }} width="min(640px, calc(100vw - 24px))" destroyOnHidden>
         <GlobalSearch autoFocus onSelect={() => setSearchOpen(false)} />
         <p className="muted" style={{ fontSize: 12.5, marginTop: 12, marginBottom: 0 }}>
           Search patients by name or MRN, this patient's records, and the eight modules.

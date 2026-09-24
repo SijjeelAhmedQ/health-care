@@ -4,6 +4,7 @@ import type { ColumnsType, ColumnType } from 'antd/es/table';
 import { Columns3, Download, Filter, Search, X } from 'lucide-react';
 import { EmptyState } from '@/components/common';
 import { useDebouncedValue, useResponsive } from '@/hooks';
+import { scrollMainToTop } from '@/utils/scroll';
 
 export interface FilterDef {
   key: string;
@@ -244,7 +245,7 @@ export function DataTable<T extends object>({
                   current={mobilePage}
                   pageSize={pageSize}
                   total={filtered.length}
-                  onChange={(p) => { setMobilePage(p); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  onChange={(p) => { setMobilePage(p); scrollMainToTop('smooth'); }}
                 />
               </div>
             )}

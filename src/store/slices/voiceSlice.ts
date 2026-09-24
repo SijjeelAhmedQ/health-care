@@ -49,6 +49,10 @@ interface VoiceState {
   /** User-controlled microphone switch. True from the moment the user turns the mic on until they turn it off. */
   micActive: boolean;
   lastCommandAt: number | null;
+  /** A dictated clinical paragraph the voice assistant hands to the AI Summary tab for extraction. */
+  summaryHandoff: { id: string; text: string } | null;
+  /** The voice command reference ("what can I say?"). */
+  helpOpen: boolean;
 }
 
 const initialState: VoiceState = {
@@ -72,6 +76,8 @@ const initialState: VoiceState = {
   micSupported: true,
   micActive: false,
   lastCommandAt: null,
+  summaryHandoff: null,
+  helpOpen: false,
 };
 
 const voiceSlice = createSlice({
@@ -144,6 +150,12 @@ const voiceSlice = createSlice({
     setMicActive(state, action: PayloadAction<boolean>) {
       state.micActive = action.payload;
       if (!action.payload) state.interimTranscript = '';
+    },
+    setSummaryHandoff(state, action: PayloadAction<{ id: string; text: string } | null>) {
+      state.summaryHandoff = action.payload;
+    },
+    setHelpOpen(state, action: PayloadAction<boolean>) {
+      state.helpOpen = action.payload;
     },
     setEnabled(state, action: PayloadAction<boolean>) {
       state.enabled = action.payload;

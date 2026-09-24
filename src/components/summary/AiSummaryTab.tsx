@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Input, Tag, Tooltip, message } from 'antd';
 import { Bot, CalendarPlus, Eraser, ListChecks, Mic, MicOff, Pill, Repeat, Sparkles, Stethoscope, Wand2 } from 'lucide-react';
-import { useAppSelector } from '@/store';
+import { useAppDispatch, useAppSelector } from '@/store';
+import { voiceActions } from '@/store/slices/voiceSlice';
 import { useSelectedPatient, usePatientOverview } from '@/hooks/usePatientData';
-import { getVoiceController } from '@/services/ai/voiceController';
+import { getVoiceController, VoiceController } from '@/services/ai/voiceController';
 import { extractFromTranscript, extractionKinds, type ExtractionKind } from '@/services/ai/summaryExtractor';
 import { buildPatientNarrative } from '@/services/records/patientNarrative';
 import { FieldRegistry } from '@/registry/fieldRegistry';
@@ -43,47 +44,97 @@ export function AiSummaryTab() {
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<{ kind: ExtractionKind; prefill: FieldValues; key: string } | null>(null);
+  const dispatch = useAppDispatch();
+  const handoff = useAppSelector((s) => s.voice.summaryHandoff);
   const stopRef = useRef<(() => void) | null>(null);
+  const silenceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptRef = useRef(transcript);
+  transcriptRef.current = transcript;
+
+  const clearSilence = () => {
+    if (silenceRef.current) clearTimeout(silenceRef.current);
+    silenceRef.current = null;
+  };
 
   // The microphone must never keep running once this tab is left.
-  useEffect(() => () => stopRef.current?.(), []);
+  useEffect(
+    () => () => {
+      clearSilence();
+      stopRef.current?.();
+    },
+    [],
+  );
+
+  const stopDictation = useCallback(() => {
+    clearSilence();
+    stopRef.current?.();
+    stopRef.current = null;
+    setDictating(false);
+  }, []);
+
+  const runExtraction = useCallback(
+    async (source?: string) => {
+      const text = (source ?? transcriptRef.current).trim();
+      if (!text) {
+        setError('Dictate or type a paragraph first.');
+        return;
+      }
+      stopDictation();
+      setExtracting(true);
+      setError(null);
+      try {
+        const extraction = await extractFromTranscript(text, getVoiceController().llmProvider);
+        setResult(extraction);
+        setDismissed(new Set());
+        const total = extractionKinds.reduce((n, k) => n + extraction.items[k].length, 0);
+        if (!total) setError('The AI did not find any medication, diagnosis, task, recall or appointment in that paragraph. Try being more specific.');
+      } catch (e) {
+        setError((e as Error).message || 'Extraction failed.');
+      } finally {
+        setExtracting(false);
+      }
+    },
+    [stopDictation],
+  );
+
+  // After a 10 s pause the dictation is over: mic off and extract, as if "Extract with AI" was pressed.
+  const armSilence = useCallback(() => {
+    clearSilence();
+    silenceRef.current = setTimeout(() => {
+      silenceRef.current = null;
+      if (transcriptRef.current.trim()) void runExtraction();
+      else stopDictation();
+    }, VoiceController.SILENCE_MS);
+  }, [runExtraction, stopDictation]);
 
   const toggleDictation = useCallback(() => {
-    const controller = getVoiceController();
     if (dictating) {
-      stopRef.current?.();
-      stopRef.current = null;
-      setDictating(false);
+      stopDictation();
       return;
     }
     setError(null);
-    stopRef.current = controller.startDictation({
-      onText: (text) => setTranscript((prev) => (prev ? `${prev.replace(/\s+$/, '')} ${text}` : text)),
+    stopRef.current = getVoiceController().startDictation({
+      onText: (text) => {
+        setTranscript((prev) => (prev ? `${prev.replace(/\s+$/, '')} ${text}` : text));
+        armSilence();
+      },
+      onInterim: (text) => {
+        if (text) armSilence();
+      },
     });
     setDictating(true);
-  }, [dictating]);
+    armSilence();
+  }, [dictating, stopDictation, armSilence]);
 
-  const runExtraction = async () => {
-    const text = transcript.trim();
-    if (!text) {
-      setError('Dictate or type a paragraph first.');
-      return;
-    }
-    if (dictating) toggleDictation();
-    setExtracting(true);
-    setError(null);
-    try {
-      const extraction = await extractFromTranscript(text, getVoiceController().llmProvider);
-      setResult(extraction);
-      setDismissed(new Set());
-      const total = extractionKinds.reduce((n, k) => n + extraction.items[k].length, 0);
-      if (!total) setError('The AI did not find any medication, diagnosis, task, recall or appointment in that paragraph. Try being more specific.');
-    } catch (e) {
-      setError((e as Error).message || 'Extraction failed.');
-    } finally {
-      setExtracting(false);
-    }
-  };
+  // A clinical paragraph dictated to the voice assistant lands here and is extracted straight away.
+  const handledHandoff = useRef<string | null>(null);
+  useEffect(() => {
+    if (!handoff || handledHandoff.current === handoff.id) return;
+    handledHandoff.current = handoff.id;
+    dispatch(voiceActions.setSummaryHandoff(null));
+    setTranscript(handoff.text);
+    void runExtraction(handoff.text);
+  }, [handoff, dispatch, runExtraction]);
 
   const narrative = useMemo(
     () =>
@@ -158,11 +209,11 @@ export function AiSummaryTab() {
         {dictating && (
           <div className="dictation-status" role="status">
             <span className="voice-waveform"><span /><span /><span /><span /><span /></span>
-            Listening — keep talking. Press <strong>Stop dictation</strong> when you are done.
+            Listening — keep talking. Pause for 10 seconds (or press <strong>Stop dictation</strong>) and the AI extracts it automatically.
           </div>
         )}
         <div className="ai-summary-actions">
-          <Button type="primary" icon={<Wand2 size={15} />} loading={extracting} onClick={runExtraction} disabled={!transcript.trim()}>
+          <Button type="primary" icon={<Wand2 size={15} />} loading={extracting} onClick={() => void runExtraction()} disabled={!transcript.trim()}>
             Extract with AI
           </Button>
           <Button

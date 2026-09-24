@@ -1,162 +1,244 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Button, message } from 'antd';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Button, Switch, Tooltip, message, type InputRef } from 'antd';
+import { ArrowRight, CircleAlert, Inbox as InboxIcon, Mic, MousePointerClick, RefreshCw, TriangleAlert, UserRoundCheck, Users } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { fetchInbox, inboxActions } from '@/store/slices/inboxSlice';
 import { patientSelectors } from '@/store/slices/patientSlice';
 import { useLocalStorage, useResponsive } from '@/hooks';
-import { inboxCategories, type InboxCategory, type InboxItem } from '@/services/inbox/inboxModel';
-import { buildSuggestions, countByPriority } from '@/services/inbox/inboxInsights';
-import { InboxFilterBar, emptyFilters, type InboxFilters } from '@/components/inbox/InboxFilterBar';
-import { InboxMessageList } from '@/components/inbox/InboxMessageList';
-import { InboxReadingPane } from '@/components/inbox/InboxReadingPane';
-import { InboxAiPanel } from '@/components/inbox/InboxAiPanel';
+import { inboxViews, isInboxView, type InboxItem, type InboxView } from '@/services/inbox/inboxModel';
+import { priorityOf } from '@/services/inbox/inboxInsights';
+import {
+  applyFilters,
+  emptyFilters,
+  filterChips,
+  groupItems,
+  isFiltered as filtersInUse,
+  normalizeSaved,
+  providerOf,
+  sortItems,
+  type InboxDensity,
+  type InboxFilters,
+  type InboxSort,
+} from '@/components/inbox/inboxFilters';
+import { InboxCategoryNav, type ViewCounts } from '@/components/inbox/InboxCategoryNav';
+import { InboxToolbar, shortcutList } from '@/components/inbox/InboxToolbar';
+import { InboxList } from '@/components/inbox/InboxList';
+import { InboxDetail, type ItemFlags } from '@/components/inbox/InboxDetail';
+import { viewLabel } from '@/components/inbox/inboxUi';
+import { InboxVoiceRegistry, getConfirmFiling, setConfirmFiling, subscribeConfirmFiling } from '@/services/inbox/inboxVoice';
+import { InboxVoiceHelp } from '@/components/inbox/InboxVoiceHelp';
+import { voiceActions } from '@/store/slices/voiceSlice';
+import { getVoiceController } from '@/services/ai/voiceController';
+import { scrollMainToTop } from '@/utils/scroll';
 
-type ItemFlags = { portal: boolean; confidential: boolean; inactive: boolean };
 const noFlags: ItemFlags = { portal: false, confidential: false, inactive: false };
 
-const isCategory = (value?: string): value is InboxCategory => !!value && (inboxCategories as readonly string[]).includes(value);
+/** Typing in a field must never trigger a single-key shortcut. */
+const isTyping = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  const el = target;
+  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || !!el.closest('.ant-select, .ant-picker, [role="dialog"], .ant-dropdown, .ant-popover');
+};
 
 /**
- * The Inbox: filters across the top, the message queue on the left, the item
- * being read in the middle, and the assistant on the right. Below the desktop
- * breakpoint the three columns stack down to one.
+ * The Inbox: one workspace for lab results, radiology reports, referrals and
+ * discharge summaries. Queues across the top, search and filters beneath, the
+ * list on the left and the open item on the right. On smaller screens the list
+ * and the item take turns.
  */
 export default function InboxPage() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
-  const { category: categoryParam } = useParams<{ category?: string }>();
+  const { category: viewParam } = useParams<{ category?: string }>();
   const [params, setParams] = useSearchParams();
-  const { isDesktop } = useResponsive();
+  const { isDesktop, isMobile } = useResponsive();
+  const searchRef = useRef<InputRef>(null);
 
-  const category: InboxCategory = isCategory(categoryParam) ? categoryParam : 'lab';
+  const view: InboxView = isInboxView(viewParam) ? viewParam : 'all';
   const openId = params.get('item') ?? undefined;
+  /** Set when the Inbox was opened on one patient (by voice): only their items are listed. */
+  const scopeId = params.get('patient') ?? null;
 
-  const items = useAppSelector((s) => s.inbox.items);
+  const allItems = useAppSelector((s) => s.inbox.items);
+  const items = useMemo(() => (scopeId ? allItems.filter((i) => i.patientId === scopeId) : allItems), [allItems, scopeId]);
+  const currentPatientId = useAppSelector((s) => s.patients.currentPatientId);
+  const micOn = useAppSelector((s) => s.voice.micActive);
+  /** "What can I say?" — opened from the header button or by voice. */
+  const helpOpen = useAppSelector((s) => s.voice.helpOpen);
+  const confirmFiling = useSyncExternalStore(subscribeConfirmFiling, getConfirmFiling);
   const status = useAppSelector((s) => s.inbox.status);
   const loadError = useAppSelector((s) => s.inbox.error);
   const filedIds = useAppSelector((s) => s.inbox.reviewedIds);
   const patients = useAppSelector(patientSelectors.selectAll);
-  const currentPatientId = useAppSelector((s) => s.patients.currentPatientId);
 
-  const [filters, setFilters] = useState<InboxFilters>(() => emptyFilters(category));
-  const [applied, setApplied] = useState<InboxFilters>(() => emptyFilters(category));
-  const [savedSearches, setSavedSearches] = useLocalStorage<Record<string, InboxFilters>>('careflow.inbox.savedSearches', {});
+  const [filters, setFilters] = useState<InboxFilters>(() => emptyFilters(view));
+  const [sort, setSort] = useLocalStorage<InboxSort>('careflow.inbox.sort', 'newest');
+  const [savedSearches, setSavedSearches] = useLocalStorage<Record<string, Partial<InboxFilters> & Record<string, unknown>>>('careflow.inbox.savedSearches', {});
   const [flags, setFlags] = useLocalStorage<Record<string, ItemFlags>>('careflow.inbox.viewFlags', {});
+  /** Row density is a personal reading preference: three lines with a preview, or two for fast triage. */
+  const [density, setDensity] = useLocalStorage<InboxDensity>('careflow.inbox.density', 'comfortable');
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  /** When the queue was last loaded — so "is this up to date?" never needs a guess. */
+  const [checkedAt, setCheckedAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (status === 'idle') void dispatch(fetchInbox());
+    if (status === 'succeeded') setCheckedAt(dayjs().format('HH:mm'));
   }, [dispatch, status]);
 
   // The route owns the category, so a bookmark or a voice command lands correctly.
   useEffect(() => {
-    setFilters((f) => ({ ...f, category }));
-    setApplied((f) => ({ ...f, category }));
-  }, [category]);
+    setFilters((f) => (f.category === view ? f : { ...f, category: view }));
+    setChecked(new Set());
+  }, [view]);
 
   const filedSet = useMemo(() => new Set(filedIds), [filedIds]);
-  const inCategory = useMemo(() => items.filter((i) => i.category === applied.category), [items, applied.category]);
   const patientById = useMemo(() => new Map(patients.map((p) => [p.id, p])), [patients]);
+  const inView = useMemo(() => (view === 'all' ? items : items.filter((i) => i.category === view)), [items, view]);
 
   const options = useMemo(
     () => ({
-      subjects: [...new Set(inCategory.map((i) => i.subject))].sort().slice(0, 60),
-      statuses: [...new Set(inCategory.map((i) => i.status))].sort(),
-      providers: [
-        ...new Set(
-          inCategory
-            .map((i) => i.meta.find((m) => m.label === 'Ordered by' || m.label === 'Referred by' || m.label === 'Author' || m.label === 'Uploaded by')?.value ?? '')
-            .filter(Boolean),
-        ),
-      ]
-        .sort()
-        .slice(0, 60),
-      senders: [...new Set(inCategory.map((i) => i.from))].sort().slice(0, 60),
+      subjects: [...new Set(inView.map((i) => i.subject))].sort().slice(0, 60),
+      statuses: [...new Set(inView.map((i) => i.status))].sort(),
+      providers: [...new Set(inView.map(providerOf).filter(Boolean))].sort().slice(0, 60),
+      senders: [...new Set(inView.map((i) => i.from))].sort().slice(0, 60),
     }),
-    [inCategory],
+    [inView],
   );
 
-  const filtered = useMemo(() => {
-    const f = applied;
-    const patientQuery = f.patient.trim().toLowerCase();
-    const nhiQuery = f.nhi.trim().toLowerCase();
-    const phoneQuery = f.phone.replace(/\D/g, '');
-    const dateQuery = f.date.trim();
+  const filtered = useMemo(
+    () => sortItems(applyFilters(items, filters, { filed: filedSet, patientById }), sort),
+    [items, filters, filedSet, patientById, sort],
+  );
+  const groups = useMemo(() => groupItems(filtered, sort), [filtered, sort]);
 
-    return inCategory.filter((item) => {
-      if (patientQuery && !item.patientName.toLowerCase().includes(patientQuery)) return false;
-      if (nhiQuery && !(patientById.get(item.patientId)?.mrn.toLowerCase() ?? '').includes(nhiQuery)) return false;
-      if (phoneQuery && !(patientById.get(item.patientId)?.phone.replace(/\D/g, '') ?? '').includes(phoneQuery)) return false;
-      if (dateQuery && !dayjs(item.receivedAt).format('DD/MM/YYYY').includes(dateQuery)) return false;
-      if (f.subject && item.subject !== f.subject) return false;
-      if (f.status && item.status !== f.status) return false;
-      if (f.filed === 'filed' && !filedSet.has(item.id)) return false;
-      if (f.filed === 'unfiled' && filedSet.has(item.id)) return false;
-      if (f.sender && item.from !== f.sender) return false;
-      if (f.provider && !item.meta.some((m) => m.value === f.provider)) return false;
-      if (f.ai === 'attention' && !item.attention) return false;
-      // Every item carries a draft message, so "has suggestions" means more than that.
-      if (f.ai === 'suggestions' && buildSuggestions(item).length <= 1) return false;
-      return true;
-    });
-  }, [inCategory, applied, filedSet, patientById]);
+  /** Per-queue numbers for the switcher: how much is left, and how much is pressing. */
+  const viewCounts = useMemo(() => {
+    const counts = Object.fromEntries(inboxViews.map((v) => [v, { total: 0, unfiled: 0, attention: 0 }])) as Record<InboxView, ViewCounts>;
+    for (const item of items) {
+      const unfiled = !filedSet.has(item.id);
+      for (const v of ['all', item.category] as InboxView[]) {
+        counts[v].total += 1;
+        if (unfiled) counts[v].unfiled += 1;
+        if (unfiled && item.attention) counts[v].attention += 1;
+      }
+    }
+    return counts;
+  }, [items, filedSet]);
 
-  const openItem = useMemo(() => filtered.find((i) => i.id === openId) ?? items.find((i) => i.id === openId), [filtered, items, openId]);
+  /** Header overview — what is still waiting, across every queue. */
+  const overview = useMemo(() => {
+    const waiting = items.filter((i) => !filedSet.has(i.id));
+    return {
+      unfiled: waiting.length,
+      critical: waiting.filter((i) => priorityOf(i) === 'critical').length,
+      high: waiting.filter((i) => priorityOf(i) === 'high').length,
+    };
+  }, [items, filedSet]);
+
+  const openItem = useMemo(() => filtered.find((i) => i.id === openId) ?? allItems.find((i) => i.id === openId), [filtered, allItems, openId]);
   const openIndex = useMemo(() => filtered.findIndex((i) => i.id === openId), [filtered, openId]);
   const openPatient = openItem ? patientById.get(openItem.patientId) : undefined;
-
-  const counts = useMemo(() => countByPriority(filtered), [filtered]);
   const unfiledCount = useMemo(() => filtered.filter((i) => !filedSet.has(i.id)).length, [filtered, filedSet]);
-  const isFiltered = useMemo(() => {
-    const base = emptyFilters(applied.category);
-    return (Object.keys(base) as Array<keyof InboxFilters>).some((k) => applied[k] !== base[k]);
-  }, [applied]);
+  const anyFilter = filtersInUse(filters);
 
-  const setParam = useCallback(
-    (key: string, value?: string) => {
-      const next = new URLSearchParams(params);
-      if (value) next.set(key, value);
-      else next.delete(key);
-      setParams(next, { replace: true });
-    },
-    [params, setParams],
-  );
+  // Read the latest URL through a ref so this (and every row's onSelect) keeps one identity —
+  // otherwise opening an item would re-render every row in the list.
+  const urlRef = useRef({ params, setParams });
+  urlRef.current = { params, setParams };
+  const setParam = useCallback((key: string, value?: string) => {
+    const next = new URLSearchParams(urlRef.current.params);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    urlRef.current.setParams(next, { replace: true });
+  }, []);
 
   const select = useCallback((item: InboxItem) => setParam('item', item.id), [setParam]);
-  const step = (delta: number) => {
-    const next = filtered[openIndex + delta];
+  const step = useCallback(
+    (delta: number) => {
+      const next = openIndex < 0 ? filtered[0] : filtered[openIndex + delta];
+      if (next) select(next);
+    },
+    [filtered, openIndex, select],
+  );
+
+  const onFilterChange = (next: Partial<InboxFilters>) => setFilters((f) => ({ ...f, ...next }));
+  const resetFilters = () => setFilters(emptyFilters(view));
+
+  const goToView = (next: InboxView) => {
+    if (next === view) return;
+    // Keep the open item only if it belongs to the queue being opened; a patient scope always stays.
+    const keep = new URLSearchParams();
+    if (openItem && (next === 'all' || openItem.category === next)) keep.set('item', openItem.id);
+    if (scopeId) keep.set('patient', scopeId);
+    const query = keep.toString();
+    navigate(`/inbox/${next}${query ? `?${query}` : ''}`);
+  };
+
+  // A patient scope follows the selected patient, and goes when no patient is selected.
+  useEffect(() => {
+    if (!scopeId) return;
+    if (!currentPatientId) setParam('patient', undefined);
+    else if (currentPatientId !== scopeId) setParam('patient', currentPatientId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPatientId]);
+
+  // ---- filing, with an undo on every change ------------------------------------------------
+  const fileIds = useCallback(
+    (ids: string[], file: boolean) => {
+      const changing = ids.filter((id) => filedSet.has(id) !== file);
+      if (!changing.length) return;
+      dispatch(file ? inboxActions.markReviewed(changing) : inboxActions.markUnreviewed(changing));
+      const key = `ibx-file-${Date.now()}`;
+      const noun = `${changing.length} item${changing.length === 1 ? '' : 's'}`;
+      message.open({
+        key,
+        type: 'success',
+        duration: 5,
+        content: (
+          <span className="ibx-toast">
+            {file ? `${noun} filed` : `${noun} moved back to unfiled`}
+            <button
+              type="button"
+              className="ibx-toast-undo"
+              onClick={() => {
+                dispatch(file ? inboxActions.markUnreviewed(changing) : inboxActions.markReviewed(changing));
+                message.destroy(key);
+              }}
+            >
+              Undo
+            </button>
+          </span>
+        ),
+      });
+    },
+    [dispatch, filedSet],
+  );
+
+  const toggleFiled = useCallback((item: InboxItem) => fileIds([item.id], !filedSet.has(item.id)), [fileIds, filedSet]);
+
+  const fileAndNext = (item: InboxItem) => {
+    const next = filtered[openIndex + 1];
+    fileIds([item.id], true);
     if (next) select(next);
   };
 
-  const resetFilters = () => {
-    const base = emptyFilters(applied.category);
-    setFilters(base);
-    setApplied(base);
+  const onBulkFile = (ids: string[], file: boolean) => {
+    fileIds(ids, file);
+    setChecked(new Set());
   };
 
-  const onFilterChange = (next: Partial<InboxFilters>) => {
-    const merged = { ...filters, ...next };
-    setFilters(merged);
-    // The category is a route, not a filter: changing it navigates.
-    if (next.category && next.category !== applied.category) {
-      navigate(`/inbox/${next.category}`);
-      return;
-    }
-    setApplied(merged);
-  };
-
-  const toggleFiled = (item: InboxItem) => {
-    if (filedSet.has(item.id)) dispatch(inboxActions.markUnreviewed(item.id));
-    else dispatch(inboxActions.markReviewed(item.id));
-  };
-
-  const fileAll = () => {
-    const ids = filtered.filter((i) => !filedSet.has(i.id)).map((i) => i.id);
-    if (!ids.length) return;
-    dispatch(inboxActions.markReviewed(ids));
-    message.success(`${ids.length} item${ids.length === 1 ? '' : 's'} filed`);
-  };
+  const onCheck = useCallback(
+    (ids: string[], on: boolean) =>
+      setChecked((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+        return next;
+      }),
+    [],
+  );
 
   const itemFlags = openItem ? (flags[openItem.id] ?? noFlags) : noFlags;
   const toggleFlag = (flag: keyof ItemFlags) => {
@@ -165,96 +247,279 @@ export default function InboxPage() {
     setFlags({ ...flags, [openItem.id]: { ...current, [flag]: !current[flag] } });
   };
 
+  // ---- saved views ---------------------------------------------------------------------------
+  const saveView = () => {
+    const parts = [viewLabel[filters.category], ...filterChips(filters).map((c) => c.label), filters.query ? `“${filters.query.trim()}”` : ''].filter(Boolean);
+    let name = parts.join(' · ');
+    if (savedSearches[name]) name = `${name} (${Object.keys(savedSearches).length + 1})`;
+    setSavedSearches({ ...savedSearches, [name]: filters as unknown as Record<string, unknown> });
+    message.success(`Saved view “${name}”`);
+  };
+  const loadView = (name: string) => {
+    const saved = savedSearches[name];
+    if (!saved) return;
+    const next = normalizeSaved(saved, view);
+    setFilters(next);
+    if (next.category !== view) navigate(`/inbox/${next.category}`);
+  };
+  const deleteView = (name: string) => {
+    const next = { ...savedSearches };
+    delete next[name];
+    setSavedSearches(next);
+  };
+
+  // ---- keyboard ------------------------------------------------------------------------------
+  const keyState = useRef({ step, toggleFiled, openItem, isDesktop });
+  keyState.current = { step, toggleFiled, openItem, isDesktop };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (e.key === 'Escape' && !isTyping(e.target) && !keyState.current.isDesktop && keyState.current.openItem) {
+        setParam('item', undefined);
+        return;
+      }
+      if (isTyping(e.target)) return;
+      // Arrow keys belong to the list and the tab strip while they have focus.
+      const inList = e.target instanceof HTMLElement && !!e.target.closest('.ibx-msglist, .ibx-cats');
+      if (e.key === '/') {
+        e.preventDefault();
+        searchRef.current?.focus();
+      } else if (e.key === 'j' || (e.key === 'ArrowDown' && !inList && keyState.current.openItem)) {
+        e.preventDefault();
+        keyState.current.step(1);
+      } else if (e.key === 'k' || (e.key === 'ArrowUp' && !inList && keyState.current.openItem)) {
+        e.preventDefault();
+        keyState.current.step(-1);
+      } else if ((e.key === 'e' || e.key === 'E') && keyState.current.openItem) {
+        e.preventDefault();
+        keyState.current.toggleFiled(keyState.current.openItem);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setParam]);
+
+  // ---- voice ----------------------------------------------------------------------------------
+  // The voice assistant drives this page through the very handlers the rows, buttons and
+  // shortcuts use (select, fileIds, goToView, the search box) — read through a ref so the
+  // registration stays put while the page re-renders.
+  const voiceRef = useRef({ view, filtered, openItem, openIndex, filedSet, filters, scopeId, checked, status, select, fileIds, goToView });
+  voiceRef.current = { view, filtered, openItem, openIndex, filedSet, filters, scopeId, checked, status, select, fileIds, goToView };
+  useEffect(
+    () =>
+      InboxVoiceRegistry.register({
+        snapshot: () => {
+          const v = voiceRef.current;
+          return {
+            view: v.view,
+            items: v.filtered,
+            openItem: v.openItem,
+            openIndex: v.openIndex,
+            isFiled: (id: string) => v.filedSet.has(id),
+            query: v.filters.query,
+            scopePatientId: v.scopeId,
+            checkedIds: [...v.checked],
+            loading: v.status === 'idle' || v.status === 'loading',
+          };
+        },
+        setView: (next) => voiceRef.current.goToView(next),
+        setQuery: (query) => setFilters((f) => ({ ...f, query })),
+        open: (item) => voiceRef.current.select(item),
+        close: () => setParam('item', undefined),
+        file: (ids, file) => voiceRef.current.fileIds(ids, file),
+        setPatientScope: (patientId) => setParam('patient', patientId ?? undefined),
+      }),
+    [setParam],
+  );
+
+  // On one-column layouts the item replaces the list, so it should start at the top.
+  useEffect(() => {
+    if (!isDesktop && openId) scrollMainToTop();
+  }, [openId, isDesktop]);
+
+  const loading = status === 'loading' && !items.length;
+  const reading = !isDesktop && !!openItem;
+  const firstUrgent = filtered.find((i) => !filedSet.has(i.id) && i.attention) ?? filtered.find((i) => !filedSet.has(i.id));
+  const scopePatient = scopeId ? patientById.get(scopeId) : undefined;
+
+  /** On: only the selected patient's records. Off: every patient's. */
+  const toggleScope = () => {
+    if (scopeId) setParam('patient', undefined);
+    else if (currentPatientId) setParam('patient', currentPatientId);
+    else message.info('Select a patient first to see only their records.');
+  };
+
   return (
-    <div className="ibx">
-      <InboxFilterBar
-        value={filters}
-        onChange={onFilterChange}
-        onSearch={() => setApplied(filters)}
-        onReset={resetFilters}
-        onSaveCriteria={() => {
-          const name = `${filters.category} · ${dayjs().format('DD/MM HH:mm')}`;
-          setSavedSearches({ ...savedSearches, [name]: filters });
-          message.success('Search criteria saved');
-        }}
-        onLoadSaved={(name) => {
-          const saved = savedSearches[name];
-          if (!saved) return;
-          setFilters(saved);
-          setApplied(saved);
-          if (saved.category !== applied.category) navigate(`/inbox/${saved.category}`);
-        }}
-        savedNames={Object.keys(savedSearches)}
-        options={options}
-        counts={counts}
-        unfiledCount={unfiledCount}
-        isFiltered={isFiltered}
-      />
+    <div className={`ibx ${density === 'compact' ? 'is-compact' : ''}`}>
+      <header className={`ibx-head ${reading ? 'is-hidden-sm' : ''}`}>
+        <div className="ibx-head-text">
+          <h1>Inbox</h1>
+          <p>
+            Lab results, radiology reports, referrals and discharge summaries waiting for review
+            {checkedAt && <span className="ibx-head-updated"> · Updated {checkedAt}</span>}
+          </p>
+        </div>
+        <div className="ibx-head-stats" aria-label="Waiting for review">
+          {/* Always on screen: whose records the list shows. */}
 
-      {status === 'failed' && (
-        <Alert
-          type="error"
-          showIcon
-          className="ibx-error"
-          message="The inbox could not be loaded"
-          description={loadError ?? 'Nothing was changed. Try again, or continue elsewhere in the app.'}
-          action={
-            <Button size="small" onClick={() => void dispatch(fetchInbox())}>
-              Try again
+          <button type="button" className="ibx-stat" onClick={() => setFilters({ ...emptyFilters(view), filed: 'unfiled' })}>
+            <InboxIcon size={14} aria-hidden />
+            <b>{overview.unfiled}</b> unfiled
+          </button>
+          {overview.critical > 0 && (
+            <button type="button" className="ibx-stat is-critical" onClick={() => { setSort('priority'); setFilters({ ...emptyFilters(view), filed: 'unfiled' }); }}>
+              <CircleAlert size={14} aria-hidden />
+              <b>{overview.critical}</b> Critical
+            </button>
+          )}
+          {overview.high > 0 && (
+            <button type="button" className="ibx-stat is-high" onClick={() => setFilters({ ...emptyFilters(view), filed: 'unfiled', ai: 'attention' })}>
+              <TriangleAlert size={14} aria-hidden />
+              <b>{overview.high}</b> High priority
+            </button>
+          )}
+          <span className="ibx-head-sep" aria-hidden />
+          <Tooltip
+            title={
+              scopeId
+                ? 'Showing only the selected patient’s records — click to show every patient'
+                : currentPatientId
+                  ? 'Showing every patient’s records — click to show only the selected patient'
+                  : 'Showing every patient’s records — select a patient to show only theirs'
+            }
+          >
+            <button type="button" className={`ibx-scope-toggle ${scopeId ? 'is-on' : ''}`} aria-pressed={!!scopeId} onClick={toggleScope}>
+              {scopeId ? <UserRoundCheck size={14} aria-hidden /> : <Users size={14} aria-hidden />}
+              <span className="ibx-scope-toggle-label">{scopeId ? `${scopePatient?.fullName ?? 'Selected patient'} only` : 'All patients'}</span>
+              <span className="ibx-scope-toggle-track" aria-hidden>
+                <span />
+              </span>
+            </button>
+          </Tooltip>
+          <Tooltip title={confirmFiling ? 'Voice asks “File this record?” before filing or unfiling' : 'Voice files straight away — Undo stays available'}>
+            <label className="ibx-voice-setting">
+              <Switch size="small" checked={confirmFiling} onChange={setConfirmFiling} aria-label="Ask before filing by voice" />
+              <span>Confirm voice filing</span>
+            </label>
+          </Tooltip>
+          <Tooltip title="What you can say to the Voice Assistant here">
+            <Button size="small" icon={<Mic size={14} />} onClick={() => dispatch(voiceActions.setHelpOpen(true))} className="ibx-voice-help-btn" aria-label="Inbox voice commands">
+              <span className="ibx-voice-help-text">Voice commands</span>
             </Button>
-          }
-        />
-      )}
+          </Tooltip>
+          <Tooltip title="Check for new items">
+            <Button
+              type="text"
+              icon={<RefreshCw size={15} className={status === 'loading' ? 'spin' : undefined} />}
+              onClick={() => void dispatch(fetchInbox())}
+              aria-label="Refresh the inbox"
+              disabled={status === 'loading'}
+            />
+          </Tooltip>
+        </div>
+      </header>
 
-      <div className={`ibx-body ${!isDesktop && openItem ? 'is-reading' : ''}`}>
-        <section className="ibx-col ibx-col-list" aria-label="Inbox items">
-          <div className="ibx-col-head">
-            <span>
-              {filtered.length} item{filtered.length === 1 ? '' : 's'} · {unfiledCount} unfiled
-            </span>
-            <Button size="small" type="link" onClick={fileAll} disabled={!unfiledCount}>
-              File all
-            </Button>
-          </div>
-          <InboxMessageList
-            items={filtered}
-            loading={status === 'loading' && !items.length}
-            selectedId={openId}
-            filedIds={filedSet}
-            onSelect={select}
-            patient={openPatient}
-            patientLine={openItem?.preview}
-            patientFlag={openItem?.attention ? 'High' : 'Normal'}
-            filtersActive={isFiltered}
-            onClearFilters={resetFilters}
+      <div className={`ibx-shell ${reading ? 'is-reading' : ''}`}>
+        <div className="ibx-controls">
+          <InboxCategoryNav active={view} counts={viewCounts} onSelect={goToView} />
+          <InboxToolbar
+            ref={searchRef}
+            value={filters}
+            onChange={onFilterChange}
+            onReset={resetFilters}
+            sort={sort}
+            onSort={setSort}
+            options={options}
+            savedNames={Object.keys(savedSearches)}
+            onSaveView={saveView}
+            onLoadView={loadView}
+            onDeleteView={deleteView}
+            canSave={anyFilter}
+            compact={!isDesktop}
+            density={density}
+            onDensity={setDensity}
           />
-        </section>
+        </div>
 
-        <section className="ibx-col ibx-col-read" aria-label="Selected item">
-          <InboxReadingPane
-            item={openItem}
-            patient={openPatient}
-            filed={!!openItem && filedSet.has(openItem.id)}
-            onToggleFiled={toggleFiled}
-            position={{ index: openIndex >= 0 ? openIndex + 1 : 0, total: filtered.length }}
-            onPrevious={() => step(-1)}
-            onNext={() => step(1)}
-            flags={itemFlags}
-            onToggleFlag={toggleFlag}
-            onBack={() => setParam('item', undefined)}
-            showBack={!isDesktop}
-          />
-        </section>
+        <div className="ibx-split">
+          <section className="ibx-pane ibx-pane-list" aria-label="Inbox items">
+            <InboxList
+              groups={groups}
+              view={view}
+              showType={view === 'all'}
+              loading={loading}
+              error={status === 'failed' ? (loadError ?? 'Failed to load the inbox') : null}
+              onRetry={() => void dispatch(fetchInbox())}
+              selectedId={openId}
+              filed={filedSet}
+              patientById={patientById}
+              onSelect={select}
+              checked={checked}
+              onCheck={onCheck}
+              onBulkFile={onBulkFile}
+              unfiledCount={unfiledCount}
+              emptyReason={{
+                anyAtAll: items.length > 0,
+                anyInView: inView.length > 0,
+                query: filters.query.trim(),
+                filtered: filterChips(filters).length > 0 && !(filterChips(filters).length === 1 && filters.filed === 'unfiled'),
+                onlyUnfiled: filters.filed === 'unfiled' && !filters.query.trim() && filterChips(filters).length === 1,
+              }}
+              onClearSearch={() => onFilterChange({ query: '' })}
+              onClearFilters={resetFilters}
+              onShowFiled={() => onFilterChange({ filed: 'all' })}
+              showPositions={micOn}
+            />
+          </section>
 
-        <section className="ibx-col ibx-col-ai" aria-label="Assistant">
-          <InboxAiPanel
-            item={openItem}
-            patient={openPatient}
-            isCurrentPatient={!!openPatient && openPatient.id === currentPatientId}
-            unfiledCount={unfiledCount}
-          />
-        </section>
+          <section className="ibx-pane ibx-pane-detail" aria-label="Selected item">
+            {openItem ? (
+              <InboxDetail
+                item={openItem}
+                patient={openPatient}
+                filed={filedSet.has(openItem.id)}
+                onToggleFiled={toggleFiled}
+                onFileAndNext={fileAndNext}
+                position={{ index: openIndex >= 0 ? openIndex + 1 : 0, total: filtered.length }}
+                onPrevious={() => step(-1)}
+                onNext={() => step(1)}
+                flags={itemFlags}
+                onToggleFlag={toggleFlag}
+                onBack={() => setParam('item', undefined)}
+                showBack={!isDesktop}
+                unfiledCount={unfiledCount}
+              />
+            ) : (
+              <div className="ibx-noselect">
+                <span className="ibx-noselect-icon">
+                  <MousePointerClick size={26} aria-hidden />
+                </span>
+                <h2>Select an item to read it</h2>
+                <p>The full result or letter opens here, with the patient it belongs to and the follow-up you can raise from it.</p>
+                {firstUrgent && !loading && (
+                  <Button type="primary" onClick={() => select(firstUrgent)}>
+                    {firstUrgent.attention ? 'Open the first item needing attention' : 'Open the first unfiled item'} <ArrowRight size={14} aria-hidden />
+                  </Button>
+                )}
+                {!isMobile && (
+                  <dl className="ibx-shortcuts is-inline">
+                    {shortcutList.slice(0, 4).map(([keys, what]) => (
+                      <div key={keys}>
+                        <dt>
+                          <kbd>{keys.split('  or  ')[0]}</kbd>
+                        </dt>
+                        <dd>{what}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
+
+      <InboxVoiceHelp open={helpOpen} onClose={() => dispatch(voiceActions.setHelpOpen(false))} onTry={(phrase) => void getVoiceController().handleTranscript(phrase)} />
     </div>
   );
 }

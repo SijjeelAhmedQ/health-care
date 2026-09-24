@@ -9,6 +9,7 @@ import type { Patient } from '@/types/domain';
 import type { FieldValues } from '@/types/ai';
 import { FormGrid, FormSection } from '@/components/common';
 import { RegisteredFormModal, type FormHelpers } from './RegisteredForm';
+import { toFormInitialValues } from './RecordForms';
 import { DateField, NumberField, ProviderSelectField, SelectField, TextField } from './fields';
 
 export interface PatientValues {
@@ -132,7 +133,10 @@ export function PatientFormModal({ open, onOpen, onClose, patient, prefill, onSa
   const editing = !!patient;
 
   const initialValues = useMemo<Partial<PatientValues>>(
-    () => (patient ? patientToValues(patient) : ({ language: 'English', status: 'Active', ...(prefill ?? {}) } as Partial<PatientValues>)),
+    () =>
+      patient
+        ? patientToValues(patient)
+        : ({ language: 'English', status: 'Active', ...toFormInitialValues('patient', prefill) } as Partial<PatientValues>),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [patient, JSON.stringify(prefill ?? {})],
   );

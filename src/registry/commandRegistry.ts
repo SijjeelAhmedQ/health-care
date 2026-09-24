@@ -79,6 +79,8 @@ const readCommands: AppCommand[] = (['medication', 'diagnosis', 'task', 'recall'
 const actionCommands: AppCommand[] = [
   { id: 'act:select-patient', title: 'Select / change patient', group: 'Actions', keywords: ['patient', 'switch', 'change', 'context'], icon: 'UserRoundCog', run: (ctx) => ctx.execute({ action: 'navigate', target: 'patients' }) },
   { id: 'act:summary', title: 'Summarise this patient', group: 'Actions', keywords: ['summary', 'overview', 'brief'], icon: 'Sparkles', run: (ctx) => ctx.execute({ action: 'summarize_patient' }) },
+  { id: 'act:dashboard-summary', title: 'Show dashboard summary', group: 'Actions', keywords: ['dashboard summary', 'summary widget', 'summary panel', 'side panel', 'overview'], icon: 'PanelRight', run: (ctx) => ctx.execute({ action: 'open_dashboard_summary' }) },
+  { id: 'act:dashboard-summary-close', title: 'Close dashboard summary', group: 'Actions', keywords: ['close dashboard summary', 'hide summary', 'close widget', 'close panel'], icon: 'PanelRightClose', run: (ctx) => ctx.execute({ action: 'close_dashboard_summary' }) },
   ...addCommands,
   ...readCommands,
   { id: 'sys:voice', title: 'Open Voice Assistant', group: 'System', keywords: ['voice', 'mic', 'speak', 'assistant'], icon: 'Mic', shortcut: 'Ctrl+Shift+V', run: (ctx) => ctx.openVoicePanel() },

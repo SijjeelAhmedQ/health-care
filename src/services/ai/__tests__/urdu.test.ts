@@ -171,3 +171,13 @@ describe('translateUrdu — multi-step and connectors', () => {
     expect(t('Page 30 par jao!')).toBe('go to page 30');
   });
 });
+
+describe('translateUrdu — dashboard summary widget', () => {
+  it('opens and closes the dock from Roman Urdu', () => {
+    expect(t('dashboard summary dikhao')).toBe('show dashboard summary');
+    expect(t('dashboard summary kholo')).toBe('show dashboard summary');
+    expect(t('dashboard summary band karo')).toBe('close dashboard summary');
+    expect(interpret('dashboard summary dikhao', ctx())).toEqual([{ action: 'open_dashboard_summary' }]);
+    expect(interpret('dashboard summary band karo', ctx())).toEqual([{ action: 'close_dashboard_summary' }]);
+  });
+});

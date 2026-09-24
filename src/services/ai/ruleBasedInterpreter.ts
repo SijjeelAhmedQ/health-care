@@ -14,30 +14,39 @@ import { FieldRegistry, FREQUENCY_OPTIONS, normalizeDosage, normalizeDuration } 
 import { PageRegistry } from '@/registry/pageRegistry';
 import { ageToDob, parseDateTime } from './dateParser';
 import { isKnownDrug, protectCombinations, splitMedicationNames } from './drugLexicon';
+import { correctMisheardCommand } from './speechCorrections';
 import { translateUrdu } from './urdu/translator';
+import { interpretGlobalInbox, interpretInboxClause, interpretPatientPosition, interpretVoiceControl, isInboxPage } from './inboxGrammar';
 
 const NAV_VERBS =
   '(?:go to|goto|open|navigate to|take me to|show me|show|i want|i want to see|bring up|switch to|display|view|load|jump to|head to|let\'s go to|lets go to|move to)';
 const ACTION_VERB_START =
-  /^(go|goto|open|add|create|fill|search|find|navigate|show|start|save|submit|book|schedule|register|select|set|check|uncheck|scroll|close|cancel|prescribe|look|take|switch|new|record|log|enter|recall|delete|remove|update|change|edit|mark|complete|stop|read|tell|list|what|summarize|summarise|give)\b/;
+  /^(go|goto|open|add|create|fill|search|find|navigate|show|start|save|submit|book|schedule|register|select|set|check|uncheck|scroll|close|cancel|prescribe|look|take|switch|new|record|log|enter|recall|delete|remove|update|change|edit|mark|complete|stop|read|tell|list|what|summarize|summarise|give|file|unfile|archive|restore|mic|turn|exit|choose|pick)\b/;
 
 /** True when an utterance starts with an application verb (i.e. is a command, not a plain value). */
 export const looksLikeCommand = (text: string): boolean =>
   ACTION_VERB_START.test(normalizeTranscript(text)) || CONFIRM_RE.test(normalizeTranscript(text)) || CANCEL_RE.test(normalizeTranscript(text));
 
-/** Urdu / Roman Urdu is translated to the English command language first; English passes through. */
+/**
+ * Urdu / Roman Urdu is translated to the English command language first; English
+ * passes through. What the speech engine misheard is put right last, once the
+ * filler words are gone, so "show me somebody" is read as "show me summary".
+ */
 export const normalizeTranscript = (raw: string): string =>
-  translateUrdu(raw)
-    .text.toLowerCase()
-    .replace(/[“”"]/g, '')
-    .replace(/[.!?]+$/g, '')
-    .replace(/\bplease\b/g, '')
-    .replace(/\b(?:hey|ok|okay)\s+(?:careflow|assistant|computer)\b,?/g, '')
-    .replace(/\bmilligrams?\b/g, 'mg')
-    .replace(/\bmicrograms?\b/g, 'mcg')
-    .replace(/\bmillilit(?:er|re)s?\b/g, 'ml')
-    .replace(/\s+/g, ' ')
-    .trim();
+  correctMisheardCommand(
+    translateUrdu(raw)
+      .text.toLowerCase()
+      .replace(/[“”"]/g, '')
+      .replace(/[‘’]/g, "'")
+      .replace(/[.!?]+$/g, '')
+      .replace(/\bplease\b/g, '')
+      .replace(/\b(?:hey|ok|okay)\s+(?:careflow|assistant|computer)\b,?/g, '')
+      .replace(/\bmilligrams?\b/g, 'mg')
+      .replace(/\bmicrograms?\b/g, 'mcg')
+      .replace(/\bmillilit(?:er|re)s?\b/g, 'ml')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
 
 /** Split "open medications and add panadol" into ordered clauses. */
 export function splitClauses(text: string): string[] {
@@ -455,8 +464,18 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
 
   // --- confirmation boundary ---
   if (CONFIRM_RE.test(t)) return [{ action: 'confirm' }];
+  const voice = interpretVoiceControl(t, ctx);
+  if (voice) return [voice];
   if (CANCEL_RE.test(t)) return [{ action: 'cancel' }];
-  if (/^(?:help|what can i say|what can you do|commands|show help)$/.test(t)) return [{ action: 'help' }];
+  if (/^(?:help|help me|what can i say|what can you do|commands|show help|voice help|show (?:the |me the )?(?:voice |inbox )?commands|(?:voice|inbox) commands|list (?:the |all )?(?:voice )?commands|what (?:commands )?can i (?:say|use)|what do i say)$/.test(t)) return [{ action: 'help' }];
+
+  // --- the Inbox's own vocabulary ("file this", "open the second referral"), then Inbox commands that work anywhere ---
+  const inbox = interpretInboxClause(t, ctx);
+  if (inbox) return inbox;
+  const inboxAnywhere = interpretGlobalInbox(t);
+  if (inboxAnywhere) return [inboxAnywhere];
+  const patientAt = interpretPatientPosition(t, ctx);
+  if (patientAt) return [patientAt];
   if (/^(?:go |take me |navigate )?back$/.test(t) || /^(?:go back|previous page)$/.test(t)) return [{ action: 'go_back' }];
   if (/^(?:go |take me )?home$/.test(t) || /^(?:go to |open )?(?:the )?home ?page$/.test(t)) return [{ action: 'go_home' }];
   if (/^(?:collapse|expand|toggle|hide|show) (?:the )?(?:sidebar|side bar|menu|navigation)$/.test(t)) return [{ action: 'toggle_sidebar' }];
@@ -474,6 +493,19 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
   // --- summary tabs ---
   const tab = t.match(/^(?:open|switch to|show me|show|go to|select|display)\s+(?:the\s+)?(.+?)\s+tab$/);
   if (tab) return [{ action: 'open_tab', tab: tab[1] }];
+
+  /*
+   * --- dashboard summary widget ---
+   * "show me dashboard summary" docks the dashboard to the right of the screen;
+   * it is checked before the spoken patient summary below, which would otherwise
+   * swallow the same words.
+   */
+  if (/^(?:(?:show me|show|open|display|view|bring up|pull up|give me|launch)\s+)?(?:the\s+|a\s+|my\s+)?(?:(?:patient\s+)?dashboard\s+summary(?:\s+(?:widget|panel|side panel|sidebar|view))?|summary\s+(?:widget|panel|side panel))$/.test(t)) {
+    return [{ action: 'open_dashboard_summary' }];
+  }
+  if (/^(?:close|hide|dismiss|shut|collapse|remove)\s+(?:the\s+|my\s+)?(?:(?:patient\s+)?dashboard\s+)?summary(?:\s+(?:widget|panel|side panel|sidebar|view))?$/.test(t)) {
+    return [{ action: 'close_dashboard_summary' }];
+  }
 
   // --- patient summary / read-back ---
   if (/^(?:give me |generate |read |tell me |show me )?(?:an? )?(?:patient |dashboard |clinical )?summary(?: of| for)?(?: this| the)?(?: patient)?$/.test(t) || /^summari[sz]e (?:this |the )?patient$/.test(t) || /^(?:what is|whats|tell me about) (?:the )?patient(?:'s)? (?:situation|status|overview)$/.test(t)) {
@@ -493,7 +525,7 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
   if (/^(?:clear|deselect|remove) (?:the )?(?:selected )?patient$/.test(t)) return [{ action: 'clear_patient' }];
 
   const searchPatient = t.match(/^(?:search|find|look up|lookup|search for|look for)\s+(?:the |a )?patients?\s*(?:for|named|called)?\s*(.+)$/);
-  if (searchPatient) return [{ action: 'search_patient', query: capitalize(searchPatient[1].trim()) }];
+  if (searchPatient) return [{ action: 'search_patient', query: patientQuery(searchPatient[1]) }];
   if (/^(?:search|find)(?: a| the)? patients?$/.test(t)) return [{ action: 'navigate', target: 'patients' }];
 
   // --- search within a module ---
@@ -502,6 +534,12 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
     const kind = kindFromText(searchRecords[1]);
     if (kind) return kind === 'patient' ? [{ action: 'search_patient', query: capitalize(searchRecords[2]) }] : [{ action: 'search_records', kind, query: searchRecords[2].trim() }];
   }
+  // "find John Smith", "look up John Smith", "search for MRN 102934" — no module named, so it is a person.
+  const findSomeone = t.match(new RegExp(`^(?:search for|search|find|look up|lookup|look for)\\s+(?!(?:the|a|an|my|this|that)\\b)(?!(?:${KIND_WORDS})\\b)(.+)$`));
+  if (findSomeone && !isInboxPage(ctx.currentPageId)) return [{ action: 'search_patient', query: patientQuery(findSomeone[1]) }];
+  // "select John Smith" — a name straight after the verb (a form field would say "for …").
+  const selectName = t.match(/^(?:select|choose|pick)\s+(?!(?:the|a|an|this|that|all|first|second|third|last|next|previous|patient|one)\b)([a-z][a-z'.-]*(?:\s[a-z][a-z'.-]*){0,3})$/);
+  if (selectName && !ctx.openFormId && !PageRegistry.resolve(selectName[1])) return [{ action: 'select_patient', name: capitalize(selectName[1]) }];
 
   // --- delete ---
   const del = t.match(new RegExp(`^(?:delete|remove|cancel)\\s+(?:the\\s+|this\\s+)?(?:(${KIND_WORDS})\\s+)?(.*)$`));
@@ -685,6 +723,14 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
   return [{ action: 'unknown', reason: `I didn't understand "${clause}".` }];
 }
 
+/** "with MRN 102934" → "102934"; names are capitalised. */
+function patientQuery(raw: string): string {
+  const q = raw.trim().replace(/^(?:with|by|using|whose|that has)\s+/, '');
+  const id = q.match(/^(?:the\s+)?(?:mrn|m r n|nhi|medical record number|record number|patient id|id)(?:\s+(?:number|no\.?))?(?:\s+is)?\s*[:#-]?\s*(.+)$/);
+  if (id) return id[1].replace(/\s+/g, '').toUpperCase();
+  return capitalize(q);
+}
+
 function looksLikeMedication(phrase: string): boolean {
   if (/\d+\s*(mg|mcg|g|ml|units?)\b/.test(phrase) || /\b(daily|twice|once|bid|tid|qid|prn|as needed|every \d+ hours|tablet|capsule)\b/.test(phrase)) return true;
   const names = splitMedicationNames(phrase);
@@ -695,6 +741,15 @@ function looksLikeMedication(phrase: string): boolean {
 export function interpret(transcript: string, ctx: AIContext): AICommand[] {
   const normalized = normalizeTranscript(transcript);
   if (!normalized) return [{ action: 'unknown', reason: 'Empty transcript' }];
+  // "Stop listening", "mic off" — and a bare "stop" when nothing is waiting for an answer.
+  const voice = interpretVoiceControl(normalized, ctx);
+  if (voice) return [voice];
+  // In the Inbox "close it" / "next" / "search for blood and urine" are whole commands of their own —
+  // unless a question is open, where "close it" still means "cancel that".
+  if (isInboxPage(ctx.currentPageId) && !ctx.awaitingConfirmation && !ctx.pendingSlot && !ctx.openFormId) {
+    const inbox = interpretInboxClause(normalized, ctx);
+    if (inbox) return inbox;
+  }
   // A single confirmation/cancel word should never be split.
   if (CONFIRM_RE.test(normalized)) return [{ action: 'confirm' }];
   if (CANCEL_RE.test(normalized)) return [{ action: 'cancel' }];

@@ -12,6 +12,11 @@ import type { ClinicalDocument, ClinicalNote, ImagingOrder, LabOrder, Referral }
 export const inboxCategories = ['lab', 'radiology', 'referral', 'discharge'] as const;
 export type InboxCategory = (typeof inboxCategories)[number];
 
+/** What the category switcher can show: one source, or every source together. */
+export const inboxViews = ['all', ...inboxCategories] as const;
+export type InboxView = (typeof inboxViews)[number];
+export const isInboxView = (value?: string): value is InboxView => !!value && (inboxViews as readonly string[]).includes(value);
+
 export interface InboxCategoryMeta {
   /** Label for the category switcher. */
   label: string;
@@ -297,6 +302,34 @@ export function buildInboxItems({ labs, imaging, referrals, notes, documents }: 
 /** Everything a row can be matched against when the user types in the search box. */
 export function inboxSearchText(item: InboxItem): string {
   return `${item.subject} ${item.patientName} ${item.from} ${item.status} ${item.preview} ${item.priority ?? ''}`.toLowerCase();
+}
+
+/**
+ * One search box for the whole queue. Every word typed must match somewhere:
+ * patient name, NHI, phone number, subject, sender, status, the preview, any
+ * detail on the item, or the date it arrived (typed as DD/MM/YYYY or "12 Sep").
+ */
+export function matchesInboxQuery(item: InboxItem, query: string, patient?: { mrn: string; phone: string }): boolean {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const received = dayjs(item.receivedAt);
+  const haystack = [
+    inboxSearchText(item),
+    patient?.mrn ?? '',
+    patient?.phone ?? '',
+    item.meta.map((m) => m.value).join(' '),
+    received.format('DD/MM/YYYY'),
+    received.format('D MMM YYYY'),
+  ]
+    .join(' ')
+    .toLowerCase();
+  const phoneDigits = (patient?.phone ?? '').replace(/\D/g, '');
+  return words.every((word) => {
+    if (haystack.includes(word)) return true;
+    // "555 2611" or "5552611" both find (210) 555-2611.
+    const digits = word.replace(/\D/g, '');
+    return digits.length >= 3 && digits.length === word.replace(/[\s()+-]/g, '').length && phoneDigits.includes(digits);
+  });
 }
 
 export const statusToneClass: Record<StatusTone, string> = {

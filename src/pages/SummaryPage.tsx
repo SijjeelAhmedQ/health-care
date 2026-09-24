@@ -54,7 +54,7 @@ export default function SummaryPage() {
   ];
 
   return (
-    <>
+    <div className="page page-fill">
       <PageHeader
         title="Summary"
         subtitle={
@@ -64,11 +64,11 @@ export default function SummaryPage() {
         }
       />
       <Tabs
-        className="profile-tabs summary-tabs"
+        className="profile-tabs summary-tabs page-fill-grow"
         activeKey={active}
         onChange={(key) => navigate(`/summary/${key}`)}
         items={items}
       />
-    </>
+    </div>
   );
 }

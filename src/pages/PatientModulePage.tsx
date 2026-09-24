@@ -163,7 +163,7 @@ export default function PatientModulePage() {
   const selected = patients.find((p) => p.id === currentPatientId);
 
   return (
-    <>
+    <div className="page page-fill">
       <PageHeader
         title="Patient"
         subtitle="Search for a patient and select them. The selected patient is the context for the dashboard, medications, diagnoses, tasks, recalls, appointments and the summary."
@@ -241,6 +241,6 @@ export default function PatientModulePage() {
           if (wasNew) dispatch(setCurrentPatient(patient.id));
         }}
       />
-    </>
+    </div>
   );
 }

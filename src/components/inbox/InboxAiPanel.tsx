@@ -1,16 +1,31 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, DatePicker, Input, Select, message } from 'antd';
-import { Check, FileText, Sparkles, Star, X } from 'lucide-react';
+import { Button, DatePicker, Input, Select, Tooltip, message } from 'antd';
+import { Check, ChevronDown, FileText, ListChecks, Mail, Pill, Sparkles, Stethoscope, Repeat, UserRound, X } from 'lucide-react';
 import dayjs from 'dayjs';
 import { useAppDispatch } from '@/store';
 import { recordSlices } from '@/store/slices/recordSlices';
 import { usePatientOverview } from '@/hooks/usePatientData';
 import { buildPatientNarrative } from '@/services/records/patientNarrative';
-import { buildResultSummary, buildSuggestions, type InboxSuggestion } from '@/services/inbox/inboxInsights';
+import { FieldRegistry } from '@/registry/fieldRegistry';
+import {
+  buildResultSummary,
+  buildSuggestions,
+  type InboxSuggestion,
+  type SuggestionField,
+  type SuggestionKind,
+} from '@/services/inbox/inboxInsights';
 import { formValuesToRecord, RecordFormModal, type RecordKind } from '@/components/forms/RecordForms';
 import type { InboxItem } from '@/services/inbox/inboxModel';
 import type { Patient } from '@/types/domain';
-import { RECALL_TYPE_OPTIONS, TASK_CATEGORY_OPTIONS } from '@/registry/fieldRegistry';
+
+/** Each record type gets its own mark, so the stack is scannable at a glance. */
+const kindIcon: Record<SuggestionKind, React.ReactNode> = {
+  medication: <Pill size={14} />,
+  diagnosis: <Stethoscope size={14} />,
+  recall: <Repeat size={14} />,
+  task: <ListChecks size={14} />,
+  email: <Mail size={14} />,
+};
 
 interface Props {
   item?: InboxItem;
@@ -18,33 +33,41 @@ interface Props {
   /** Only the patient being worked on can have records written to them. */
   isCurrentPatient: boolean;
   unfiledCount: number;
+  /** Make this item's patient the one being worked on. */
+  onSelectPatient?: () => void;
 }
 
+/** Card values, keyed by suggestion id then field key. */
+type Values = Record<string, Record<string, string>>;
+
+const initialValues = (suggestions: InboxSuggestion[]): Values =>
+  Object.fromEntries(suggestions.map((s) => [s.id, Object.fromEntries(s.fields.map((f) => [f.key, f.value]))]));
+
 /**
- * The assistant column: what this patient looks like, what this result says,
- * and the follow-up the record points to.
+ * The assistant column: what this patient looks like, what this item says, and
+ * the four records that can be raised from it.
  *
- * Every suggestion is editable before it is created, carries the reason it was
- * offered, and can be opened in the full form instead. Nothing is written until
- * the user presses Create or saves the form.
+ * Each card can be completed three ways — type in it and press Add, open Quick
+ * edit for the rest of the fields, or open the full form. All three end in the
+ * same record; nothing is written until one of them is confirmed.
  */
-export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount }: Props) {
+export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount, onSelectPatient }: Props) {
   const dispatch = useAppDispatch();
   const overview = usePatientOverview();
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
-  const [editing, setEditing] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [fullForm, setFullForm] = useState<{ kind: RecordKind; prefill: Record<string, string | number | boolean> } | null>(null);
-  const [quick, setQuick] = useState<Record<string, string>>({});
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [values, setValues] = useState<Values>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [fullForm, setFullForm] = useState<{ kind: RecordKind; prefill: Record<string, string> } | null>(null);
 
   const suggestions = useMemo(() => (item ? buildSuggestions(item) : []), [item]);
 
-  // A new item is a new set of suggestions.
+  // A new item is a fresh set of cards.
   useEffect(() => {
-    setEditing(null);
-    setDrafts({});
-    setQuick({});
-  }, [item?.id]);
+    setValues(initialValues(suggestions));
+    setExpanded(null);
+    setDismissed(new Set());
+  }, [suggestions]);
 
   const narrative = useMemo(
     () =>
@@ -64,238 +87,243 @@ export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount }: 
   if (!item) {
     return (
       <aside className="ibx-ai" aria-label="Assistant">
-        <p className="ibx-ai-idle">Open an item to see its summary and the follow-up it suggests.</p>
+        <p className="ibx-ai-idle">Open an item to see its summary and the records you can raise from it.</p>
       </aside>
     );
   }
 
-  const visible = suggestions.filter((s) => !dismissed.has(s.id));
+  const valuesFor = (s: InboxSuggestion) => values[s.id] ?? Object.fromEntries(s.fields.map((f) => [f.key, f.value]));
+  const setField = (s: InboxSuggestion, key: string, value: string) =>
+    setValues((prev) => ({ ...prev, [s.id]: { ...valuesFor(s), [key]: value } }));
 
-  const create = async (suggestion: InboxSuggestion) => {
-    if (!patient) return;
-    if (suggestion.kind === 'email') {
-      void navigator.clipboard?.writeText(drafts[suggestion.id] ?? suggestion.text);
+  /** Required fields the card still needs before it can be added directly. */
+  const missingFor = (s: InboxSuggestion): string[] => {
+    if (s.kind === 'email') return [];
+    const current = valuesFor(s);
+    const filled = Object.fromEntries(Object.entries(current).filter(([, v]) => v !== ''));
+    return FieldRegistry.missingRequired(s.kind, filled).map((f) => f.label);
+  };
+
+  const add = async (s: InboxSuggestion) => {
+    const current = valuesFor(s);
+    if (s.kind === 'email') {
+      void navigator.clipboard?.writeText(current.message ?? '');
       message.success('Draft copied — nothing was sent');
-      setEditing(null);
       return;
     }
-    const kind = suggestion.kind as RecordKind;
-    const values: Record<string, unknown> = { ...suggestion.prefill };
-    // Whatever the user typed in the quick editor wins over the suggestion.
-    if (quick[`${suggestion.id}:primary`]) {
-      values[kind === 'diagnosis' ? 'description' : kind === 'recall' ? 'reason' : 'title'] = quick[`${suggestion.id}:primary`];
+    if (!patient) return;
+    const missing = missingFor(s);
+    if (missing.length) {
+      message.warning(`${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} needed first`);
+      setExpanded(s.id);
+      return;
     }
-    if (quick[`${suggestion.id}:date`]) values[kind === 'recall' ? 'dueDate' : 'dueDate'] = quick[`${suggestion.id}:date`];
-    if (quick[`${suggestion.id}:extra`]) values[kind === 'diagnosis' ? 'notes' : kind === 'recall' ? 'notes' : 'description'] = quick[`${suggestion.id}:extra`];
-    if (quick[`${suggestion.id}:select`]) values[kind === 'recall' ? 'type' : 'category'] = quick[`${suggestion.id}:select`];
-    if (drafts[suggestion.id]) {
-      values[kind === 'diagnosis' ? 'notes' : kind === 'recall' ? 'notes' : 'description'] = drafts[suggestion.id];
-    }
-
-    const payload = formValuesToRecord(kind, values, {
-      patientId: patient.id,
-      patientName: patient.fullName,
-      patientMrn: patient.mrn,
-      authorName: patient.primaryProviderName,
-    });
-    // Every record slice has the same shape; one concrete type keeps the dispatch monomorphic.
-    const slice = recordSlices[kind] as (typeof recordSlices)['medication'];
-    await dispatch(slice.create(payload as never)).unwrap();
-    message.success(`${suggestion.actionLabel.replace('Add ', '')} created for ${patient.fullName}`);
-    setDismissed((prev) => new Set(prev).add(suggestion.id));
-    setEditing(null);
-  };
-
-  const quickFields = (suggestion: InboxSuggestion) => {
-    const primaryKey = `${suggestion.id}:primary`;
-    const primaryValue =
-      quick[primaryKey] ??
-      String(suggestion.prefill.description ?? suggestion.prefill.reason ?? suggestion.prefill.title ?? '');
-    const dateKey = `${suggestion.id}:date`;
-    const dateValue = quick[dateKey] ?? String(suggestion.prefill.dueDate ?? '');
-    const selectKey = `${suggestion.id}:select`;
-
-    switch (suggestion.kind) {
-      case 'diagnosis':
-        return (
-          <>
-            <label className="ibx-q-label" htmlFor={primaryKey}>DIAGNOSIS NAME</label>
-            <Input id={primaryKey} value={primaryValue} onChange={(e) => setQuick((p) => ({ ...p, [primaryKey]: e.target.value }))} />
-            <label className="ibx-q-label" htmlFor={`${suggestion.id}:extra`}>DETAILS</label>
-            <Input.TextArea
-              id={`${suggestion.id}:extra`}
-              autoSize={{ minRows: 3, maxRows: 6 }}
-              value={quick[`${suggestion.id}:extra`] ?? String(suggestion.prefill.notes ?? '')}
-              onChange={(e) => setQuick((p) => ({ ...p, [`${suggestion.id}:extra`]: e.target.value }))}
-            />
-          </>
-        );
-      case 'recall':
-        return (
-          <>
-            <label className="ibx-q-label" htmlFor={primaryKey}>RECALL REASON</label>
-            <Input id={primaryKey} value={primaryValue} onChange={(e) => setQuick((p) => ({ ...p, [primaryKey]: e.target.value }))} />
-            <label className="ibx-q-label" htmlFor={selectKey}>RECALL GROUP</label>
-            <Select
-              id={selectKey}
-              className="ibx-q-select"
-              value={quick[selectKey] ?? String(suggestion.prefill.type ?? 'Follow-up')}
-              onChange={(v) => setQuick((p) => ({ ...p, [selectKey]: v }))}
-              options={RECALL_TYPE_OPTIONS.map((o) => ({ value: o, label: o }))}
-            />
-            <label className="ibx-q-label" htmlFor={dateKey}>RECALL DATE</label>
-            <DatePicker
-              id={dateKey}
-              className="ibx-q-select"
-              value={dateValue ? dayjs(dateValue) : undefined}
-              format="DD/MM/YYYY"
-              onChange={(d) => setQuick((p) => ({ ...p, [dateKey]: d ? d.format('YYYY-MM-DD') : '' }))}
-            />
-          </>
-        );
-      case 'task':
-        return (
-          <>
-            <label className="ibx-q-label" htmlFor={primaryKey}>TASK</label>
-            <Input id={primaryKey} value={primaryValue} onChange={(e) => setQuick((p) => ({ ...p, [primaryKey]: e.target.value }))} />
-            <label className="ibx-q-label" htmlFor={selectKey}>CATEGORY</label>
-            <Select
-              id={selectKey}
-              className="ibx-q-select"
-              value={quick[selectKey] ?? String(suggestion.prefill.category ?? 'Follow-up')}
-              onChange={(v) => setQuick((p) => ({ ...p, [selectKey]: v }))}
-              options={TASK_CATEGORY_OPTIONS.map((o) => ({ value: o, label: o }))}
-            />
-            <label className="ibx-q-label" htmlFor={dateKey}>DUE DATE</label>
-            <DatePicker
-              id={dateKey}
-              className="ibx-q-select"
-              value={dateValue ? dayjs(dateValue) : undefined}
-              format="DD/MM/YYYY"
-              onChange={(d) => setQuick((p) => ({ ...p, [dateKey]: d ? d.format('YYYY-MM-DD') : '' }))}
-            />
-          </>
-        );
-      case 'email':
-        return (
-          <>
-            <label className="ibx-q-label" htmlFor={`${suggestion.id}:extra`}>MESSAGE</label>
-            <Input.TextArea
-              id={`${suggestion.id}:extra`}
-              autoSize={{ minRows: 5, maxRows: 10 }}
-              value={drafts[suggestion.id] ?? suggestion.text}
-              onChange={(e) => setDrafts((p) => ({ ...p, [suggestion.id]: e.target.value }))}
-            />
-          </>
-        );
+    setSaving(s.id);
+    try {
+      const payload = formValuesToRecord(s.kind as RecordKind, current, {
+        patientId: patient.id,
+        patientName: patient.fullName,
+        patientMrn: patient.mrn,
+        authorName: patient.primaryProviderName,
+      });
+      // Every record slice has the same shape; one concrete type keeps the dispatch monomorphic.
+      const slice = recordSlices[s.kind as RecordKind] as (typeof recordSlices)['medication'];
+      await dispatch(slice.create(payload as never)).unwrap();
+      message.success(`${s.label.replace('ADD ', '').toLowerCase()} added for ${patient.fullName}`);
+      setDismissed((prev) => new Set(prev).add(s.id));
+      setExpanded(null);
+    } finally {
+      setSaving(null);
     }
   };
+
+  const openFullForm = (s: InboxSuggestion) => {
+    // Whatever has been typed into the card carries into the form.
+    setFullForm({ kind: s.kind as RecordKind, prefill: valuesFor(s) });
+  };
+
+  const renderField = (s: InboxSuggestion, field: SuggestionField) => {
+    const value = valuesFor(s)[field.key] ?? '';
+    const id = `${s.id}:${field.key}`;
+    const control =
+      field.type === 'textarea' ? (
+        <Input.TextArea id={id} autoSize={{ minRows: 2, maxRows: 8 }} value={value} onChange={(e) => setField(s, field.key, e.target.value)} />
+      ) : field.type === 'select' ? (
+        <Select
+          id={id}
+          className="ibx-q-select"
+          value={value || undefined}
+          placeholder={`Select ${field.label.toLowerCase()}`}
+          onChange={(v) => setField(s, field.key, v)}
+          options={(field.options ?? []).map((o) => ({ value: o, label: o }))}
+        />
+      ) : field.type === 'date' ? (
+        <DatePicker
+          id={id}
+          className="ibx-q-select"
+          format="DD/MM/YYYY"
+          /* The card holds text; the picker only ever sees a real date. */
+          value={value && dayjs(value).isValid() ? dayjs(value) : undefined}
+          onChange={(d) => setField(s, field.key, d ? d.format('YYYY-MM-DD') : '')}
+        />
+      ) : (
+        <Input id={id} value={value} placeholder={field.placeholder} onChange={(e) => setField(s, field.key, e.target.value)} />
+      );
+
+    return (
+      <div key={field.key} className="ibx-field">
+        <label className="ibx-q-label" htmlFor={id}>
+          {field.label}
+          {field.required && <span className="ibx-req"> *</span>}
+        </label>
+        {control}
+      </div>
+    );
+  };
+
+  const visible = suggestions.filter((s) => !dismissed.has(s.id));
 
   return (
     <aside className="ibx-ai" aria-label="Assistant">
+      <section className="ibx-ai-card is-result">
+        <h3>
+          <Sparkles size={13} aria-hidden /> Result summary
+        </h3>
+        <p>{buildResultSummary(item)}</p>
+      </section>
+
       {narrative && (
         <section className="ibx-ai-card is-patient">
           <h3>
-            Patient Summary <span>· {dayjs().format('DD/MM/YYYY')}</span>
+            <UserRound size={13} aria-hidden /> Patient summary <span>· {dayjs().format('D MMM YYYY')}</span>
           </h3>
           <p>{narrative.sections.slice(1, 4).map((s) => s.body).join(' ')}</p>
         </section>
       )}
 
-      <section className="ibx-ai-card is-result">
-        <h3>
-          <Sparkles size={13} aria-hidden /> Result Summary <span>· {dayjs(item.receivedAt).format('DD/MM/YYYY')}</span>
-        </h3>
-        <p>{buildResultSummary(item)}</p>
-      </section>
-
       <div className="ibx-ai-actions-head">
-        <Star size={14} aria-hidden />
-        <span>Suggested actions {unfiledCount > 0 && `(covers ${unfiledCount} unfiled item${unfiledCount === 1 ? '' : 's'})`}</span>
-        <span className="ibx-ai-count">{visible.length}</span>
+        <h3>Add to record</h3>
+        <span className="ibx-ai-count" aria-label={`${visible.length} suggestions`}>
+          {visible.length}
+        </span>
       </div>
+      {unfiledCount > 0 && <p className="ibx-ai-sub">Nothing is saved until you press Add. {unfiledCount} unfiled in this list.</p>}
 
       {!isCurrentPatient && (
-        <p className="ibx-ai-gate">
-          Select {item.patientName} to act on these suggestions — records are always written against the patient you are working on.
-        </p>
+        <div className="ibx-ai-gate">
+          <p>Select {item.patientName} to add to their record — everything is saved against the patient you are working on.</p>
+          {onSelectPatient && item.patientId && (
+            <Button size="small" type="primary" ghost icon={<UserRound size={13} />} onClick={onSelectPatient}>
+              Select patient
+            </Button>
+          )}
+        </div>
       )}
 
-      {visible.length === 0 ? (
-        <p className="ibx-ai-idle">Nothing outstanding on this item.</p>
-      ) : (
-        visible.map((suggestion) => {
-          const isEditing = editing === suggestion.id;
+      <div className="ibx-cards">
+        {visible.map((s) => {
+          const isOpen = expanded === s.id;
+          const cardValues = valuesFor(s);
+          const primary = s.fields.find((f) => f.primary);
+          const secondary = s.fields.find((f) => f.secondary);
+          const rest = s.fields.filter((f) => !f.primary && !f.secondary);
+          const missing = missingFor(s);
+          const blocked = s.kind !== 'email' && !isCurrentPatient;
+          const ready = missing.length === 0;
+
+          // The collapsed row says what would be added, or what is still needed.
+          const dateField = s.fields.find((f) => f.type === 'date');
+          const dateValue = dateField ? cardValues[dateField.key] : '';
+          const hint = ready
+            ? [primary ? cardValues[primary.key] : '', dateValue ? dayjs(dateValue).format('DD/MM/YYYY') : '']
+                .filter(Boolean)
+                .join(' · ')
+            : `Needs ${missing.join(', ').toLowerCase()}`;
+
           return (
-            <section key={suggestion.id} className={`ibx-sugg ${isEditing ? 'is-editing' : ''}`}>
-              <div className="ibx-sugg-head">
-                <span className="ibx-sugg-label">{suggestion.label}</span>
-                {isEditing ? (
-                  <button type="button" className="ibx-sugg-done" onClick={() => setEditing(null)}>
-                    Done
-                  </button>
-                ) : (
-                  <span className="ibx-sugg-buttons">
-                    <Button size="small" danger icon={<X size={12} />} onClick={() => setDismissed((p) => new Set(p).add(suggestion.id))}>
+            <section key={s.id} className={`ibx-card is-${s.kind} ${isOpen ? 'is-open' : ''} ${ready ? 'is-ready' : 'is-blank'}`}>
+              <div className="ibx-card-row">
+                <button
+                  type="button"
+                  className="ibx-card-head"
+                  onClick={() => setExpanded(isOpen ? null : s.id)}
+                  aria-expanded={isOpen}
+                  aria-controls={`${s.id}:body`}
+                >
+                  <span className="ibx-card-icon" aria-hidden>{kindIcon[s.kind]}</span>
+                  <span className="ibx-card-text">
+                    <span className="ibx-card-label">{s.kind === 'email' ? 'Draft message' : s.label.replace('ADD ', '').toLowerCase()}</span>
+                    <span className="ibx-card-hint">{hint || 'Enter details'}</span>
+                  </span>
+                  <ChevronDown size={14} className="ibx-card-chev" aria-hidden />
+                </button>
+
+                <Tooltip
+                  title={
+                    blocked
+                      ? `Select ${item.patientName} first`
+                      : !ready
+                        ? `${missing.join(' and ')} still needed — opens the fields`
+                        : s.kind === 'email'
+                          ? 'Copy this draft'
+                          : `Add it to ${item.patientName}'s record now`
+                  }
+                >
+                  <Button
+                    className="ibx-card-add"
+                    size="small"
+                    type="primary"
+                    icon={<Check size={12} />}
+                    loading={saving === s.id}
+                    disabled={blocked}
+                    /* The visible label is short; the accessible name says which record it adds. */
+                    aria-label={s.kind === 'email' ? 'Copy draft message' : s.actionLabel}
+                    onClick={() => (ready ? void add(s) : setExpanded(s.id))}
+                  >
+                    {s.kind === 'email' ? 'Copy' : 'Add'}
+                  </Button>
+                </Tooltip>
+              </div>
+
+              {isOpen && (
+                <div className="ibx-card-body" id={`${s.id}:body`}>
+                  {primary && renderField(s, primary)}
+                  {rest.map((f) => renderField(s, f))}
+                  {secondary && renderField(s, secondary)}
+
+                  <p className="ibx-sugg-basis">{s.basis}</p>
+
+                  <div className="ibx-card-actions">
+                    <Button size="small" danger icon={<X size={12} />} onClick={() => setDismissed((p) => new Set(p).add(s.id))}>
                       Dismiss
                     </Button>
+                    <span className="ibx-card-actions-spacer" />
+                    {s.kind !== 'email' && (
+                      <Tooltip title={blocked ? `Select ${item.patientName} first` : 'Open the full form with what you have typed'}>
+                        <Button size="small" icon={<FileText size={12} />} disabled={blocked} onClick={() => openFullForm(s)}>
+                          Full form
+                        </Button>
+                      </Tooltip>
+                    )}
                     <Button
                       size="small"
                       type="primary"
-                      disabled={suggestion.kind !== 'email' && !isCurrentPatient}
-                      onClick={() => setEditing(suggestion.id)}
+                      icon={<Check size={12} />}
+                      loading={saving === s.id}
+                      disabled={blocked}
+                      onClick={() => void add(s)}
                     >
-                      {suggestion.actionLabel}
-                    </Button>
-                  </span>
-                )}
-              </div>
-
-              {isEditing ? (
-                <div className="ibx-quick">
-                  <span className="ibx-quick-title">QUICK EDIT</span>
-                  {quickFields(suggestion)}
-                  <p className="ibx-sugg-basis">{suggestion.basis}</p>
-                  <div className="ibx-quick-actions">
-                    <Button size="small" danger icon={<X size={12} />} onClick={() => setDismissed((p) => new Set(p).add(suggestion.id))}>
-                      Dismiss
-                    </Button>
-                    <Button size="small" onClick={() => setEditing(null)}>
-                      Cancel
-                    </Button>
-                    {suggestion.kind !== 'email' && (
-                      <Button
-                        size="small"
-                        icon={<FileText size={12} />}
-                        onClick={() =>
-                          setFullForm({
-                            kind: suggestion.kind as RecordKind,
-                            prefill: suggestion.prefill as Record<string, string | number | boolean>,
-                          })
-                        }
-                      >
-                        Full form
-                      </Button>
-                    )}
-                    <Button size="small" type="primary" icon={<Check size={12} />} onClick={() => void create(suggestion)}>
-                      {suggestion.kind === 'email' ? 'Copy' : 'Create'}
+                      {s.actionLabel}
                     </Button>
                   </div>
-                </div>
-              ) : (
-                <div className="ibx-sugg-body">
-                  <Input.TextArea
-                    autoSize={{ minRows: 2, maxRows: 6 }}
-                    value={drafts[suggestion.id] ?? suggestion.text}
-                    onChange={(e) => setDrafts((p) => ({ ...p, [suggestion.id]: e.target.value }))}
-                    aria-label={`${suggestion.label} suggestion`}
-                  />
                 </div>
               )}
             </section>
           );
-        })
-      )}
+        })}
+      </div>
+
+      {!visible.length && <p className="ibx-ai-idle">All cards dismissed for this item.</p>}
 
       {fullForm && (
         <RecordFormModal
@@ -305,7 +333,7 @@ export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount }: 
           onClose={() => setFullForm(null)}
           prefill={fullForm.prefill}
           onSaved={() => {
-            message.success('Saved');
+            message.success(`Saved for ${item.patientName}`);
             setFullForm(null);
           }}
         />
