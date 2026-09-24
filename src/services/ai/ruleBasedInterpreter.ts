@@ -21,7 +21,7 @@ import { interpretGlobalInbox, interpretInboxClause, interpretPatientPosition, i
 const NAV_VERBS =
   '(?:go to|goto|open|navigate to|take me to|show me|show|i want|i want to see|bring up|switch to|display|view|load|jump to|head to|let\'s go to|lets go to|move to)';
 const ACTION_VERB_START =
-  /^(go|goto|open|add|create|fill|search|find|navigate|show|start|save|submit|book|schedule|register|select|set|check|uncheck|scroll|close|cancel|prescribe|look|take|switch|new|record|log|enter|recall|delete|remove|update|change|edit|mark|complete|stop|read|tell|list|what|summarize|summarise|give|file|unfile|archive|restore|mic|turn|exit|choose|pick)\b/;
+  /^(go|goto|open|add|create|fill|search|find|navigate|show|start|save|submit|book|schedule|register|select|set|check|uncheck|scroll|close|cancel|prescribe|look|take|switch|new|record|log|enter|recall|delete|remove|update|change|edit|mark|complete|stop|read|tell|list|what|summarize|summarise|give|file|unfile|archive|restore|mic|turn|exit|choose|pick|confirm|modify|amend|erase)\b/;
 
 /** True when an utterance starts with an application verb (i.e. is a command, not a plain value). */
 export const looksLikeCommand = (text: string): boolean =>
@@ -374,9 +374,257 @@ export function parseAppointmentPhrase(phrase: string): FieldValues {
 }
 
 // ----------------------------------------------------------------------------
+// Labelled fields: "first name John, last name Smith, date of birth January 10 1990"
+// ----------------------------------------------------------------------------
+/** Field aliases far too common to start a labelled value on their own. */
+const WEAK_LABELS = new Set(['first', 'last', 'number', 'street']);
+/** Spoken labels for a whole name, split into first and last name (patient form). */
+const FULL_NAME_LABELS = ['full name', 'patient name', 'name', 'named', 'called'];
+
+const labelCache = new Map<string, Array<[string, string]>>();
+/** Every spoken label of a form's fields, longest first so "phone number" beats "phone". */
+function fieldLabels(formId: string): Array<[string, string]> {
+  const cached = labelCache.get(formId);
+  if (cached) return cached;
+  const pairs: Array<[string, string]> = [];
+  for (const f of FieldRegistry.getForm(formId)?.fields ?? []) {
+    for (const spoken of [f.label, f.name.replace(/([A-Z])/g, ' $1'), ...(f.aliases ?? [])]) {
+      const label = spoken.toLowerCase().replace(/\(.*?\)/g, '').replace(/\s+/g, ' ').trim();
+      if (label && !WEAK_LABELS.has(label)) pairs.push([label, f.name]);
+    }
+  }
+  if (formId === 'patient') for (const l of FULL_NAME_LABELS) pairs.push([l, 'fullName']);
+  const sorted = pairs.sort((a, b) => b[0].length - a[0].length);
+  labelCache.set(formId, sorted);
+  return sorted;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** "phone number is 0300…" → ['phone', '0300…']; undefined when the segment does not start with a field label. */
+function labelledSegment(formId: string, segment: string): [string, string] | undefined {
+  const seg = segment.trim().replace(/^(?:(?:and|with|his|her|their|the|patient'?s|whose|also|plus|new)\s+)+/, '');
+  for (const [label, name] of fieldLabels(formId)) {
+    const m = seg.match(new RegExp(`^${escapeRe(label)}(?:\\s*[:=]\\s*|\\s+(?:is now|now is|should be|will be|is|was|to|as)\\s+|\\s+)(.+)$`));
+    if (m) return [name, m[1].trim()];
+  }
+  return undefined;
+}
+
+/** A spoken phrase that is exactly a field label ("phone number", "address") → the field name. */
+export function patientFieldFromLabel(phrase: string): string | undefined {
+  const q = phrase.trim().replace(/^(?:the|his|her|their)\s+/, '');
+  const name = fieldLabels('patient').find(([label]) => label === q)?.[1];
+  return name === 'fullName' ? 'firstName' : name;
+}
+
+/** Split at commas, and at "and" only where a new label starts ("… smith and phone 0300"). */
+function splitSegments(formId: string, text: string): string[] {
+  const out: string[] = [];
+  for (const part of text.split(/\s*[,;]\s*/)) {
+    // "January 10, 1990": a bare year belongs to the date before it.
+    if (/^\d{4}$/.test(part) && out.length) {
+      out[out.length - 1] += ` ${part}`;
+      continue;
+    }
+    const pieces = part.split(/\s+and\s+/);
+    let buffer = pieces[0];
+    for (let i = 1; i < pieces.length; i++) {
+      if (labelledSegment(formId, pieces[i])) {
+        out.push(buffer);
+        buffer = pieces[i];
+      } else buffer += ` and ${pieces[i]}`;
+    }
+    out.push(buffer);
+  }
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+/** A spoken patient value in the shape the form expects. */
+function patientFieldValue(name: string, raw: string): FieldValues {
+  const v = raw.replace(/\.+$/, '').trim();
+  switch (name) {
+    case 'fullName': {
+      const parts = v.split(/\s+/);
+      return { firstName: capitalize(parts[0]), ...(parts.length > 1 ? { lastName: capitalize(parts.slice(1).join(' ')) } : {}) };
+    }
+    case 'dateOfBirth':
+      return { dateOfBirth: parseDateTime(v).date ?? v };
+    case 'age': {
+      const n = Number(v.replace(/\D/g, ''));
+      return n ? { age: n } : {};
+    }
+    case 'email':
+      return { email: v.replace(/\s+at\s+/g, '@').replace(/\s+dot\s+/g, '.').replace(/\s+/g, '') };
+    case 'phone':
+    case 'emergencyContactPhone':
+      return { [name]: v.replace(/[^\d+()\s-]/g, '').replace(/\s+/g, ' ').trim() || v };
+    default:
+      return { [name]: v };
+  }
+}
+
+/** Fields said with their labels ("first name John, phone 0300…") and the segments that had none. */
+export function parseLabelledFields(formId: string, text: string): { fields: FieldValues; rest: string[] } {
+  const fields: FieldValues = {};
+  const rest: string[] = [];
+  for (const seg of splitSegments(formId, text)) {
+    const hit = labelledSegment(formId, seg);
+    if (!hit) {
+      rest.push(seg);
+      continue;
+    }
+    Object.assign(fields, formId === 'patient' ? patientFieldValue(hit[0], hit[1]) : { [hit[0]]: hit[1] });
+  }
+  return { fields, rest };
+}
+
+// ----------------------------------------------------------------------------
 // Patient: "Ahmed Khan, male, 32 years old, phone 555 0100"
+//          "first name John, last name Smith, date of birth January 10 1990"
 // ----------------------------------------------------------------------------
 export function parsePatientPhrase(phrase: string): FieldValues {
+  const labelled = parseLabelledFields('patient', phrase);
+  if (!Object.keys(labelled.fields).length) return parsePatientDescription(phrase);
+  // Labelled values win over anything guessed from the unlabelled words.
+  const described = labelled.rest.length ? parsePatientDescription(labelled.rest.join(', ')) : {};
+  return { ...described, ...labelled.fields };
+}
+
+// ----------------------------------------------------------------------------
+// Patient paragraph: "His name is John Smith, he was born on 10 January 1990, he is male,
+// his phone number is 0300 1234567 and he lives at House 12, Street 5, Lahore…"
+// Only what is actually said is taken — nothing is guessed (gender is never read from he/she).
+// ----------------------------------------------------------------------------
+/** Words that end a spoken name ("John Smith and he was born…"). */
+const NAME_STOP = new Set([
+  'and', 'he', 'she', 'who', 'is', 'was', 'born', 'aged', 'age', 'years', 'year', 'from', 'lives', 'living', 'with', 'his', 'her', 'the', 'a', 'an',
+  'male', 'female', 'man', 'woman', 'phone', 'mobile', 'email', 'on', 'in', 'at', 'has', 'works', 'of', 'speaks', 'whose', 'date', 'dob', 'blood',
+  'married', 'single', 'by', 'profession', 'resides', 'contact', 'number', 'old', 'patient', 'name', 'named', 'called', 'new',
+]);
+/** Where one spoken detail ends and the next begins. */
+const DETAIL_END =
+  '(?=\\s*(?:,|;|\\band\\b)\\s*(?:he|she|his|her|they|their|the patient|patient|works|working|is|was|has|speaks|phone|mobile|cell|contact|email|born|date of birth|dob|blood|insurance|policy|emergency|age|aged|lives|city|male|female|man|woman|married|single|unmarried|divorced|widowed|\\d{1,3}\\s*(?:years?|yrs?))\\b|\\s*;|\\s*$)';
+const PHONE = '(\\+?\\d[\\d\\s-]{6,}\\d)';
+const RELATIONS: Record<string, string> = {
+  wife: 'Spouse', husband: 'Spouse', spouse: 'Spouse', mother: 'Parent', father: 'Parent', parent: 'Parent', mom: 'Parent', dad: 'Parent',
+  son: 'Child', daughter: 'Child', child: 'Child', brother: 'Sibling', sister: 'Sibling', sibling: 'Sibling', friend: 'Friend',
+};
+
+/** Up to three plain words of a name, stopping at the first word that is not part of it. */
+function nameFrom(words: string): string | undefined {
+  const out: string[] = [];
+  for (const w of words.trim().split(/[\s,;]+/)) {
+    if (!/^[a-z][a-z'-]*$/.test(w) || NAME_STOP.has(w)) break;
+    out.push(w);
+    if (out.length === 3) break;
+  }
+  return out.length ? out.join(' ') : undefined;
+}
+
+const splitName = (name: string): FieldValues => {
+  const parts = name.split(/\s+/);
+  return { firstName: capitalize(parts[0]), ...(parts.length > 1 ? { lastName: capitalize(parts.slice(1).join(' ')) } : {}) };
+};
+
+/**
+ * Every patient detail found in free speech or pasted text. `nameFromStart` reads a leading bare
+ * name ("John Smith, male, 45 years old…") — only used when a new patient is being described.
+ */
+export function parsePatientParagraph(text: string, options: { nameFromStart?: boolean } = {}): FieldValues {
+  let t = ` ${text.toLowerCase().replace(/[“”"]/g, '').replace(/\s+/g, ' ')} `;
+  const f: FieldValues = {};
+  const take = (re: RegExp) => {
+    const m = t.match(re);
+    if (m) t = t.replace(m[0], ' ; ');
+    return m;
+  };
+
+  // The emergency contact first, so their name and number are never taken for the patient's.
+  const emergency = take(new RegExp(`\\b(?:in case of )?emergency contact(?: person)?(?: is| details are| number is)?\\s+(.+?)${DETAIL_END}`));
+  if (emergency) {
+    let inner = emergency[1].replace(/^(?:is|his|her|their|the patient'?s)\s+/, '');
+    const relation = inner.match(/^(?:(?:his|her|their)\s+)?(wife|husband|spouse|mother|father|parent|mom|dad|son|daughter|child|brother|sister|sibling|friend)\b\s*(?:named|called|is)?\s*/);
+    if (relation) {
+      f.emergencyContactRelation = RELATIONS[relation[1]];
+      inner = inner.slice(relation[0].length);
+    }
+    const name = nameFrom(inner.replace(/^(?:mr|mrs|ms|miss)\.?\s+/, ''));
+    if (name) f.emergencyContactName = capitalize(name);
+    const phone = inner.match(new RegExp(PHONE));
+    if (phone) f.emergencyContactPhone = phone[1].trim();
+  }
+
+  const email = take(/\b[\w.+-]+@[\w-]+\.[\w.]+\b/) ?? take(/\b([a-z0-9._-]+) at ([a-z0-9-]+) dot ([a-z]+(?: dot [a-z]+)?)\b/);
+  if (email) f.email = email[1] && email[2] ? `${email[1]}@${email[2]}.${email[3].replace(/ dot /g, '.')}` : email[0];
+
+  const policy = take(/\bpolicy (?:number |no\.? |id )?(?:is )?([a-z0-9-]*\d[a-z0-9-]*)/);
+  if (policy) f.policyNumber = policy[1].toUpperCase();
+
+  // A date ends at the next comma — except the one in "January 10, 1990".
+  const dob = take(/\b(?:born|date of birth|dob|birth date|birthday)\b(?:\s+(?:is|was|on|in|:))*\s+([^,;]+?(?:,\s*\d{4})?)(?=\s*(?:,|;|\band\b|$))/);
+  const birth = dob ? parseDateTime(dob[1]).date : undefined;
+  if (birth) f.dateOfBirth = birth;
+
+  const age = take(/\b(\d{1,3})[\s-]*(?:years?|yrs?)[\s-]*old\b|\baged? (?:is )?(\d{1,3})\b/);
+  if (age) f.age = Number(age[1] ?? age[2]);
+
+  const phone = take(new RegExp(`\\b(?:(?:phone|mobile|cell|contact|telephone|whatsapp)(?:\\s+(?:number|no\\.?))?|number)(?:\\s+(?:is|:))?\\s+${PHONE}`));
+  if (phone) f.phone = phone[1].trim();
+
+  const address = take(new RegExp(`\\b(?:lives at|living at|resides at|residing at|stays at|(?:home |house |residential )?address is)\\s+(.+?)${DETAIL_END}`));
+  if (address) f.addressLine1 = address[1].replace(/[\s,;]+$/, '');
+
+  const city = take(/\b(?:lives in|living in|resides in|resident of|city is|is from|comes from|belongs to)\s+([a-z]+(?: [a-z]+)?)(?=\s*(?:,|;|\band\b|$))/);
+  if (city && !NAME_STOP.has(city[1].split(' ')[0])) f.city = capitalize(city[1]);
+
+  const job = take(/\b(?:works as|working as|occupation is|profession is|job is|is by profession)\s+(?:an?\s+)?([a-z]+(?: [a-z]+)?)(?=\s*(?:,|;|\band\b|$))/);
+  if (job) f.occupation = capitalize(job[1]);
+
+  const blood = take(/\bblood (?:group|type)(?: is)? (ab|a|b|o)\s*(positive|negative|\+|-)|\b(ab|a|b|o) (positive|negative) blood\b/);
+  if (blood) f.bloodGroup = `${(blood[1] ?? blood[3]).toUpperCase()}${/^(?:positive|\+)$/.test(blood[2] ?? blood[4]) ? '+' : '-'}`;
+
+  const marital = take(/\b(married|single|unmarried|divorced|widowed|widow|widower)\b/);
+  if (marital) f.maritalStatus = /^widow/.test(marital[1]) ? 'Widowed' : marital[1] === 'unmarried' ? 'Single' : capitalize(marital[1]);
+
+  const language = take(/\b(?:speaks|language is|preferred language is|prefers)\s+(english|spanish|urdu|arabic|mandarin|hindi|french)\b/);
+  if (language) f.language = capitalize(language[1]);
+
+  if (/\b(?:self[- ]?pay|no insurance|uninsured|not insured)\b/.test(t)) f.insuranceProvider = 'Self-pay';
+  else {
+    const insurance = take(new RegExp(`\\binsur(?:ance|er)(?: provider| company)?(?: is| with| by)?\\s+(.+?)${DETAIL_END}`));
+    if (insurance) f.insuranceProvider = insurance[1].replace(/[\s,;]+$/, '');
+  }
+
+  const gender = take(/\b(male|female|man|woman|boy|girl)\b/);
+  if (gender) f.gender = FieldRegistry.normalizeValue(FieldRegistry.resolveField('patient', 'gender')!, gender[1]);
+
+  const named = take(/\b(?:(?:his|her|their|the patient'?s|patient'?s|my|full|patient) name is|name is|named|called|this is|(?:mr|mrs|ms|miss)\.?)\s+([a-z][a-z' -]+)/);
+  const name = named ? nameFrom(named[1]) : undefined;
+  if (name) Object.assign(f, splitName(name));
+  else if (options.nameFromStart) {
+    // "John Smith, male, 45 years old" — what leads, once every recognised detail is taken out, is the name.
+    const first = t.trim().split(/\s*[,;.]\s*/)[0].replace(/^(?:patient|the patient)\s+/, '');
+    const bare = nameFrom(first);
+    if (bare && bare === first.trim()) Object.assign(f, splitName(bare));
+  }
+
+  // A number said with no label is the phone number — once the dates, ages and policy are gone.
+  if (!f.phone) {
+    const loose = t.match(/(?:^|[^\d])(\+?\d[\d\s-]{8,}\d)(?![\d])/);
+    if (loose) f.phone = loose[1].trim();
+  }
+  return f;
+}
+
+/** Patient details in free text: natural sentences first, then labelled fields for anything left. */
+export function parsePatientDetails(text: string, options: { nameFromStart?: boolean } = {}): FieldValues {
+  const prose = parsePatientParagraph(text, options);
+  const labelled = parseLabelledFields('patient', text).fields;
+  return { ...labelled, ...prose };
+}
+
+function parsePatientDescription(phrase: string): FieldValues {
   const fields: FieldValues = {};
   let text = ` ${phrase.toLowerCase()} `;
   const gender = text.match(/\b(male|female|man|woman|boy|girl|non-binary|other)\b/);
@@ -448,12 +696,142 @@ export function parseRecordPhrase(kind: AIRecordKind, phrase: string): FieldValu
 }
 
 // ----------------------------------------------------------------------------
+// Which patient an update / delete is about: "John Smith's phone number to 0300…"
+// ----------------------------------------------------------------------------
+/** "the patient", "this patient" — the selected patient. */
+const SELF_PATIENT_RE = /^(?:(?:the|this|that|current|selected|the current|the selected)\s+)?patient$/;
+/** Patient fields distinctive enough to split "update john smith phone number 0300…" without a comma. */
+const INLINE_PATIENT_LABELS =
+  'phone number|phone|mobile number|mobile|email address|email|address|date of birth|dob|birthday|gender|blood group|blood type|first name|last name|city|postal code|zip code|occupation|marital status|preferred language|language|insurance provider|policy number|emergency contact(?: name| phone| number)?';
+
+/** Plain words that could be a person's name or an MRN — never a module, a drug, a field or a pronoun. */
+function isPatientNameLike(phrase: string): boolean {
+  const t = phrase.trim();
+  if (!t || /^(?:it|this|that|one|them|him|her|this one|that one|the one|everything|all|everyone)$/.test(t)) return false;
+  if (/^(?:the )?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|next|previous)\b/.test(t)) return false;
+  if (kindFromText(t) || patientFieldFromLabel(t)) return false;
+  if (t.split(/\s+/).some((w) => isKnownDrug(w))) return false;
+  return /^[a-z][a-z'.-]*(?:\s+[a-z][a-z'.-]*){0,3}$/.test(t) || /^(?:mrn\s*[-#:]?\s*)?[a-z]{0,4}-?\d{3,}$/.test(t);
+}
+
+interface PatientTarget {
+  /** Who — undefined means the selected patient. */
+  match?: string;
+  fields?: FieldValues;
+  /** A field named without a value, to be asked for. */
+  field?: string;
+}
+
+/**
+ * "John Smith" / "John Smith's phone number to 0300…" / "John Smith, phone number is 0300…" /
+ * "the patient's address" → who, and what to change. Null when the words are not about a patient.
+ */
+function parsePatientTarget(phrase: string): PatientTarget | null {
+  const p = phrase
+    .trim()
+    .replace(/\s+(?:for editing|to edit|in edit mode|for edit|for update|to update|for changes)$/, '')
+    .replace(/^(?:mr|mrs|ms|miss|dr)\.?\s+/, '');
+  const who = (w: string) => (SELF_PATIENT_RE.test(w.trim()) ? undefined : w.trim().replace(/^(?:mr|mrs|ms|miss|dr)\.?\s+/, ''));
+  /** What follows the name: labelled values, or one field to ask about. */
+  const what = (w: string): Omit<PatientTarget, 'match'> | null => {
+    if (/^(?:details|record|records|information|info|profile|file|chart|data|demographics)$/.test(w)) return {};
+    // "phone number" on its own names a field to ask about — not phone = "number".
+    const field = patientFieldFromLabel(w);
+    if (field) return { field };
+    const labelled = parseLabelledFields('patient', w);
+    return Object.keys(labelled.fields).length && !labelled.rest.length ? { fields: labelled.fields } : null;
+  };
+
+  const possessive = p.match(/^(.+?)(?:'s|')\s+(.+)$/);
+  if (possessive) {
+    const match = who(possessive[1]);
+    if (match !== undefined && !isPatientNameLike(match)) return null;
+    const rest = what(possessive[2].trim());
+    return rest ? { match, ...rest } : null;
+  }
+  const separated = p.match(/^(.+?)(?:\s*,\s*|\s+with\s+|\s+and\s+|\s+set\s+)(.+)$/);
+  if (separated) {
+    const match = who(separated[1]);
+    const rest = what(separated[2].trim());
+    if ((match === undefined || isPatientNameLike(match)) && rest && (rest.fields || rest.field)) return { match, ...rest };
+  }
+  const inline = p.match(new RegExp(`^(.+?)\\s+((?:${INLINE_PATIENT_LABELS})\\b.*)$`));
+  if (inline) {
+    const match = who(inline[1]);
+    const rest = what(inline[2].trim());
+    if ((match === undefined || isPatientNameLike(match)) && rest && (rest.fields || rest.field)) return { match, ...rest };
+  }
+  if (SELF_PATIENT_RE.test(p)) return {};
+  return isPatientNameLike(p) ? { match: p } : null;
+}
+
+/**
+ * Updating or deleting a patient by name: "update John Smith", "open John Smith for editing",
+ * "change John Smith's phone number", "delete John Smith". On another module's page a bare name
+ * stays that module's record — the word "patient" or a patient-only field makes it a patient.
+ */
+function interpretPatientRecord(t: string, pageKind: AIRecordKind | undefined): AICommand[] | null {
+  const otherModule = !!pageKind && pageKind !== 'patient';
+
+  const openFor = t.match(/^(?:open|pull up|bring up|load|show)\s+(?:the\s+)?(patient\s+)?(.+?\s+(?:for editing|to edit|in edit mode|for edit|for update|to update|for changes))$/);
+  const edit = openFor ?? t.match(/^(?:update|edit|change|modify|correct|fix|amend)\s+(?:the\s+)?(patient(?:'s)?\s+)?(.+)$/);
+  if (edit) {
+    const explicit = !!edit[1] || /\bpatient\b/.test(edit[2]);
+    // "update patient's phone number" — a field of the selected patient.
+    const target = edit[1]?.startsWith("patient'") ? parsePatientTarget(`the patient's ${edit[2]}`) : parsePatientTarget(edit[2]);
+    if (target) {
+      const named = [...Object.keys(target.fields ?? {}), ...(target.field ? [target.field] : [])];
+      const pageForm = pageKind ? FieldRegistry.getForm(pageKind) : undefined;
+      const patientOnly = named.length > 0 && named.every((n) => !pageForm?.fields.some((f) => f.name === n));
+      if (!otherModule || explicit || patientOnly) {
+        return [
+          {
+            action: 'update_record',
+            kind: 'patient',
+            ...(target.match ? { match: target.match } : {}),
+            ...(target.fields ? { fields: target.fields } : {}),
+            ...(target.field ? { field: target.field } : {}),
+          },
+        ];
+      }
+    }
+  }
+
+  const del = t.match(/^(?:delete|remove|erase)\s+(?:the\s+)?(patient\s+)?(.+?)(?:(?:'s|')\s+(?:record|details|profile|file|chart))?(?:\s+from (?:the )?(?:system|records?|list|patient list|database))?$/);
+  if (del && (!otherModule || del[1])) {
+    const who = del[2].trim().replace(/^(?:mr|mrs|ms|miss|dr)\.?\s+/, '');
+    if (SELF_PATIENT_RE.test(who)) return [{ action: 'delete_record', kind: 'patient' }];
+    if (isPatientNameLike(who)) return [{ action: 'delete_record', kind: 'patient', match: who }];
+  }
+  return null;
+}
+
+// ----------------------------------------------------------------------------
 // Main interpreter
 // ----------------------------------------------------------------------------
 const CONFIRM_RE =
   /^(?:yes|yes,? (?:save|submit|confirm|delete|do it|go ahead|please)(?: it)?|yeah|yep|save(?: it| this| the form| now)?|submit(?: it| the form)?|confirm(?: it)?|delete it|go ahead|proceed|do it|ok save(?: it)?|okay save(?: it)?|that's correct|correct|looks good|approve)$/;
 const CANCEL_RE =
-  /^(?:no|nope|cancel(?: it| that| this)?|stop|never ?mind|discard(?: it)?|abort|forget it|don't save|do not save|don't delete|undo|clear(?: the form| it)?|close(?: it| the form| this)?|dismiss)$/;
+  /^(?:no|nope|cancel(?: it| that| this)?|stop|never ?mind|discard(?: it)?|abort|forget it|don't save|do not save|don't delete|undo|clear(?: the form| it)?|close(?: it| the form| this)?|dismiss|no,? (?:cancel|stop|don't|do not|keep (?:it|them|the patient))(?: it| that| this)?|(?:don't|do not) delete (?:it|the patient|this patient|him|her|them)|do not delete|cancel (?:the )?(?:delete|deletion|edit|update|changes)|keep (?:it|the patient))$/;
+/**
+ * "Confirm delete", "yes, delete the patient", and — while a deletion waits for an answer —
+ * "delete it" / "delete the patient". These only ever confirm a deletion, never a save.
+ */
+const CONFIRM_DELETE_RE =
+  /^(?:yes,? )?(?:confirm(?: the)? delet(?:e|ion)|delete (?:it|the patient|this patient|him|her|them|the record)|yes,? delete(?: it| the patient| this patient)?|go ahead and delete(?: it)?|yes,? go ahead and delete(?: it)?)$/;
+
+function confirmDelete(t: string, ctx: AIContext): AICommand | null {
+  if (!CONFIRM_DELETE_RE.test(t)) return null;
+  if (ctx.pendingConfirmationKind === 'delete' || (ctx.awaitingConfirmation && !ctx.pendingConfirmationKind)) return { action: 'confirm' };
+  if (ctx.awaitingConfirmation) return { action: 'respond', message: 'Nothing is waiting to be deleted. Say "save it" to save the form, or "cancel".' };
+  // Nothing is pending: "delete the patient" is a new request; "confirm delete" has nothing to confirm.
+  return /^(?:yes,? )?delete /.test(t) && !/^yes/.test(t) ? null : { action: 'confirm' };
+}
+
+/** "Save patient", "submit changes", "save this patient" — and "update patient" while the patient form is open. */
+const SAVE_RE =
+  /^(?:save|submit)(?: the| this| my| all(?: the)?)? (?:patient|new patient|patient record|patient details|patient changes|patient's changes|changes|record|form|details)$|^(?:save|submit) (?:the )?changes (?:to|for) (?:the |this )?patient$/;
+const UPDATE_SAVE_RE = /^(?:update|save and close|update and save)(?: the| this)?(?: patient| record| patient record)?$/;
 
 const KIND_WORDS = 'medications?|meds?|drugs?|medicines?|diagnos(?:is|es)|problems?|conditions?|tasks?|to-?dos?|recalls?|reminders?|appointments?|visits?|patients?';
 
@@ -463,6 +841,8 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
   const pageKind = kindFromPage(ctx.currentPageId);
 
   // --- confirmation boundary ---
+  const deletion = confirmDelete(t, ctx);
+  if (deletion) return [deletion];
   if (CONFIRM_RE.test(t)) return [{ action: 'confirm' }];
   const voice = interpretVoiceControl(t, ctx);
   if (voice) return [voice];
@@ -476,6 +856,21 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
   if (inboxAnywhere) return [inboxAnywhere];
   const patientAt = interpretPatientPosition(t, ctx);
   if (patientAt) return [patientAt];
+
+  // --- save: "save patient" must not read as "go to the Patient page" ---
+  const patientFormOpen = ctx.openFormId === 'patient' || ctx.pendingSlot?.formId === 'patient';
+  if (SAVE_RE.test(t) || (patientFormOpen && UPDATE_SAVE_RE.test(t))) return [{ action: 'submit_form' }];
+
+  // --- dictating into the open patient form: "first name John, last name Smith", "he was born on …", "change the phone to …" ---
+  if (patientFormOpen) {
+    const change = t.match(/^(?:set|change|update|make|put|enter|type|fill(?: in)?|correct)(?: the)? (.+?) (?:to|as|with|=) (.+)$/);
+    const changeField = change ? patientFieldFromLabel(change[1]) : undefined;
+    if (change && changeField) return [{ action: 'fill_form', formId: 'patient', fields: parseLabelledFields('patient', `${change[1]} ${change[2]}`).fields }];
+    if (!ACTION_VERB_START.test(t)) {
+      const details = parsePatientDetails(t);
+      if (Object.keys(details).length) return [{ action: 'fill_form', formId: 'patient', fields: details }];
+    }
+  }
   if (/^(?:go |take me |navigate )?back$/.test(t) || /^(?:go back|previous page)$/.test(t)) return [{ action: 'go_back' }];
   if (/^(?:go |take me )?home$/.test(t) || /^(?:go to |open )?(?:the )?home ?page$/.test(t)) return [{ action: 'go_home' }];
   if (/^(?:collapse|expand|toggle|hide|show) (?:the )?(?:sidebar|side bar|menu|navigation)$/.test(t)) return [{ action: 'toggle_sidebar' }];
@@ -540,6 +935,10 @@ export function interpretClause(clause: string, ctx: AIContext, rawClause?: stri
   // "select John Smith" — a name straight after the verb (a form field would say "for …").
   const selectName = t.match(/^(?:select|choose|pick)\s+(?!(?:the|a|an|this|that|all|first|second|third|last|next|previous|patient|one)\b)([a-z][a-z'.-]*(?:\s[a-z][a-z'.-]*){0,3})$/);
   if (selectName && !ctx.openFormId && !PageRegistry.resolve(selectName[1])) return [{ action: 'select_patient', name: capitalize(selectName[1]) }];
+
+  // --- update / delete a patient by name ---
+  const patientRecord = interpretPatientRecord(t, pageKind);
+  if (patientRecord) return patientRecord;
 
   // --- delete ---
   const del = t.match(new RegExp(`^(?:delete|remove|cancel)\\s+(?:the\\s+|this\\s+)?(?:(${KIND_WORDS})\\s+)?(.*)$`));
@@ -750,10 +1149,19 @@ export function interpret(transcript: string, ctx: AIContext): AICommand[] {
     const inbox = interpretInboxClause(normalized, ctx);
     if (inbox) return inbox;
   }
-  // A single confirmation/cancel word should never be split.
-  if (CONFIRM_RE.test(normalized)) return [{ action: 'confirm' }];
-  if (CANCEL_RE.test(normalized)) return [{ action: 'cancel' }];
-  const clauses = splitClauses(normalized);
+  // The speech engine punctuates pauses: "Add a new patient. First name John…" is two clauses.
+  // A dictated answer keeps its full stops ("12 Main St. Apt 4").
+  const sentences = ctx.pendingSlot ? normalized : normalized.replace(SENTENCE_BREAK, '; ');
+  // A single confirmation/cancel word should never be split ("Yes. Delete it." is one answer).
+  const flat = sentences.replace(/;\s*/g, ', ');
+  const deletion = confirmDelete(flat, ctx);
+  if (deletion) return [deletion];
+  if (CONFIRM_RE.test(flat)) return [{ action: 'confirm' }];
+  if (CANCEL_RE.test(flat)) return [{ action: 'cancel' }];
+  // A whole paragraph about a patient is read as one: its sentences are details, not commands.
+  const paragraph = interpretPatientParagraph(flat, ctx);
+  if (paragraph) return paragraph;
+  const clauses = splitClauses(sentences);
   // Raw text is only used as a verbatim slot answer; for Urdu input the translation is the usable form.
   const source = translateUrdu(transcript).text;
   const rawSingle = clauses.length === 1 ? source.trim().replace(/[.!?]+$/g, '') : undefined;
@@ -774,5 +1182,79 @@ export function interpret(transcript: string, ctx: AIContext): AICommand[] {
       }
     }
   }
-  return commands;
+  return mergeFollowUpFields(commands);
+}
+
+/**
+ * A paragraph about a patient, spoken or pasted into the assistant:
+ *   "Add a new patient. His name is John Smith, he was born on 10 January 1990, …" → add_record with every detail
+ *   "Update John Smith. His phone number is …, he now lives at …"                 → update_record with just those details
+ *   several details while the patient form is open                                 → fill_form
+ *   a description of someone on the Patient page ("John Smith, male, 45 years old, phone …") → add_record
+ * Anything shorter, or holding a second command ("… and then open medications"), is left to the clause grammar.
+ */
+function interpretPatientParagraph(text: string, ctx: AIContext): AICommand[] | null {
+  const single = (s: string) => splitClauses(s).length === 1;
+
+  const add = text.match(/^(?:add|create|register|new|enter)\s+(?:an?\s+)?(?:new\s+)?patient\b[\s,;:-]*(?:(?:with|having)\s+)?(?:the\s+)?(?:following\s+(?:details|information|data)[\s,;:-]*)?/);
+  if (add) {
+    const body = text.slice(add[0].length).replace(/^(?:named|called)\s+/, '').trim();
+    if (!body || !single(body)) return null;
+    const fields = parsePatientDetails(body, { nameFromStart: true });
+    return Object.keys(fields).length >= 2 ? [{ action: 'add_record', kind: 'patient', fields }] : null;
+  }
+
+  const update = text.match(/^((?:update|edit|change|modify|correct)\s+[^,;]+?)\s*[,;]\s*(.+)$/);
+  if (update && single(update[2])) {
+    const target = interpretPatientRecord(update[1].trim(), kindFromPage(ctx.currentPageId))?.[0];
+    if (target?.action === 'update_record' && target.kind === 'patient' && !target.fields) {
+      const fields = parsePatientDetails(update[2]);
+      if (Object.keys(fields).length) {
+        const { field: _asked, ...rest } = target;
+        return [{ ...rest, fields }];
+      }
+    }
+    return null;
+  }
+
+  if (ACTION_VERB_START.test(text) || !single(text)) return null;
+  if (ctx.openFormId === 'patient' || ctx.pendingSlot?.formId === 'patient') {
+    const fields = parsePatientDetails(text);
+    return Object.keys(fields).length >= 2 ? [{ action: 'fill_form', formId: 'patient', fields }] : null;
+  }
+  if (ctx.currentPageId === 'patients') {
+    const fields = parsePatientDetails(text, { nameFromStart: true });
+    const details = Object.keys(fields).filter((k) => k !== 'firstName' && k !== 'lastName');
+    if (fields.firstName && details.length >= 2) return [{ action: 'add_record', kind: 'patient', fields }];
+  }
+  return null;
+}
+
+/** A full stop between sentences — not the one after "Dr" or "Mr". */
+const SENTENCE_BREAK = /(?<!\b(?:dr|mr|mrs|ms|st|jr|sr|no))\.\s+(?=[a-z0-9])/g;
+
+/**
+ * "Add a new patient; first name John, last name Smith" → one add_record carrying both clauses'
+ * fields, so the form opens once and is filled once (the bare add would stop to ask a question).
+ */
+function mergeFollowUpFields(commands: AICommand[]): AICommand[] {
+  const out: AICommand[] = [];
+  for (const c of commands) {
+    const prev = out[out.length - 1];
+    // Two dictated sentences for the same form fill it once (each fill stops to report).
+    if (c.action === 'fill_form' && !c.entries && prev?.action === 'fill_form' && !prev.entries && prev.formId === c.formId) {
+      out[out.length - 1] = { ...prev, fields: { ...prev.fields, ...c.fields } };
+      continue;
+    }
+    if (c.action === 'fill_form' && !c.entries && prev && (prev.action === 'add_record' || prev.action === 'update_record') && (c.formId ?? prev.kind) === prev.kind && !(prev.action === 'add_record' && prev.records)) {
+      const merged = { ...(prev.fields ?? {}), ...c.fields };
+      if (prev.action === 'update_record') {
+        const { field: _asked, ...update } = prev;
+        out[out.length - 1] = { ...update, fields: merged };
+      } else out[out.length - 1] = { ...prev, fields: merged };
+      continue;
+    }
+    out.push(c);
+  }
+  return out;
 }

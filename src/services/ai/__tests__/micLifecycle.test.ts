@@ -6,7 +6,7 @@ import providerReducer from '@/store/slices/providerSlice';
 import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, tasksSlice } from '@/store/slices/recordSlices';
 import uiReducer from '@/store/slices/uiSlice';
 import voiceReducer from '@/store/slices/voiceSlice';
-import navigationReducer from '@/store/slices/navigationSlice';
+import navigationReducer, { navigationActions } from '@/store/slices/navigationSlice';
 import { VoiceController, isClinicalParagraph } from '../voiceController';
 import { MockLLMProvider } from '../providers/llmProviders';
 import type { ListeningCallbacks, ListeningSession, MicrophoneRecognizer } from '../providers/sttProviders';
@@ -258,6 +258,15 @@ describe('clinical paragraph — a pause ends it, mic off, AI Summary extracts i
     expect(controller.isMicActive).toBe(false);
     expect(mic.current.stopped).toBe(true);
     expect(store.getState().voice.micActive).toBe(false);
+  });
+
+  it('keeps the mic on through a pause during patient work — only "mic off" ends it', async () => {
+    store.dispatch(navigationActions.setCurrentPage({ pageId: 'patients', path: '/patients', title: 'Patient' }));
+    controller.startListening();
+    await flush(700);
+    expect(controller.isMicActive).toBe(true);
+    await controller.handleTranscript('mic off');
+    expect(controller.isMicActive).toBe(false);
   });
 
   it('speech restarts the pause countdown', async () => {

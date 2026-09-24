@@ -362,10 +362,17 @@ export class VoiceController {
     this.silenceTimer = null;
     // The AI Summary dictation box runs its own pause timer (and extracts afterwards).
     if (!this.micActive || this.dictation) return;
-    // Reading a result takes longer than 10 s. In the Inbox the microphone stays on until
+    // Reading a result takes longer than 10 s. In the Inbox and during patient work (the Patient
+    // page, the patient form, a patient question or confirmation) the microphone stays on until
     // the user says "stop listening" (or presses Mic Off) — a clinical note still finishes.
-    const inInbox = isInboxPage(this.store.getState().navigation?.currentPageId);
-    if (this.busy || (inInbox && !this.paragraph)) {
+    const state = this.store.getState();
+    const inInbox = isInboxPage(state.navigation?.currentPageId);
+    const patientWork =
+      state.navigation?.currentPageId === 'patients' ||
+      FormRegistry.active()?.formId === 'patient' ||
+      state.voice.pendingSlot?.formId === 'patient' ||
+      state.voice.pendingConfirmation?.formId === 'patient';
+    if (this.busy || ((inInbox || patientWork) && !this.paragraph)) {
       this.armSilenceTimer();
       return;
     }
@@ -693,6 +700,7 @@ export class VoiceController {
       openFormFields: openForm ? Object.keys(openForm.getValues()) : [],
       pendingSlot: state.voice.pendingSlot ? { formId: state.voice.pendingSlot.formId, field: state.voice.pendingSlot.field, label: state.voice.pendingSlot.label } : null,
       awaitingConfirmation: !!state.voice.pendingConfirmation,
+      pendingConfirmationKind: state.voice.pendingConfirmation?.kind ?? null,
       recentTranscripts: state.voice.history.slice(0, 3).map((h) => h.transcript),
     };
   }

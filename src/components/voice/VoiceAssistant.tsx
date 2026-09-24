@@ -40,10 +40,15 @@ const hints = [
 /** In the Inbox the assistant suggests Inbox commands. */
 const inboxHints = ['Open the first record', 'File this', 'Next', 'Show Lab', 'Search blood test', 'Clear search', 'What can I say?'];
 
+/** On the Patient page the assistant suggests patient commands. */
+const patientHints = ['Add patient John Smith, date of birth January 10 1990', 'Find John Smith', 'Open the first result', "Change John Smith's phone number", 'Save patient'];
+
 export function VoiceAssistant() {
   const dispatch = useAppDispatch();
   const voice = useAppSelector((s) => s.voice);
-  const inInbox = PageRegistry.matchPath(useLocation().pathname)?.module === 'inbox';
+  const page = PageRegistry.matchPath(useLocation().pathname);
+  const inInbox = page?.module === 'inbox';
+  const inPatients = page?.id === 'patients';
   const [typed, setTyped] = useState('');
   const [showTyping, setShowTyping] = useState(false);
   // Read-back commands ("read the medication list") are spoken unless the user mutes them.
@@ -176,7 +181,7 @@ export function VoiceAssistant() {
               <div>
                 <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Try saying</div>
                 <div className="voice-hint-chips">
-                  {(inInbox ? inboxHints : hints).map((h) => (
+                  {(inInbox ? inboxHints : inPatients ? patientHints : hints).map((h) => (
                     <Tag key={h} className="voice-hint-chip" onClick={() => void controller.handleTranscript(h)}>
                       {h}
                     </Tag>

@@ -97,7 +97,21 @@ export function interpretVoiceControl(t: string, ctx: AIContext): AICommand | nu
 export function interpretPatientPosition(t: string, ctx: AIContext): AICommand | null {
   const s = stripLead(t);
   const onPatients = ctx.currentPageId === 'patients';
-  const explicit = s.match(new RegExp(`^(?:open|select|choose|pick|use|load|show)(?: the)? ${ORD} patient$`)) ?? s.match(new RegExp(`^(?:open|select|choose|pick|use|load|show)(?: the)? patient (?:number |no\\.? )?${NUM}$`));
+
+  // "Delete the second patient", "edit the first one" (on the patient list) — a row of the patient search.
+  const act =
+    s.match(new RegExp(`^(delete|remove|edit|update|change|modify)(?: the)? ${ORD} (?:patient|result|match|search result)$`)) ??
+    (onPatients ? s.match(new RegExp(`^(delete|remove|edit|update|change|modify)(?: the)? ${ORD}(?: (?:one|row|person|match|result))?$`)) : null) ??
+    s.match(new RegExp(`^(delete|remove|edit|update|change|modify)(?: the)? patient (?:number |no\\.? )?${NUM}$`));
+  if (act) {
+    const pos = toPosition(act[2]);
+    if (pos === 'last' || pos === undefined) return null;
+    return /^(?:delete|remove)$/.test(act[1]) ? { action: 'delete_record', kind: 'patient', position: pos } : { action: 'update_record', kind: 'patient', position: pos };
+  }
+
+  const explicit =
+    s.match(new RegExp(`^(?:open|select|choose|pick|use|load|show)(?: the)? ${ORD} (?:patient|result|match|search result)$`)) ??
+    s.match(new RegExp(`^(?:open|select|choose|pick|use|load|show)(?: the)? patient (?:number |no\\.? )?${NUM}$`));
   const onList = onPatients ? s.match(new RegExp(`^(?:open|select|choose|pick|use|load)(?: the)? ${ORD}(?: (?:one|match|result|row|person))?$`)) : null;
   const hit = explicit ?? onList;
   if (hit) {

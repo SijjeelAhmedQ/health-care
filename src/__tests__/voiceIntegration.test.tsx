@@ -85,6 +85,58 @@ describe('voice control against the real application', () => {
     expect(patientDiagnoses().some((d) => d.description === 'Dictated Condition')).toBe(false);
   }, TIMEOUT);
 
+  it('adds, updates and deletes a patient by voice — saving and deleting only on an explicit word', async () => {
+    await renderAppAt('/patients');
+    await waitUntil(() => !!RecordRegistry.get('patient'));
+    const findOlivia = () => patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Olivia Testcase');
+
+    // Add: the form is filled, and nothing is saved until "save patient".
+    await say('Add a new patient. First name Olivia, last name Testcase, date of birth January 10 1990, gender female, phone 0300 1234567');
+    expect(pageText()).toContain('Add Patient');
+    expect((document.querySelector('#firstName') as HTMLInputElement | null)?.value).toBe('Olivia');
+    expect(findOlivia()).toBeUndefined();
+    await say('save patient');
+    await waitUntil(() => !!findOlivia());
+    const added = findOlivia()!;
+    expect(added).toMatchObject({ dateOfBirth: '1990-01-10', gender: 'Female', phone: '0300 1234567' });
+
+    // Update: only the phone changes, and only after "save changes".
+    await say('Update Olivia Testcase, phone number is 0311 7654321');
+    expect(pageText()).toContain('Edit Patient');
+    expect(findOlivia()!.phone).toBe('0300 1234567');
+    await say('save changes');
+    await waitUntil(() => findOlivia()?.phone === '0311 7654321');
+    expect(findOlivia()).toMatchObject({ id: added.id, dateOfBirth: '1990-01-10', gender: 'Female', phone: '0311 7654321' });
+
+    // Delete: asks first; "no" keeps the patient, "yes, delete" removes them.
+    await say('Delete Olivia Testcase');
+    expect(store.getState().voice.response).toContain('Do you want me to delete this patient?');
+    await say('no');
+    expect(findOlivia()).toBeDefined();
+    await say('Delete Olivia Testcase');
+    await say('yes, delete');
+    await waitUntil(() => !findOlivia());
+    expect(findOlivia()).toBeUndefined();
+  }, TIMEOUT);
+
+  it('fills the real patient form from a pasted paragraph and saves only on "save patient"', async () => {
+    await renderAppAt('/patients');
+    await waitUntil(() => !!RecordRegistry.get('patient'));
+    const find = () => patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Nadia Paragraph');
+
+    await say(
+      'Add a new patient. Her name is Nadia Paragraph. She was born on 5 March 1985. She is female and married. Her phone number is 0333 5557777 and her email is nadia@example.com. She lives at House 12, Street 5, Gulberg. She works as a teacher. Her blood group is B positive. Her emergency contact is her husband Kamran Paragraph, 0301 7654321.',
+    );
+    expect(find()).toBeUndefined();
+    await say('save patient');
+    await waitUntil(() => !!find());
+    expect(find()).toMatchObject({
+      dateOfBirth: '1985-03-05', gender: 'Female', maritalStatus: 'Married', phone: '0333 5557777', email: 'nadia@example.com', occupation: 'Teacher', bloodGroup: 'B+',
+      address: expect.objectContaining({ line1: 'House 12, Street 5, Gulberg' }),
+      emergencyContactName: 'Kamran Paragraph', emergencyContactRelation: 'Spouse', emergencyContactPhone: '0301 7654321',
+    });
+  }, TIMEOUT);
+
   it('refuses to add anything while no patient is selected', async () => {
     store.dispatch(setCurrentPatient(null));
     await renderAppAt('/patients');

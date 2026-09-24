@@ -24,7 +24,7 @@ import { matchRecord, recordLabel, recordSpoken, recordSummary, type AnyRecord }
 import type { PendingSlot } from '@/store/slices/voiceSlice';
 import { parseMedicationList } from './ruleBasedInterpreter';
 import { splitMedicationNames } from './drugLexicon';
-import { ageToDob } from './dateParser';
+import { ageToDob, parseDateTime } from './dateParser';
 
 export interface ExecutorState {
   currentPageId: string | null;
@@ -106,6 +106,11 @@ export class CommandExecutor {
   private origin: CommandOrigin = 'ui';
   /** Where the last record opened by voice sat in the list — "next" after it was filed out of view. */
   private lastInboxIndex = -1;
+  /**
+   * Several patients matched "update John Smith, phone …": what was asked, kept until the user
+   * picks one ("edit the second one") so the spoken changes are not lost.
+   */
+  private patientChoice: { verb: 'update' | 'delete'; fields?: FieldValues; field?: string } | null = null;
 
   constructor(private readonly deps: ExecutorDeps) {}
 
@@ -154,9 +159,10 @@ export class CommandExecutor {
         case 'add_record':
           return this.addRecord(command.kind, command.fields, command.records);
         case 'update_record':
+          if (command.kind === 'patient') return this.updatePatient(command.match, command.recordId, command.fields, command.position, command.field);
           return this.updateRecord(command.kind, command.match, command.recordId, command.fields);
         case 'delete_record':
-          return this.requestDelete(command.kind, command.match, command.recordId);
+          return this.requestDelete(command.kind, command.match, command.recordId, command.position);
         case 'search_records':
           return this.searchRecords(command.kind, command.query);
         case 'read_records':
@@ -243,7 +249,7 @@ export class CommandExecutor {
           }
           return ok(
             'help',
-            'Try: "select patient Ahmed Khan", "open medications", "add diagnosis hypertension", "add task blood pressure monitoring due next Friday", "set recall for review in 3 months", "read the medication list", "give me a summary of this patient", "delete the metformin", "save it", "cancel".',
+            'Try: "select patient Ahmed Khan", "add patient John Smith, date of birth January 10 1990", "update John Smith, phone number is 0300 1234567", "delete patient John Smith", "open medications", "add diagnosis hypertension", "add task blood pressure monitoring due next Friday", "set recall for review in 3 months", "read the medication list", "give me a summary of this patient", "delete the metformin", "save it", "cancel".',
           );
         case 'respond':
           return ok('respond', command.message);
@@ -321,7 +327,7 @@ export class CommandExecutor {
           ok: matches.length > 0,
           tool: 'select_patient',
           message: matches.length
-            ? `${matches.length} patients match "${query}": ${matches.slice(0, 4).map((p) => `${p.fullName} (${p.mrn})`).join(', ')}. Which one?`
+            ? `${matches.length} patients match "${query}": ${matches.slice(0, 4).map((p) => `${p.fullName} (${p.mrn})`).join(', ')}. Which one? Say "open the first one", "open the second one", or the MRN.`
             : `No patient named "${query}" was found. Showing the patient list.`,
           stop: true,
         };
@@ -360,10 +366,17 @@ export class CommandExecutor {
     const controller = await this.ensureRecordPage(kind);
     if ('ok' in controller) return controller;
 
+    // A patient dialog already open (editing someone) is closed first, so none of their details leak into the new one.
+    const existing = kind === 'patient' ? FormRegistry.get('patient') : undefined;
+    if (existing?.isOpen()) {
+      existing.close();
+      await waitFor(() => !existing.isOpen(), 1500);
+    }
     controller.openCreate();
     const form = await waitFor(() => FormRegistry.get(kind), 3000);
     if (!form) return { ok: false, tool: 'add_record', message: `The ${recordLabels[kind].singular} form did not open.`, stop: true };
     await waitFor(() => form.isOpen(), 1500);
+    if (kind === 'patient') await sleep(120); // let the new dialog reset before anything is written into it
     this.deps.setOpenForm(kind);
     this.deps.setPendingConfirmation(null);
 
@@ -412,15 +425,130 @@ export class CommandExecutor {
     return { ...filled, message: `${label}: ${filled.message}` };
   }
 
-  private async requestDelete(kind: AIRecordKind, match?: string, recordId?: string): Promise<ExecutionResult> {
+  // ----------------------------------------------------------------- patients
+
+  /**
+   * Which patient an update or delete is about — never a guess. A name must identify exactly one
+   * patient (an exact full name or MRN wins over partial matches); otherwise the matches are put on
+   * screen, numbered, and the user picks one ("edit the second one") or says the MRN.
+   */
+  private async resolvePatient(verb: 'update' | 'delete', match?: string, recordId?: string, position?: number): Promise<{ record: Patient } | (ExecutionResult & { ambiguous?: boolean })> {
+    const all = this.records('patient') as Patient[];
+    if (recordId) {
+      const byId = all.find((p) => p.id === recordId);
+      return byId ? { record: byId } : fail(`${verb}_patient`, 'That patient no longer exists. Nothing was changed.');
+    }
+    if (position) {
+      const query = (this.deps.getPatientSearch?.() ?? '').trim();
+      if (!query && this.deps.getState().currentPageId !== 'patients') return fail(`${verb}_patient`, 'Search for a patient first — say "find" followed by a name or MRN.');
+      const list = this.deps.findPatients?.(query) ?? [];
+      if (position > list.length) {
+        return fail(`${verb}_patient`, `There is no ${ordinalWord(position)} patient in the list — there ${list.length === 1 ? 'is only one' : `are ${list.length}`}. Nothing was changed.`);
+      }
+      return { record: list[position - 1] };
+    }
+    if (!match) {
+      const current = this.deps.getPatient();
+      return current ? { record: current } : fail(`${verb}_patient`, `Which patient should I ${verb}? Say "${verb === 'delete' ? 'delete' : 'edit'}" followed by the name or MRN.`);
+    }
+
+    const { match: best, candidates } = matchRecord('patient', all, match);
+    const key = (s: string) => s.toLowerCase().replace(/^(?:the|mrn)\s+/, '').replace(/[^a-z0-9]/g, '');
+    const q = key(match);
+    const exact = candidates.filter((p) => key(p.fullName) === q || key(p.mrn) === q || key(p.mrn) === `mrn${q}`);
+    const chosen = exact.length === 1 ? exact[0] : exact.length === 0 && best && candidates.length === 1 ? best : undefined;
+    if (chosen) return { record: chosen };
+    if (!candidates.length) return fail(`${verb}_patient`, `I couldn't find a patient matching "${match}". Nothing was changed — try the full name or the MRN.`);
+
+    // Several patients match: show them, numbered exactly as the list on screen, and ask.
+    const shown = exact.length > 1 ? exact : candidates;
+    await this.ensureRecordPage('patient').catch(() => undefined);
+    const onScreenQuery = exact.length > 1 ? shown[0].fullName : match;
+    RecordRegistry.get('patient')?.setSearch(onScreenQuery);
+    this.deps.setPatientSearch(onScreenQuery);
+    const onScreen = this.deps.findPatients?.(onScreenQuery) ?? [];
+    const numbered = onScreen.length && shown.every((p) => onScreen.some((o) => o.id === p.id)) ? onScreen : null;
+    const describe = (p: Patient) => `${p.fullName} (${p.mrn}${p.dateOfBirth ? `, born ${dayjs(p.dateOfBirth).format('D MMM YYYY')}` : ''})`;
+    const say = verb === 'delete' ? 'delete' : 'edit';
+    return {
+      ok: false,
+      tool: `${verb}_patient`,
+      ambiguous: true,
+      stop: true,
+      message:
+      numbered
+        ? `${numbered.length} patients match "${match}": ${numbered.slice(0, 5).map((p, i) => `${i + 1}. ${describe(p)}`).join('; ')}. Which one? Say "${say} the first one", "${say} the second one", or the MRN.`
+        : `${shown.length} patients match "${match}": ${shown.slice(0, 5).map(describe).join('; ')}. Which one? Say "${say}" followed by the MRN.`,
+    };
+  }
+
+  /** "Update John Smith, phone number is …": open that patient's edit form and change only what was said. */
+  private async updatePatient(match?: string, recordId?: string, fields?: FieldValues, position?: number, field?: string): Promise<ExecutionResult> {
+    // "Edit the second one" after an ambiguous "update John Smith, phone …" keeps what was said.
+    const choice = position && !fields && !field && this.patientChoice?.verb === 'update' ? this.patientChoice : null;
+    const wanted = { fields: fields ?? choice?.fields, field: field ?? choice?.field };
+    const found = await this.resolvePatient('update', match, recordId, position);
+    if ('ok' in found) {
+      this.patientChoice = found.ambiguous ? { verb: 'update', ...wanted } : null;
+      const { ambiguous: _ambiguous, ...result } = found;
+      return result;
+    }
+    this.patientChoice = null;
+    const patient = found.record;
+
+    const page = await this.ensureRecordPage('patient');
+    if ('ok' in page) return page;
+    // A dialog already open (another patient, or a new one) is closed first, so its values never leak in.
+    const existing = FormRegistry.get('patient');
+    if (existing?.isOpen()) {
+      existing.close();
+      await waitFor(() => !existing.isOpen(), 1500);
+    }
+    this.deps.setPendingConfirmation(null);
+    this.deps.setPendingSlot(null);
+    if (!page.openEdit(patient.id)) return fail('update_patient', `I couldn't open ${patient.fullName} for editing.`);
+    const form = await waitFor(() => FormRegistry.get('patient'), 3000);
+    if (!form) return fail('update_patient', 'The patient form did not open.');
+    await waitFor(() => form.isOpen(), 1500);
+    await sleep(120); // let the dialog load the patient's saved values before anything is written
+    this.deps.setOpenForm('patient');
+
+    const who = `${patient.fullName} (${patient.mrn})`;
+    if (wanted.fields && Object.keys(wanted.fields).length) {
+      const filled = await this.fillForm('patient', wanted.fields, 'update_patient');
+      return { ...filled, message: `Editing ${who} — only what you said is changed. ${filled.message.replace(/"save it"/, '"save changes"')}` };
+    }
+    const def = wanted.field ? FieldRegistry.resolveField('patient', wanted.field) : undefined;
+    if (def) {
+      const now = form.getValues()[def.name];
+      const question = `What is the new ${def.label.toLowerCase()} for ${patient.fullName}?`;
+      this.deps.setPendingSlot({ formId: 'patient', field: def.name, label: def.label, question });
+      form.focusField(def.name);
+      return { ok: true, tool: 'update_patient', message: `${who} is open for editing. ${question}${now ? ` It is currently ${String(now)}.` : ''}`, stop: true };
+    }
+    return {
+      ok: true,
+      tool: 'update_patient',
+      message: `${who} is open for editing. Tell me what to change — for example "phone number is 0300 1234567" — then say "save changes". Nothing else is changed.`,
+      stop: true,
+    };
+  }
+
+  private async requestDelete(kind: AIRecordKind, match?: string, recordId?: string, position?: number): Promise<ExecutionResult> {
     if (PATIENT_SCOPED.has(kind)) {
       const blocked = this.requirePatient(`delete a ${recordLabels[kind].singular}`);
       if (blocked) return blocked;
     }
-    // "delete this patient" with nothing else said means the selected patient.
-    const current = this.deps.getPatient();
-    const rows = kind === 'patient' && !match && !recordId ? (current ? [current as AnyRecord] : []) : this.records(kind);
-    const found = this.resolveOne(kind, rows, match ?? recordId, 'delete');
+    let found: { record: AnyRecord } | ExecutionResult;
+    if (kind === 'patient') {
+      // "Delete the patient" with nothing else said means the selected patient.
+      const resolved = await this.resolvePatient('delete', match, recordId, position);
+      this.patientChoice = 'ok' in resolved && resolved.ambiguous ? { verb: 'delete' } : null;
+      if ('ok' in resolved) {
+        const { ambiguous: _ambiguous, ...result } = resolved;
+        found = result;
+      } else found = resolved;
+    } else found = this.resolveOne(kind, this.records(kind), match ?? recordId, 'delete');
     if ('ok' in found) return found;
 
     const label = recordLabel(kind, found.record);
@@ -438,6 +566,17 @@ export class CommandExecutor {
       recordKind: kind,
       recordId: found.record.id,
     });
+    if (kind === 'patient') {
+      const p = found.record as Patient;
+      return {
+        ok: true,
+        tool: 'request_delete_confirmation',
+        message: `I found ${p.fullName} (${p.mrn}${p.dateOfBirth ? `, born ${dayjs(p.dateOfBirth).format('D MMM YYYY')}` : ''}). Do you want me to delete this patient? This cannot be undone. Say “yes, delete” to confirm, or “cancel”.`,
+        requiresConfirmation: true,
+        speak: true,
+        stop: true,
+      };
+    }
     return {
       ok: true,
       tool: 'request_delete_confirmation',
@@ -592,10 +731,12 @@ export class CommandExecutor {
 
     const modified: ExecutionResult['fieldsModified'] = [];
     const unknown = new Set<string>();
+    const unreadable = new Set<string>();
     const activeBlank = isBlank(def, controller.getValues());
     for (let i = 0; i < targets.length; i++) {
       const normalized = await this.normalizeFields(def, controller, targets[i]);
       normalized.unknown.forEach((u) => unknown.add(u));
+      normalized.unreadable.forEach((u) => unreadable.add(u));
       modified.push(...normalized.modified);
       if (!Object.keys(normalized.values).length) continue;
       if (i === 0 && (!asList || activeBlank)) controller.setValues(normalized.values);
@@ -605,6 +746,7 @@ export class CommandExecutor {
 
     const notes: string[] = [];
     if (unknown.size) notes.push(`ignored unknown field${unknown.size > 1 ? 's' : ''}: ${[...unknown].join(', ')}`);
+    if (unreadable.size) notes.push(`I couldn't understand the ${[...unreadable].join(', ')}, so ${unreadable.size > 1 ? 'those were' : 'it was'} left unchanged — try a date like "January 10 1990"`);
     if (skipped.length) notes.push(`this form takes one record at a time — add the rest afterwards`);
     return this.nextStep(def, controller, tool, modified, notes);
   }
@@ -651,9 +793,18 @@ export class CommandExecutor {
       const age = Number(String(incoming.age).replace(/\D/g, ''));
       if (age > 0 && age < 130) incoming.dateOfBirth = ageToDob(age);
     }
+    // "What first name?" — "John Smith": the whole name was said, so the last name is filled too.
+    if (def.id === 'patient' && typeof incoming.firstName === 'string' && incoming.lastName === undefined && !controller.getValues().lastName) {
+      const [first, ...last] = incoming.firstName.trim().split(/\s+/);
+      if (last.length) {
+        incoming.firstName = first;
+        incoming.lastName = last.join(' ');
+      }
+    }
     const values: Record<string, string | number | boolean> = {};
     const modified: NonNullable<ExecutionResult['fieldsModified']> = [];
     const unknown: string[] = [];
+    const unreadable: string[] = [];
     for (const [rawField, rawValue] of Object.entries(incoming)) {
       if (rawValue === undefined || rawValue === null || rawValue === '') continue;
       const field = FieldRegistry.resolveField(def.id, rawField);
@@ -661,11 +812,22 @@ export class CommandExecutor {
         unknown.push(rawField);
         continue;
       }
-      const value = FieldRegistry.normalizeValue(field, rawValue);
+      // A spoken date ("January 10 1990") becomes YYYY-MM-DD; one that can't be read is left alone
+      // rather than blanking what the field already holds.
+      let spoken = rawValue;
+      if (field.type === 'date' && typeof rawValue === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(rawValue.trim())) {
+        const parsed = parseDateTime(rawValue).date;
+        if (!parsed) {
+          unreadable.push(`${field.label.toLowerCase()} "${rawValue}"`);
+          continue;
+        }
+        spoken = parsed;
+      }
+      const value = FieldRegistry.normalizeValue(field, spoken);
       values[field.name] = value;
       modified.push({ formId: def.id, field: field.name, value: String(value) });
     }
-    return { values, modified, unknown };
+    return { values, modified, unknown, unreadable };
   }
 
   /**
@@ -750,6 +912,7 @@ export class CommandExecutor {
     const state = this.deps.getState();
     const pending = state.pendingConfirmation;
     if (!pending) return { ok: false, tool: 'confirm', message: 'There is nothing waiting for confirmation.', stop: true };
+    this.patientChoice = null;
 
     if (pending.kind === 'inbox_file') return this.confirmInboxFile(pending);
 
@@ -777,7 +940,8 @@ export class CommandExecutor {
     const state = this.deps.getState();
     const wasDelete = state.pendingConfirmation?.kind === 'delete';
     const wasFiling = state.pendingConfirmation?.kind === 'inbox_file' ? state.pendingConfirmation : null;
-    const hadPending = !!state.pendingConfirmation || !!state.pendingSlot;
+    const hadPending = !!state.pendingConfirmation || !!state.pendingSlot || !!this.patientChoice;
+    this.patientChoice = null;
     this.deps.setPendingConfirmation(null);
     this.deps.setPendingSlot(null);
     if (wasDelete) return ok('cancel_command', 'Cancelled — nothing was deleted.');

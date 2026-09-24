@@ -49,12 +49,18 @@ const UpdateRecordSchema = z.object({
   match: z.string().optional(),
   recordId: z.string().optional(),
   fields: FieldValuesSchema.optional(),
+  /** Patients only: the Nth row of the patient list on screen ("edit the second one"). */
+  position: z.number().int().positive().optional(),
+  /** A field named without a value ("change John Smith's phone number"): the assistant asks for it. */
+  field: z.string().optional(),
 });
 const DeleteRecordSchema = z.object({
   action: z.literal('delete_record'),
   kind: RecordKindSchema,
   match: z.string().optional(),
   recordId: z.string().optional(),
+  /** Patients only: the Nth row of the patient list on screen ("delete the second one"). */
+  position: z.number().int().positive().optional(),
 });
 const SearchRecordsSchema = z.object({ action: z.literal('search_records'), kind: RecordKindSchema, query: z.string() });
 /** Read a record list back to the user (spoken + shown). */
@@ -169,6 +175,8 @@ export interface AIContext {
   openFormFields: string[];
   pendingSlot: { formId: string; field: string; label: string } | null;
   awaitingConfirmation: boolean;
+  /** What the pending confirmation would do — "delete it" only confirms a deletion. */
+  pendingConfirmationKind?: PendingConfirmation['kind'] | null;
   recentTranscripts: string[];
 }
 

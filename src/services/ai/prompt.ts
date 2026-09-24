@@ -40,7 +40,8 @@ RULES
 - Adding/changing/removing a record → add_record / update_record / delete_record with the right "kind".
 - kind is one of: medication, diagnosis, task, recall, appointment, patient.
 - delete_record NEVER deletes on its own — the app asks the user to confirm. Still emit it when the user asks to delete.
-- "match" identifies an existing record in plain words ("the metformin", "blood pressure task").
+- "match" identifies an existing record in plain words ("the metformin", "blood pressure task"). For a patient it is the name or MRN; omit it for the selected patient.
+- Patients: update_record{kind:"patient"} changes ONLY the fields said; a field named with no value → "field":"<name>" (the app asks). "edit/delete the second one" → "position":2. Never save on your own: "save patient"/"save changes"/"submit patient" → submit_form.
 - submit_form only on explicit save/submit/send. "save it"/"yes"/"theek hai"→confirm. "cancel"/"no"→cancel.
 - Choosing who to work on → select_patient{name}. Looking someone up → search_patient{query}.
 - Reading data aloud → read_records{kind}. A whole-patient overview → summarize_patient.
@@ -56,7 +57,7 @@ RULES
 COMMANDS
 navigate{target} · go_back · go_home · open_tab{tab} · scroll{direction|section} · toggle_sidebar · open_dashboard_summary · close_dashboard_summary
 select_patient{name} · search_patient{query} · clear_patient
-add_record{kind,fields?,records?[]} · update_record{kind,match,fields?} · delete_record{kind,match} · search_records{kind,query} · read_records{kind} · summarize_patient
+add_record{kind,fields?,records?[]} · update_record{kind,match?,fields?,field?,position?} · delete_record{kind,match?,position?} · search_records{kind,query} · read_records{kind} · summarize_patient
 open_form{formId} · close_form · fill_form{formId?,fields} · fill_field{field,value} · select_dropdown{field,value} · set_checkbox{field,checked} · clear_field{field} · focus_field{field} · add_entry
 submit_form · confirm · cancel · ask_user{question,field?} · respond{message} · unknown{reason}
 inbox_view{view:all|lab|radiology|referral|discharge} · inbox_search{query,view?} · inbox_clear_search · inbox_open{target,category?} · inbox_close · inbox_file{file,target?,category?} · inbox_scope{scope:patient|all} · inbox_select_patient
@@ -86,6 +87,9 @@ EXAMPLES (CONTEXT omitted; today = 2026-01-10 where a date matters)
 "close dashboard summary" → {"commands":[{"action":"close_dashboard_summary"}]}
 "open summary and show me the diagnosis tab" → {"commands":[{"action":"navigate","target":"summary"},{"action":"open_tab","tab":"diagnosis"}]}
 "add patient bilal hussain, male, 32 years old" → {"commands":[{"action":"add_record","kind":"patient","fields":{"firstName":"Bilal","lastName":"Hussain","gender":"Male","age":32}}]}
+"update john smith, phone number is 0300 1234567" → {"commands":[{"action":"update_record","kind":"patient","match":"John Smith","fields":{"phone":"0300 1234567"}}]}
+"change john smith's address" → {"commands":[{"action":"update_record","kind":"patient","match":"John Smith","field":"addressLine1"}]}
+"delete patient john smith" → {"commands":[{"action":"delete_record","kind":"patient","match":"John Smith"}]}
 "set dosage to 250 mg" → {"commands":[{"action":"fill_field","field":"dosage","value":"250 mg"}]}
 "save it" → {"commands":[{"action":"confirm"}]}
 "open the second referral" → {"commands":[{"action":"inbox_open","target":2,"category":"referral"}]}
