@@ -117,22 +117,6 @@ export function SelectedPatientBanner() {
             </Button>
           </div>
 
-          <ul className="patient-banner-stats" aria-label="Record overview">
-            {stats.map((s) => (
-              <li key={s.key}>
-                <Tooltip title={s.hint}>
-                  <button type="button" className={`patient-banner-stat ${s.tone === 'warning' ? 'is-warning' : ''}`} onClick={() => navigate(s.to)}>
-                    <span className="patient-banner-stat-icon" aria-hidden>{s.icon}</span>
-                    <span className="patient-banner-stat-body">
-                      <span className="patient-banner-stat-label">{s.label}</span>
-                      <span className="patient-banner-stat-value">{s.value}</span>
-                    </span>
-                  </button>
-                </Tooltip>
-                <span className="sr-only">{s.hint}</span>
-              </li>
-            ))}
-          </ul>
         </div>
       </section>
 
