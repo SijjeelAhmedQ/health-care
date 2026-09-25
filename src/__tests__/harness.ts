@@ -11,6 +11,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import App from '@/app/App';
 import { router } from '@/app/router';
 import { getVoiceController } from '@/services/ai/voiceController';
+import { FakeMic, ScriptedLLM } from '@/services/ai/__tests__/fakes';
 
 /** jsdom has neither of these; antd and Recharts both expect them. */
 export function installBrowserStubs() {
@@ -76,6 +77,16 @@ export async function unmountApp() {
   root = undefined;
   container = undefined;
   await wait(10);
+}
+
+/**
+ * Put a scripted model (and a fake microphone) behind the real application's assistant.
+ * The test then scripts which tools "the model" calls for each utterance.
+ */
+export function useScriptedModel(): ScriptedLLM {
+  const llm = new ScriptedLLM();
+  getVoiceController().reconfigure({ llm, stt: new FakeMic() });
+  return llm;
 }
 
 /** Speak to the assistant and let the resulting UI work settle. */

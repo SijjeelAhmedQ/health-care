@@ -1,16 +1,16 @@
 /**
- * Runtime registry of mounted module pages (Medication, Diagnosis, Task,
- * Recall, Appointment, Patient).
+ * Runtime registry of mounted record lists (the Patients page and the Summary
+ * tabs for medications, diagnoses, tasks, recalls and appointments).
  *
- * The voice executor reads and writes data through Redux, but anything that
+ * The assistant reads and writes data through Redux, but anything that
  * involves the *user interface* — opening the create dialog, opening a record
  * for editing, typing into the list search box — goes through the controller a
  * page registers here when it mounts. No DOM queries anywhere.
  */
-import type { AIRecordKind } from '@/types/ai';
+import type { EntityKind } from '@/types/records';
 
 export interface RecordController {
-  kind: AIRecordKind;
+  kind: EntityKind;
   /** Open the blank create dialog (the same one the "Add" button opens). */
   openCreate(): void;
   /** Open an existing record for editing. Returns false when the id is unknown here. */
@@ -24,7 +24,7 @@ export interface RecordController {
 type Listener = () => void;
 
 class RecordRegistryImpl {
-  private controllers = new Map<AIRecordKind, RecordController>();
+  private controllers = new Map<EntityKind, RecordController>();
   private listeners = new Set<Listener>();
 
   register(controller: RecordController): () => void {
@@ -36,11 +36,11 @@ class RecordRegistryImpl {
     };
   }
 
-  get(kind: AIRecordKind): RecordController | undefined {
+  get(kind: EntityKind): RecordController | undefined {
     return this.controllers.get(kind);
   }
 
-  mounted(): AIRecordKind[] {
+  mounted(): EntityKind[] {
     return [...this.controllers.keys()];
   }
 
@@ -56,17 +56,7 @@ class RecordRegistryImpl {
 
 export const RecordRegistry = new RecordRegistryImpl();
 
-/** Module page that hosts each record kind — used to navigate before opening a dialog. */
-export const recordPageId: Record<AIRecordKind, string> = {
-  patient: 'patients',
-  medication: 'medications',
-  diagnosis: 'diagnoses',
-  task: 'tasks',
-  recall: 'recalls',
-  appointment: 'appointments',
-};
-
-export const recordLabels: Record<AIRecordKind, { singular: string; plural: string }> = {
+export const recordLabels: Record<EntityKind, { singular: string; plural: string }> = {
   patient: { singular: 'patient', plural: 'patients' },
   medication: { singular: 'medication', plural: 'medications' },
   diagnosis: { singular: 'diagnosis', plural: 'diagnoses' },

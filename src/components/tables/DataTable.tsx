@@ -1,10 +1,11 @@
-import { useMemo, useState, type Key, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from 'react';
 import { Badge, Button, Card, Checkbox, Dropdown, Input, Pagination, Select, Table, Tooltip, type TableProps } from 'antd';
 import type { ColumnsType, ColumnType } from 'antd/es/table';
 import { Columns3, Download, Filter, Search, X } from 'lucide-react';
 import { EmptyState } from '@/components/common';
 import { useDebouncedValue, useResponsive } from '@/hooks';
 import { scrollMainToTop } from '@/utils/scroll';
+import { ListRegistry } from '@/registry/listRegistry';
 
 export interface FilterDef {
   key: string;
@@ -45,6 +46,8 @@ interface Props<T extends object> {
   search?: string;
   onSearchChange?: (value: string) => void;
   title?: ReactNode;
+  /** What the rows are ("patients", "medications") — names the list for the assistant, which can then search, filter and page it. */
+  listName?: string;
   card?: boolean;
   exportable?: boolean;
   expandable?: TableProps<T>['expandable'];
@@ -71,6 +74,7 @@ export function DataTable<T extends object>({
   search: controlledSearch,
   onSearchChange,
   title,
+  listName,
   card = true,
   exportable,
   expandable,
@@ -85,7 +89,8 @@ export function DataTable<T extends object>({
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(columns.filter((c) => c.defaultHidden).map((c) => c.key)));
   const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
-  const [mobilePage, setMobilePage] = useState(1);
+  const [page, setPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(pageSize);
 
   const filtered = useMemo(() => {
     if (!data) return [];
@@ -105,7 +110,41 @@ export function DataTable<T extends object>({
   const visibleColumns = useMemo<ColumnsType<T>>(() => columns.filter((c) => !hidden.has(c.key)), [columns, hidden]);
   const activeFilterCount = Object.values(activeFilters).filter(Boolean).length;
   const hasActiveFilters = activeFilterCount > 0 || !!search;
-  const clearAll = () => { setActiveFilters({}); setSearch(''); setMobilePage(1); };
+  const clearAll = () => { setActiveFilters({}); setSearch(''); setPage(1); };
+  const pageCount = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
+  // A search or filter that shrinks the list never leaves the user on a page that no longer exists.
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  // The assistant reaches the list through the registry, using the same state as the controls.
+  const live = useRef({ search, activeFilters, page, pageCount, shown: filtered.length, total: data?.length ?? 0, setSearch, clearAll });
+  live.current = { search, activeFilters, page, pageCount, shown: filtered.length, total: data?.length ?? 0, setSearch, clearAll };
+  // Registered again only when what the list offers changes, not on every render.
+  const filterSpec = JSON.stringify(filters.map((f) => ({ key: f.key, label: f.label, options: f.options })));
+  const searchable = !!searchKeys?.length;
+  useEffect(() => {
+    if (!listName) return undefined;
+    return ListRegistry.register({
+      name: listName,
+      filters: JSON.parse(filterSpec) as Array<{ key: string; label: string; options: string[] }>,
+      searchable,
+      state: () => {
+        const s = live.current;
+        return { search: s.search, filters: Object.fromEntries(Object.entries(s.activeFilters).filter(([, v]) => !!v)) as Record<string, string>, page: s.page, pageCount: s.pageCount, shown: s.shown, total: s.total };
+      },
+      setSearch: (q) => {
+        live.current.setSearch(q);
+        setPage(1);
+      },
+      setFilter: (key, value) => {
+        setActiveFilters((prev) => ({ ...prev, [key]: value ?? undefined }));
+        setPage(1);
+      },
+      clearAll: () => live.current.clearAll(),
+      setPage: (p) => setPage(Math.min(Math.max(1, p), live.current.pageCount)),
+    });
+  }, [listName, filterSpec, searchable]);
 
   const exportCsv = () => {
     const cols = visibleColumns.filter((c) => 'dataIndex' in c && c.dataIndex);
@@ -133,8 +172,8 @@ export function DataTable<T extends object>({
     const fieldCols = columns.filter(
       (c) => c !== primary && c !== actionsCol && c.mobile !== 'hidden' && !hidden.has(c.key) && (c.title !== '' || c.mobile === 'full'),
     );
-    const start = (mobilePage - 1) * pageSize;
-    const pageRows = filtered.slice(start, start + pageSize);
+    const start = (page - 1) * rowsPerPage;
+    const pageRows = filtered.slice(start, start + rowsPerPage);
 
     const renderCell = (col: DataColumn<T>, row: T, index: number): ReactNode => {
       const value = 'dataIndex' in col && col.dataIndex ? (row as Record<string, unknown>)[col.dataIndex as string] : undefined;
@@ -153,7 +192,7 @@ export function DataTable<T extends object>({
                 prefix={<Search size={16} className="muted" />}
                 placeholder={searchPlaceholder}
                 value={search}
-                onChange={(e) => { setSearch(e.target.value); setMobilePage(1); }}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                 aria-label="Search list"
               />
             )}
@@ -177,7 +216,7 @@ export function DataTable<T extends object>({
                   allowClear
                   placeholder={f.label}
                   value={activeFilters[f.key]}
-                  onChange={(v) => { setActiveFilters((prev) => ({ ...prev, [f.key]: v })); setMobilePage(1); }}
+                  onChange={(v) => { setActiveFilters((prev) => ({ ...prev, [f.key]: v })); setPage(1); }}
                   options={f.options.map((o) => ({ value: o, label: o }))}
                   aria-label={f.label}
                 />
@@ -238,14 +277,14 @@ export function DataTable<T extends object>({
                 );
               })}
             </div>
-            {filtered.length > pageSize && (
+            {filtered.length > rowsPerPage && (
               <div className="mobile-cards-pagination">
                 <Pagination
                   simple
-                  current={mobilePage}
-                  pageSize={pageSize}
+                  current={page}
+                  pageSize={rowsPerPage}
                   total={filtered.length}
-                  onChange={(p) => { setMobilePage(p); scrollMainToTop('smooth'); }}
+                  onChange={(p) => { setPage(p); scrollMainToTop('smooth'); }}
                 />
               </div>
             )}
@@ -271,7 +310,7 @@ export function DataTable<T extends object>({
             prefix={<Search size={15} className="muted" />}
             placeholder={searchPlaceholder}
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             aria-label="Search table"
           />
         )}
@@ -282,7 +321,7 @@ export function DataTable<T extends object>({
             className="data-table-filter"
             placeholder={f.label}
             value={activeFilters[f.key]}
-            onChange={(v) => setActiveFilters((prev) => ({ ...prev, [f.key]: v }))}
+            onChange={(v) => { setActiveFilters((prev) => ({ ...prev, [f.key]: v })); setPage(1); }}
             options={f.options.map((o) => ({ value: o, label: o }))}
             aria-label={`Filter by ${f.label}`}
           />
@@ -342,11 +381,16 @@ export function DataTable<T extends object>({
         summary={summary}
         scroll={{ x: 'max-content' }}
         pagination={{
-          pageSize,
+          current: page,
+          pageSize: rowsPerPage,
+          onChange: (p, s) => {
+            setPage(s !== rowsPerPage ? 1 : p);
+            setRowsPerPage(s);
+          },
           showSizeChanger: true,
           showTotal: (t, r) => `${r[0]}–${r[1]} of ${t}`,
           size: 'small',
-          hideOnSinglePage: filtered.length <= pageSize,
+          hideOnSinglePage: filtered.length <= rowsPerPage,
         }}
         rowSelection={
           selectable

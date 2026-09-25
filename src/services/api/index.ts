@@ -113,17 +113,26 @@ export interface AuthSession {
   expiresAt: string;
 }
 export const authService = {
+  /**
+   * The person who signs in is the provider the application works for: their
+   * dashboard, their schedule, their tasks. Only accounts linked to a provider
+   * record can sign in.
+   */
   async login(username: string, _password: string): Promise<AuthSession> {
     await delay(400);
-    const user = db.users.find((u) => u.username === username || u.email === username) ?? db.users.find((u) => u.role === 'Administrator')!;
+    const q = username.trim().toLowerCase();
+    const user = db.users.find((u) => u.username.toLowerCase() === q || u.email.toLowerCase() === q);
+    if (!user) throw new Error(`No account named "${username}".`);
+    if (!user.providerId) throw new Error(`${user.fullName} is not a provider account. Sign in with a provider's username.`);
+    if (user.status !== 'Active') throw new Error(`The account ${user.username} is ${user.status.toLowerCase()}.`);
     return { token: `mock-${Date.now()}`, user, expiresAt: new Date(Date.now() + 8 * 3600_000).toISOString() };
   },
   async logout() {
     await delay(100);
   },
-  async me(): Promise<User> {
-    await delay(80);
-    return db.users.find((u) => u.role === 'Administrator')!;
+  /** Provider accounts available in this demo, for the sign-in screen. */
+  providerAccounts(): Array<Pick<User, 'username' | 'fullName' | 'department'>> {
+    return db.users.filter((u) => u.providerId && u.status === 'Active').map(({ username, fullName, department }) => ({ username, fullName, department }));
   },
 };
 

@@ -3,14 +3,17 @@
  *
  * This is the test that catches "it compiles but the page is blank": it renders
  * the actual providers, router, layout and pages, and checks the rules the whole
- * product rests on — you must sign in, you must select a patient before any
- * patient-dependent module renders, and the banner tells you who that is.
+ * product rests on — you sign in as a provider and land on your own dashboard,
+ * the Summary needs a selected patient, and every patient record is managed in
+ * the Summary's tabs.
  */
 import { beforeAll, beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { store } from '@/store';
 import { login, logout } from '@/store/slices/authSlice';
 import { fetchPatients, patientSelectors, setCurrentPatient } from '@/store/slices/patientSlice';
 import { router } from '@/app/router';
+import { fetchProviders } from '@/store/slices/providerSlice';
+import { appointmentsSlice } from '@/store/slices/recordSlices';
 import { installBrowserStubs, pageText, renderAppAt, unmountApp, waitUntil } from './harness';
 
 const TIMEOUT = 30000;
@@ -19,8 +22,10 @@ beforeAll(installBrowserStubs);
 afterEach(unmountApp);
 
 async function signIn() {
-  await store.dispatch(login({ username: 'mreed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
+  await store.dispatch(fetchProviders()).unwrap();
+  await store.dispatch(appointmentsSlice.fetchAll()).unwrap();
 }
 
 describe('application smoke test', () => {
@@ -34,84 +39,71 @@ describe('application smoke test', () => {
     expect(await waitUntil(() => pageText().includes('Sign in'))).toBe(true);
   }, TIMEOUT);
 
-  it('sends you to the patient list when a module needs a patient', async () => {
+  it("lands on the signed-in provider's own dashboard — no patient needed", async () => {
     await signIn();
-    await renderAppAt('/dashboard', () => pageText().includes('Select a patient to open'));
-
-    // Redirected to the list, told why, and the module has not rendered.
-    expect(router.state.location.pathname).toBe('/patients');
-    expect(pageText()).toContain('Select a patient to open Dashboard');
-    expect(pageText()).not.toContain('Active medications');
+    await renderAppAt('/', () => pageText().includes("Today's appointments"));
+    expect(router.state.location.pathname).toBe('/dashboard');
+    const user = store.getState().auth.user!;
+    const text = pageText();
+    expect(text).toContain(user.fullName);
+    for (const section of ["Today's appointments", 'Next 7 days', 'My open tasks', 'Recalls due', 'Unfiled Inbox', "Today's schedule", 'Coming up']) {
+      expect(text, `dashboard is missing ${section}`).toContain(section);
+    }
+    // It is not a patient view: no patient banner.
+    expect(document.querySelector('.patient-banner')).toBeNull();
   }, TIMEOUT);
 
-  it('starts on the patient list after signing in, then opens the dashboard once a patient is picked', async () => {
+  it('sends you to the patient list when the Summary needs a patient', async () => {
     await signIn();
-    // The front door: no patient in context yet.
-    await renderAppAt('/', () => pageText().includes('Add patient'));
+    await renderAppAt('/summary', () => pageText().includes('Select a patient to open'));
     expect(router.state.location.pathname).toBe('/patients');
+    expect(pageText()).toContain('Select a patient to open Summary');
+  }, TIMEOUT);
 
-    // Picking someone from the list is how the workflow starts.
+  it('picking a patient from the list opens their Summary, with the patient banner', async () => {
+    await signIn();
+    await renderAppAt('/patients', () => pageText().includes('Add patient'));
     const firstRow = document.querySelector('.mobile-card, .table-row-clickable') as HTMLElement | null;
     expect(firstRow, 'the patient list should render selectable rows').not.toBeNull();
     firstRow!.click();
-
-    expect(await waitUntil(() => router.state.location.pathname === '/dashboard')).toBe(true);
-    expect(store.getState().patients.currentPatientId).not.toBeNull();
-    expect(await waitUntil(() => pageText().includes('Active medications'))).toBe(true);
-  }, TIMEOUT);
-
-  it('renders the dashboard and the patient banner once a patient is selected', async () => {
-    await signIn();
-    const patient = patientSelectors.selectAll(store.getState())[0];
-    store.dispatch(setCurrentPatient(patient.id));
-
-    await renderAppAt('/dashboard', () => pageText().includes('Active medications'));
-
-    const text = pageText();
-    expect(text).toContain(patient.fullName);
-    expect(text).toContain(patient.mrn);
-    expect(text).toContain('Active medications');
-    // The banner's quick overview of every record type.
-    for (const label of ['Medication', 'Diagnosis', 'Task', 'Recall', 'Appointment']) {
-      expect(text, `banner is missing ${label}`).toContain(label);
-    }
+    expect(await waitUntil(() => router.state.location.pathname.startsWith('/summary'))).toBe(true);
+    const patient = patientSelectors.selectById(store.getState(), store.getState().patients.currentPatientId!)!;
+    expect(await waitUntil(() => pageText().includes(patient.mrn))).toBe(true);
+    expect(document.querySelector('.patient-banner')).not.toBeNull();
   }, TIMEOUT);
 
   it('renders the Patient module without a selected patient', async () => {
     await signIn();
     await renderAppAt('/patients');
-
     const text = pageText();
     expect(text).toContain('Add patient');
     expect(text).toContain('None selected');
   }, TIMEOUT);
 
-  it('renders the Summary module with all six tabs', async () => {
+  it('the Summary holds every record type, one tab each, managed right there', async () => {
     await signIn();
     store.dispatch(setCurrentPatient(patientSelectors.selectAll(store.getState())[0].id));
-
-    await renderAppAt('/summary', () => pageText().includes('AI Summary'));
-
+    await renderAppAt('/summary/medication', () => pageText().includes('Add medication'));
     const text = pageText();
-    for (const tab of ['AI Summary', 'Medication', 'Recall', 'Appointment', 'Diagnosis', 'Task']) {
+    for (const tab of ['AI Summary', 'Medications', 'Diagnoses', 'Tasks', 'Recalls', 'Appointments']) {
       expect(text, `missing tab: ${tab}`).toContain(tab);
     }
-    // The AI Summary tab is the default one and is ready to dictate into.
-    expect(text).toContain('Dictate what happened');
+    // The tab is a full manager: metrics, search and the add button.
+    expect(text).toContain('Add medication');
+    expect(document.querySelector('.record-tab .metric-grid, .record-tab .metric-card')).not.toBeNull();
   }, TIMEOUT);
 
-  it('shows every module in the navigation and nothing else', async () => {
+  it('the navigation has Dashboard, Patients, Inbox and Summary — the record modules are gone', async () => {
     await signIn();
     store.dispatch(setCurrentPatient(patientSelectors.selectAll(store.getState())[0].id));
-
-    await renderAppAt('/dashboard');
-
-    const text = pageText();
-    for (const module of ['Dashboard', 'Patient', 'Medication', 'Diagnosis', 'Task', 'Recall', 'Appointment', 'Summary']) {
-      expect(text, `navigation is missing ${module}`).toContain(module);
-    }
-    for (const removed of ['Providers', 'Roster', 'Practice Management', 'User Management', 'Reports', 'Configuration']) {
-      expect(text, `${removed} should no longer exist`).not.toContain(removed);
+    // jsdom has no media queries, so the app renders its phone layout: the bottom navigation.
+    await renderAppAt('/dashboard', () => document.querySelectorAll('.mobile-nav-item').length > 0);
+    const menu = Array.from(document.querySelectorAll('.mobile-nav-item')).map((el) => el.textContent?.trim());
+    expect(menu).toEqual(['Dashboard', 'Patients', 'Inbox', 'Summary', 'Menu']);
+    for (const path of ['/medications', '/diagnoses', '/tasks', '/recalls', '/appointments']) {
+      await router.navigate(path);
+      await waitUntil(() => pageText().includes('Page not found'));
+      expect(pageText(), `${path} should no longer exist`).toContain('Page not found');
     }
   }, TIMEOUT);
 });

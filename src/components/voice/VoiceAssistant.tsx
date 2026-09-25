@@ -1,14 +1,12 @@
-import { useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { Button, Input, Tag, Tooltip } from 'antd';
-import { AlertCircle, Bug, Check, CheckCircle2, Keyboard, Loader2, Mic, MicOff, Send, Volume2, VolumeX, X } from 'lucide-react';
+import { AlertCircle, Bug, Check, CheckCircle2, CircleHelp, Keyboard, Loader2, Mic, MicOff, Send, Volume2, VolumeX, X } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { voiceActions, type VoiceStatus } from '@/store/slices/voiceSlice';
 import { uiActions } from '@/store/slices/uiSlice';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { aiConfig } from '@/services/ai/config';
 import { getSpeakReplies, isSpeechSupported, setSpeakReplies, stopSpeaking } from '@/services/ai/speech';
-import { PageRegistry } from '@/registry/pageRegistry';
 
 const statusMeta: Record<VoiceStatus, { label: string; color: string }> = {
   idle: { label: 'Ready', color: '#5b6b7a' },
@@ -25,39 +23,30 @@ const statusMeta: Record<VoiceStatus, { label: string; color: string }> = {
 /** The panel sits above antd's default tooltip layer (1070), so its tooltips must sit higher still. */
 const TOOLTIP_Z = 1300;
 
-const hints = [
-  'Select patient John Smith',
-  'Open medications',
-  'Add amoxicillin 500 mg twice daily for 7 days',
-  'Add diagnosis hypertension',
-  'Add task blood pressure monitoring due next Friday',
-  'Set recall for review in 3 months',
-  'Read the medication list',
-  'Give me a summary of this patient',
-  'Open summary and show me the diagnosis tab',
-];
-
-/** In the Inbox the assistant suggests Inbox commands. */
-const inboxHints = ['Open the first record', 'File this', 'Next', 'Show Lab', 'Search blood test', 'Clear search', 'What can I say?'];
-
-/** On the Patient page the assistant suggests patient commands. */
-const patientHints = ['Add patient John Smith, date of birth January 10 1990', 'Find John Smith', 'Open the first result', "Change John Smith's phone number", 'Save patient'];
-
 export function VoiceAssistant() {
   const dispatch = useAppDispatch();
   const voice = useAppSelector((s) => s.voice);
-  const page = PageRegistry.matchPath(useLocation().pathname);
-  const inInbox = page?.module === 'inbox';
-  const inPatients = page?.id === 'patients';
   const [typed, setTyped] = useState('');
   const [showTyping, setShowTyping] = useState(false);
-  // Read-back commands ("read the medication list") are spoken unless the user mutes them.
+  // Answers and questions are spoken unless the user mutes them.
   const [speakReplies, setSpeak] = useState(getSpeakReplies);
   const meta = statusMeta[voice.status];
   const busy = voice.status === 'processing' || voice.status === 'executing' || voice.status === 'transcribing';
   // The microphone switch is owned by the user (micActive) — not by the transcription lifecycle.
   const micOn = voice.micActive;
   const controller = getVoiceController();
+  // A ticking clock while the assistant works, so a slow request never looks frozen.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!voice.busySince && voice.model.status !== 'loading' && voice.model.status !== 'warming') return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [voice.busySince, voice.model.status]);
+  const elapsed = voice.busySince ? Math.max(0, Math.round((now - voice.busySince) / 1000)) : 0;
+  const preparingFor = (voice.model.status === 'loading' || voice.model.status === 'warming') && voice.model.since ? Math.round((now - voice.model.since) / 1000) : 0;
+  // Say nothing about a warm-up that takes a moment; explain one that takes long.
+  const showLoading = (voice.model.status === 'loading' && preparingFor >= 3) || (voice.model.status === 'warming' && preparingFor >= 8);
+  const modelName = voice.llmProvider.split(':').slice(1).join(':') || 'the model';
 
   // Typing or changing the spoken-reply setting means the user is not talking: the mic goes off.
   const micOffForOtherInput = () => {
@@ -76,15 +65,18 @@ export function VoiceAssistant() {
         <div className="voice-panel" role="dialog" aria-label="Voice assistant">
           <div className="voice-panel-header">
             <Mic size={16} color={micOn ? '#d64545' : '#0f6e8c'} />
-            <span className="voice-panel-title">Voice Assistant</span>
+            <span className="voice-panel-title">Assistant</span>
             {micOn && (
               <Tag color="red" style={{ margin: 0, fontSize: 11 }}>
                 Mic on
               </Tag>
             )}
-            <Tag color={voice.llmProvider.startsWith('mock') ? 'default' : 'blue'} style={{ margin: 0, fontSize: 11 }}>
-              {voice.llmProvider.startsWith('mock') ? 'Mock mode' : voice.llmProvider}
+            <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>
+              {voice.llmProvider}
             </Tag>
+            <Tooltip title="What the assistant can do" zIndex={TOOLTIP_Z}>
+              <Button type="text" size="small" icon={<CircleHelp size={14} />} onClick={() => dispatch(voiceActions.setHelpOpen(true))} aria-label="What the assistant can do" />
+            </Tooltip>
             {aiConfig.enableDebugPanel && (
               <Tooltip title="Debug" zIndex={TOOLTIP_Z}>
                 <Button type="text" size="small" icon={<Bug size={14} />} onClick={() => dispatch(uiActions.setDebugPanelOpen(true))} aria-label="Open debug panel" />
@@ -109,20 +101,29 @@ export function VoiceAssistant() {
                 <Mic size={16} />
               )}
               <span>{micOn && voice.status === 'idle' ? 'Listening…' : meta.label}</span>
-              {voice.currentAction && <span className="muted" style={{ fontWeight: 400 }}>· {voice.currentAction}</span>}
+              {voice.currentAction && voice.currentAction !== meta.label && <span className="muted" style={{ fontWeight: 400 }}>· {voice.currentAction}</span>}
+              {elapsed >= 2 && <span className="muted" style={{ fontWeight: 400 }}>· {elapsed} s</span>}
               {micOn && voice.status !== 'listening' && voice.status !== 'idle' && <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>· mic still on</span>}
             </div>
 
+            {showLoading && (
+              <div className="voice-model-note">
+                {voice.model.status === 'loading'
+                  ? `Loading ${modelName} into memory · ${preparingFor} s — this happens after starting the computer or switching models (about 1–2 minutes on this GPU). After that, requests take a few seconds.`
+                  : `Preparing ${modelName} · ${preparingFor} s — it is reading the assistant's instructions again (after an app update this takes 1–2 minutes). After that, requests take a few seconds.`}
+              </div>
+            )}
+            {voice.model.status === 'error' && <div className="voice-model-note is-error">The model could not be loaded: {voice.model.error}</div>}
             {voice.interimTranscript || voice.transcript ? (
               <div className="voice-transcript">“{voice.interimTranscript || voice.transcript}”</div>
             ) : (
-              <div className="voice-transcript placeholder">{micOn ? 'Listening — speak whenever you are ready. The mic turns off after a 10 second pause.' : voice.micSupported ? 'Tap the microphone and speak a command…' : 'Microphone not supported here — type a command below.'}</div>
+              <div className="voice-transcript placeholder">{micOn ? 'Listening — speak whenever you are ready. The mic turns off after a 10 second pause.' : voice.micSupported ? 'Tap the microphone and ask in your own words…' : 'Microphone not supported here — type your request below.'}</div>
             )}
 
             {voice.pendingSlot && voice.status !== 'error' && (
               <div className="voice-confirm-box is-question">
                 <strong>Question:</strong> {voice.pendingSlot.question}
-                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Answer by voice or type below — e.g. “500 mg”.</div>
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Answer by voice or type below.</div>
               </div>
             )}
 
@@ -149,10 +150,10 @@ export function VoiceAssistant() {
                 </div>
                 <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
                   {voice.pendingConfirmation.kind === 'delete'
-                    ? 'This cannot be undone. Say “yes, delete it” or “cancel”.'
+                    ? 'This cannot be undone. Confirm here, or tell the assistant.'
                     : voice.pendingConfirmation.kind === 'inbox_file'
-                      ? 'Say “yes” to confirm or “cancel”.'
-                      : 'Review the form, then confirm. Say “save it” or “cancel”.'}
+                      ? 'Confirm here, or tell the assistant.'
+                      : 'Review the form, then confirm here or tell the assistant.'}
                 </div>
                 <div className="flex gap-2">
                   <Button
@@ -160,7 +161,7 @@ export function VoiceAssistant() {
                     danger={voice.pendingConfirmation.kind === 'delete'}
                     size="small"
                     icon={<Check size={14} />}
-                    onClick={() => void controller.handleTranscript('yes')}
+                    onClick={() => void controller.resolvePending(true)}
                   >
                     {voice.pendingConfirmation.kind === 'delete'
                       ? 'Delete'
@@ -170,7 +171,7 @@ export function VoiceAssistant() {
                           : 'Yes, file'
                         : 'Save'}
                   </Button>
-                  <Button size="small" onClick={() => void controller.handleTranscript('cancel')}>
+                  <Button size="small" onClick={() => void controller.resolvePending(false)}>
                     Cancel
                   </Button>
                 </div>
@@ -178,16 +179,9 @@ export function VoiceAssistant() {
             )}
 
             {voice.history.length === 0 && voice.status === 'idle' && !micOn && (
-              <div>
-                <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>Try saying</div>
-                <div className="voice-hint-chips">
-                  {(inInbox ? inboxHints : inPatients ? patientHints : hints).map((h) => (
-                    <Tag key={h} className="voice-hint-chip" onClick={() => void controller.handleTranscript(h)}>
-                      {h}
-                    </Tag>
-                  ))}
-                </div>
-              </div>
+              <Button type="link" size="small" icon={<CircleHelp size={14} />} style={{ paddingInline: 0 }} onClick={() => dispatch(voiceActions.setHelpOpen(true))}>
+                What can the assistant do?
+              </Button>
             )}
 
             {voice.history.length > 0 && (
@@ -209,13 +203,13 @@ export function VoiceAssistant() {
           <div className="voice-panel-footer">
             {showTyping || !voice.micSupported ? (
               <Input.Search
-                placeholder="Type a command…"
+                placeholder="Ask the assistant…"
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
                 onSearch={submitTyped}
                 enterButton={<Send size={14} />}
                 autoFocus
-                aria-label="Type a voice command"
+                aria-label="Type a request for the assistant"
               />
             ) : (
               <>

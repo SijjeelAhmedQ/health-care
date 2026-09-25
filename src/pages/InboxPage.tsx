@@ -28,9 +28,7 @@ import { InboxList } from '@/components/inbox/InboxList';
 import { InboxDetail, type ItemFlags } from '@/components/inbox/InboxDetail';
 import { viewLabel } from '@/components/inbox/inboxUi';
 import { InboxVoiceRegistry, getConfirmFiling, setConfirmFiling, subscribeConfirmFiling } from '@/services/inbox/inboxVoice';
-import { InboxVoiceHelp } from '@/components/inbox/InboxVoiceHelp';
 import { voiceActions } from '@/store/slices/voiceSlice';
-import { getVoiceController } from '@/services/ai/voiceController';
 import { scrollMainToTop } from '@/utils/scroll';
 
 const noFlags: ItemFlags = { portal: false, confidential: false, inactive: false };
@@ -66,7 +64,6 @@ export default function InboxPage() {
   const currentPatientId = useAppSelector((s) => s.patients.currentPatientId);
   const micOn = useAppSelector((s) => s.voice.micActive);
   /** "What can I say?" — opened from the header button or by voice. */
-  const helpOpen = useAppSelector((s) => s.voice.helpOpen);
   const confirmFiling = useSyncExternalStore(subscribeConfirmFiling, getConfirmFiling);
   const status = useAppSelector((s) => s.inbox.status);
   const loadError = useAppSelector((s) => s.inbox.error);
@@ -402,9 +399,9 @@ export default function InboxPage() {
               <span>Confirm voice filing</span>
             </label>
           </Tooltip>
-          <Tooltip title="What you can say to the Voice Assistant here">
-            <Button size="small" icon={<Mic size={14} />} onClick={() => dispatch(voiceActions.setHelpOpen(true))} className="ibx-voice-help-btn" aria-label="Inbox voice commands">
-              <span className="ibx-voice-help-text">Voice commands</span>
+          <Tooltip title="What the assistant can do">
+            <Button size="small" icon={<Mic size={14} />} onClick={() => dispatch(voiceActions.setHelpOpen(true))} className="ibx-voice-help-btn" aria-label="What the assistant can do">
+              <span className="ibx-voice-help-text">Assistant</span>
             </Button>
           </Tooltip>
           <Tooltip title="Check for new items">
@@ -519,7 +516,6 @@ export default function InboxPage() {
         </div>
       </div>
 
-      <InboxVoiceHelp open={helpOpen} onClose={() => dispatch(voiceActions.setHelpOpen(false))} onTry={(phrase) => void getVoiceController().handleTranscript(phrase)} />
     </div>
   );
 }

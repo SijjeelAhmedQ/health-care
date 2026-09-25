@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Breadcrumb, Button, Tooltip } from 'antd';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Hash } from 'lucide-react';
-import { PageRegistry, moduleLabels } from '@/registry/pageRegistry';
+import { PageRegistry, moduleHome, moduleLabels } from '@/registry/pageRegistry';
 import { useResponsive } from '@/hooks';
 
 interface Props {
@@ -15,20 +15,6 @@ interface Props {
   /** Show a Back control. Defaults to true on detail pages (those with a :param route). */
   showBack?: boolean;
 }
-
-const moduleHome: Record<string, string> = {
-  dashboard: '/dashboard',
-  patients: '/patients',
-  clinical: '/clinical',
-  appointments: '/appointments',
-  providers: '/providers',
-  roster: '/roster',
-  practice: '/practice',
-  users: '/users',
-  configuration: '/configuration',
-  reports: '/reports',
-  dev: '/dev/voice-console',
-};
 
 /**
  * Every page starts here: where you are (breadcrumb), what this page is (title + subtitle),
@@ -68,7 +54,7 @@ export function PageHeader({ title, subtitle, actions, breadcrumbs, extra, showB
           <h1 className="page-header-title">
             {title}
             {page && !isMobile && (
-              <Tooltip title={`Say “go to page ${page.number}” to open this screen by voice`}>
+              <Tooltip title={`Page ${page.number} — ask the assistant to open it by name or number`}>
                 <span className="page-number-chip">
                   <Hash size={11} aria-hidden /> {page.number}
                 </span>

@@ -1,21 +1,29 @@
 /**
- * Voice → real UI → stored data.
+ * The assistant → real UI → stored data.
  *
- * The executor tests use fake forms; this one drives the actual application:
- * a spoken command opens the real Ant Design dialog, fills the real fields, and
- * only a spoken confirmation writes to the store. It also proves the two safety
- * rules end to end — no patient, no write; no confirmation, no delete.
+ * A scripted model stands in for Qwen and makes the tool calls; everything
+ * after that is the real application: the tools open the real Ant Design
+ * dialogs, fill the real fields, and only a confirmation from the user (in a
+ * later turn, or the button) writes to the store. The safety rules are proven
+ * end to end — no patient, no write; no confirmation, no save or delete; and
+ * the model cannot confirm on the user's behalf.
  */
 import { beforeAll, beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { store } from '@/store';
 import { login } from '@/store/slices/authSlice';
 import { fetchPatients, patientSelectors, setCurrentPatient } from '@/store/slices/patientSlice';
-import { diagnosesSlice } from '@/store/slices/recordSlices';
+import { fetchProviders } from '@/store/slices/providerSlice';
+import dayjs from 'dayjs';
+import { appointmentsSlice, diagnosesSlice, recordSlices } from '@/store/slices/recordSlices';
+import { RECORD_KINDS } from '@/types/records';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { RecordRegistry } from '@/registry/recordRegistry';
-import { installBrowserStubs, pageText, renderAppAt, say, unmountApp, waitUntil } from './harness';
+import { router } from '@/app/router';
+import { call, type ScriptedLLM } from '@/services/ai/__tests__/fakes';
+import { installBrowserStubs, pageText, renderAppAt, say, unmountApp, useScriptedModel, waitUntil } from './harness';
 
 const TIMEOUT = 30000;
+let model: ScriptedLLM;
 
 beforeAll(installBrowserStubs);
 
@@ -23,197 +31,289 @@ const patientDiagnoses = () => {
   const patientId = store.getState().patients.currentPatientId;
   return diagnosesSlice.selectors.selectAll(store.getState()).filter((d) => d.patientId === patientId);
 };
+const inputValue = (id: string) => (document.querySelector(`#${id}`) as HTMLInputElement | null)?.value;
 
 beforeEach(async () => {
   store.dispatch(voiceActions.resetVoice());
-  await store.dispatch(login({ username: 'mreed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
+  await store.dispatch(fetchProviders()).unwrap();
   await store.dispatch(diagnosesSlice.fetchAll()).unwrap();
   store.dispatch(setCurrentPatient(patientSelectors.selectAll(store.getState())[0].id));
+  model = useScriptedModel();
 });
 
 afterEach(unmountApp);
 
-describe('voice control against the real application', () => {
-  it('opens the real diagnosis form, fills it, and saves only after "save it"', async () => {
-    await renderAppAt('/diagnoses');
+describe('the assistant against the real application', () => {
+  it('opens the real diagnosis form from a tool call, and saves only on the user’s later "yes"', async () => {
+    await renderAppAt('/summary/diagnosis');
     await waitUntil(() => !!RecordRegistry.get('diagnosis'));
     const before = patientDiagnoses().length;
 
-    await say('add diagnosis hypertension');
-
-    // The dialog is open with the dictated value in it, and nothing has been saved yet.
+    // The model asks for the form AND tries to confirm in the same turn: the confirm is refused.
+    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Hypertension', status: 'Active' }] })] });
+    await say('add hypertension as a diagnosis');
     expect(pageText()).toContain('Add Diagnosis');
-    expect((document.querySelector('#description') as HTMLInputElement | null)?.value).toBe('Hypertension');
+    expect(inputValue('description')).toBe('Hypertension');
     expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
+    expect(store.getState().voice.response).toMatch(/confirm/i);
     expect(patientDiagnoses()).toHaveLength(before);
 
-    await say('save it');
+    model.calls([call('confirm_pending_action')], 'Saved.');
+    await say('yes save it');
     await waitUntil(() => patientDiagnoses().length === before + 1);
-
-    const after = patientDiagnoses();
-    expect(after).toHaveLength(before + 1);
-    expect(after.some((d) => d.description === 'Hypertension')).toBe(true);
+    expect(patientDiagnoses().some((d) => d.description === 'Hypertension')).toBe(true);
     expect(store.getState().voice.pendingConfirmation).toBeNull();
   }, TIMEOUT);
 
-  it('stages a spoken deletion and removes the record only after confirmation', async () => {
-    await renderAppAt('/diagnoses');
+  it('a model that tries to save in the same turn it filled the form never gets to — the turn waits for the user', async () => {
+    await renderAppAt('/summary/diagnosis');
     await waitUntil(() => !!RecordRegistry.get('diagnosis'));
+    const before = patientDiagnoses().length;
+    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Asthma' }] }), call('confirm_pending_action')] });
+    await say('add asthma');
+    expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
+    expect(model.requests).toHaveLength(1); // the loop stopped at the confirmation
+    expect(patientDiagnoses()).toHaveLength(before);
+  }, TIMEOUT);
 
-    await say('add diagnosis dictated condition');
-    await say('save it');
+  it('stages a deletion, shows it, and removes the record only after confirmation', async () => {
+    await renderAppAt('/summary/diagnosis');
+    await waitUntil(() => !!RecordRegistry.get('diagnosis'));
+    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Dictated Condition' }] })] });
+    await say('add dictated condition');
+    model.calls([call('confirm_pending_action')], 'Saved.');
+    await say('yes');
     await waitUntil(() => patientDiagnoses().some((d) => d.description === 'Dictated Condition'));
     const before = patientDiagnoses().length;
 
+    model.then({ calls: [call('delete_record', { kind: 'diagnosis', record: 'dictated condition' })] });
     await say('delete the dictated condition');
-
-    // Staged, shown, and still there.
-    const pending = store.getState().voice.pendingConfirmation;
-    expect(pending?.kind).toBe('delete');
-    expect(pending?.recordKind).toBe('diagnosis');
+    expect(store.getState().voice.pendingConfirmation?.kind).toBe('delete');
     expect(pageText()).toContain('will be permanently deleted');
     expect(patientDiagnoses()).toHaveLength(before);
 
-    await say('cancel');
+    model.calls([call('cancel_pending_action')], 'Kept it.');
+    await say('no keep it');
     expect(store.getState().voice.pendingConfirmation).toBeNull();
     expect(patientDiagnoses()).toHaveLength(before);
 
-    await say('delete the dictated condition');
-    await say('yes');
+    model.then({ calls: [call('delete_record', { kind: 'diagnosis', record: 'Dictated Condition' })] });
+    await say('delete it');
+    model.calls([call('confirm_pending_action')], 'Deleted.');
+    await say('yes delete it');
     await waitUntil(() => patientDiagnoses().length === before - 1);
     expect(patientDiagnoses().some((d) => d.description === 'Dictated Condition')).toBe(false);
   }, TIMEOUT);
 
-  it('adds, updates and deletes a patient by voice — saving and deleting only on an explicit word', async () => {
+  it('arguments that break the schema never reach the app — the error goes back and the model corrects itself', async () => {
+    await renderAppAt('/summary/medication');
+    await waitUntil(() => !!RecordRegistry.get('medication'));
+    const med = { medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' };
+    model.then({ calls: [call('add_medications', { medications: [{ ...med, startDate: 'tomorrow' }] })] }, { calls: [call('add_medications', { medications: [{ ...med, startDate: '2026-09-25' }] })] });
+    await say('metformin 500 mg twice daily starting tomorrow');
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1].filter((m) => m.role === 'tool')[0].content).toMatch(/startDate: use YYYY-MM-DD/);
+    expect(inputValue('medicationName')).toBe('Metformin');
+    expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
+  }, TIMEOUT);
+
+  it('creates, edits and deletes a patient with the real patient form — each write waits for a yes', async () => {
     await renderAppAt('/patients');
     await waitUntil(() => !!RecordRegistry.get('patient'));
     const findOlivia = () => patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Olivia Testcase');
 
-    // Add: the form is filled, and nothing is saved until "save patient".
-    await say('Add a new patient. First name Olivia, last name Testcase, date of birth January 10 1990, gender female, phone 0300 1234567');
+    model.then({ calls: [call('create_patient', { firstName: 'Olivia', lastName: 'Testcase', dateOfBirth: '1990-01-10', gender: 'Female', phone: '0300 1234567' })] });
+    await say('new patient Olivia Testcase, born 10 January 1990, female, phone 0300 1234567');
     expect(pageText()).toContain('Add Patient');
-    expect((document.querySelector('#firstName') as HTMLInputElement | null)?.value).toBe('Olivia');
+    expect(inputValue('firstName')).toBe('Olivia');
     expect(findOlivia()).toBeUndefined();
-    await say('save patient');
+    model.calls([call('confirm_pending_action')], 'Saved.');
+    await say('save');
     await waitUntil(() => !!findOlivia());
-    const added = findOlivia()!;
-    expect(added).toMatchObject({ dateOfBirth: '1990-01-10', gender: 'Female', phone: '0300 1234567' });
+    expect(findOlivia()).toMatchObject({ dateOfBirth: '1990-01-10', gender: 'Female', phone: '0300 1234567' });
 
-    // Update: only the phone changes, and only after "save changes".
-    await say('Update Olivia Testcase, phone number is 0311 7654321');
+    model.then({ calls: [call('edit_patient', { patient: 'Olivia Testcase', changes: { phone: '0311 7654321' } })] });
+    await say("change Olivia Testcase's phone to 0311 7654321");
     expect(pageText()).toContain('Edit Patient');
     expect(findOlivia()!.phone).toBe('0300 1234567');
-    await say('save changes');
+    model.calls([call('confirm_pending_action')], 'Saved.');
+    await say('yes');
     await waitUntil(() => findOlivia()?.phone === '0311 7654321');
-    expect(findOlivia()).toMatchObject({ id: added.id, dateOfBirth: '1990-01-10', gender: 'Female', phone: '0311 7654321' });
 
-    // Delete: asks first; "no" keeps the patient, "yes, delete" removes them.
-    await say('Delete Olivia Testcase');
-    expect(store.getState().voice.response).toContain('Do you want me to delete this patient?');
-    await say('no');
-    expect(findOlivia()).toBeDefined();
-    await say('Delete Olivia Testcase');
-    await say('yes, delete');
+    model.then({ calls: [call('delete_patient', { patient: 'Olivia Testcase' })] });
+    await say('delete Olivia Testcase');
+    expect(store.getState().voice.pendingConfirmation?.recordKind).toBe('patient');
+    model.calls([call('confirm_pending_action')], 'Deleted.');
+    await say('yes delete');
     await waitUntil(() => !findOlivia());
-    expect(findOlivia()).toBeUndefined();
   }, TIMEOUT);
 
-  it('fills the real patient form from a pasted paragraph and saves only on "save patient"', async () => {
-    await renderAppAt('/patients');
-    await waitUntil(() => !!RecordRegistry.get('patient'));
-    const find = () => patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Nadia Paragraph');
+  it('refuses to add anything while no patient is selected, and says why to the model', async () => {
+    store.dispatch(setCurrentPatient(null));
+    await renderAppAt('/dashboard');
+    model.calls([call('add_medications', { medications: [{ medicationName: 'Aspirin' }] })], 'Please select a patient first.');
+    await say('add aspirin');
+    expect(model.lastToolResults()[0]).toMatchObject({ ok: false });
+    expect(model.lastToolResults()[0].message).toMatch(/no patient is selected/i);
+    expect(pageText()).not.toContain('Add Medication');
+  }, TIMEOUT);
 
-    await say(
-      'Add a new patient. Her name is Nadia Paragraph. She was born on 5 March 1985. She is female and married. Her phone number is 0333 5557777 and her email is nadia@example.com. She lives at House 12, Street 5, Gulberg. She works as a teacher. Her blood group is B positive. Her emergency contact is her husband Kamran Paragraph, 0301 7654321.',
+  it('selecting a patient opens their Summary', async () => {
+    store.dispatch(setCurrentPatient(null));
+    await renderAppAt('/dashboard');
+    const target = patientSelectors.selectAll(store.getState())[5];
+    model.calls([call('select_patient', { patient: target.mrn, open_tab: 'summary-medication' })], `Opened ${target.fullName}.`);
+    await say(`open ${target.fullName}'s medications`);
+    await waitUntil(() => router.state.location.pathname === '/summary/medication');
+    expect(store.getState().patients.currentPatientId).toBe(target.id);
+  }, TIMEOUT);
+
+  it('answers about the signed-in provider’s own day from their real schedule', async () => {
+    await store.dispatch(appointmentsSlice.fetchAll()).unwrap();
+    await renderAppAt('/dashboard');
+    model.calls([call('get_provider_overview')], 'You have a full day.');
+    await say('what does my day look like');
+    const result = model.lastToolResults()[0];
+    const providerId = store.getState().auth.user!.providerId;
+    const mine = appointmentsSlice.selectors.selectAll(store.getState()).filter((a) => a.providerId === providerId);
+    expect(result.ok).toBe(true);
+    const data = result.data as { provider: string; today: Array<{ id: string }> };
+    expect(data.provider).toBe(store.getState().auth.user!.fullName);
+    expect(data.today.every((a) => mine.some((m) => m.id === a.id))).toBe(true);
+  }, TIMEOUT);
+
+  it('a dictated note lands in the AI Summary and its extracted items are listed for review', async () => {
+    await renderAppAt('/summary');
+    const note = 'Start amlodipine 5 mg once daily and add hypertension.';
+    model
+      .calls([call('take_clinical_note', { note })], 'Extracting your note.')
+      .then({ calls: [call('record_note_findings', { medications: [{ medicationName: 'Amlodipine', dosage: '5 mg', frequency: 'Once daily', quote: 'Start amlodipine 5 mg once daily' }], diagnoses: [{ description: 'Hypertension' }] })] });
+    await say(note);
+    await waitUntil(() => router.state.location.pathname === '/summary/ai-summary');
+    await waitUntil(() => pageText().includes('Amlodipine'));
+    expect(pageText()).toContain('Amlodipine');
+    expect(pageText()).toContain('Hypertension');
+  }, TIMEOUT);
+
+  it('"give me my dashboard summary" opens the summary beside the Dashboard; the reply stays one line', async () => {
+    await store.dispatch(appointmentsSlice.fetchAll()).unwrap();
+    await renderAppAt('/patients');
+    model.calls([call('dashboard_summary_panel', { open: true })], 'Your summary is on the right.');
+    await say('give me my dashboard summary');
+    await waitUntil(() => !!document.querySelector('aside[aria-label="Dashboard summary"]'));
+    expect(router.state.location.pathname).toBe('/dashboard');
+    const panel = document.querySelector('aside[aria-label="Dashboard summary"]')!;
+    expect(panel.textContent).toContain("Today's schedule");
+    expect(panel.textContent).toContain('Your day');
+    expect(model.lastToolResults()[0].message).toBe('Your dashboard summary is open on the right.');
+    expect(store.getState().voice.response).toBe('Your summary is on the right.');
+    expect(document.querySelector('.app-shell')!.className).toContain('has-right-dock');
+  }, TIMEOUT);
+
+  it('"go to patients and select james ahmed and create a task for blood pressure monitoring" — one step after another', async () => {
+    store.dispatch(setCurrentPatient(null));
+    await renderAppAt('/dashboard');
+    model.then(
+      { calls: [call('open_page', { page: 'patients' })] },
+      { calls: [call('select_patient', { patient: 'James Ahmed' })] },
+      { calls: [call('add_tasks', { tasks: [{ title: 'Blood pressure monitoring' }] })] },
     );
-    expect(find()).toBeUndefined();
-    await say('save patient');
-    await waitUntil(() => !!find());
-    expect(find()).toMatchObject({
-      dateOfBirth: '1985-03-05', gender: 'Female', maritalStatus: 'Married', phone: '0333 5557777', email: 'nadia@example.com', occupation: 'Teacher', bloodGroup: 'B+',
-      address: expect.objectContaining({ line1: 'House 12, Street 5, Gulberg' }),
-      emergencyContactName: 'Kamran Paragraph', emergencyContactRelation: 'Spouse', emergencyContactPhone: '0301 7654321',
+    await say('go to patients and select james ahmed and create a task for blood pressure monitoring');
+    await waitUntil(() => pageText().includes('Add Task'));
+    const selected = patientSelectors.selectById(store.getState(), store.getState().patients.currentPatientId ?? '');
+    expect(selected?.fullName).toBe('James Ahmed');
+    expect(router.state.location.pathname).toBe('/summary/task');
+    expect(inputValue('title')).toBe('Blood pressure monitoring');
+    // Nothing is saved until the provider confirms.
+    expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
+    expect(model.requests).toHaveLength(3);
+  }, TIMEOUT);
+
+  it('one request with medications, a diagnosis, a task, a recall and an appointment fills one care plan, saved together on "yes"', async () => {
+    store.dispatch(setCurrentPatient(null));
+    for (const kind of RECORD_KINDS) await store.dispatch((recordSlices[kind] as (typeof recordSlices)['medication']).fetchAll()).unwrap();
+    await renderAppAt('/patients');
+    const med = { dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' };
+    const tuesday = dayjs().day() < 2 ? dayjs().day(2) : dayjs().add(1, 'week').day(2);
+    model.then({
+      calls: [
+        call('add_care_plan', {
+          patient: 'James Ahmed',
+          medications: ['Metformin', 'Panadol', 'Gabapentin', 'Rituximab'].map((medicationName) => ({ medicationName, ...med })),
+          diagnoses: [{ description: 'Hypertension' }],
+          tasks: [{ title: 'Blood pressure monitoring', category: 'Monitoring' }],
+          recalls: [{ reason: 'Follow-up review', dueDate: dayjs().add(2, 'week').format('YYYY-MM-DD') }],
+          appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '15:00', type: 'Follow-up', reason: 'Follow-up' }],
+        }),
+      ],
     });
-  }, TIMEOUT);
+    await say('goto patients select James Ahmed and add medication metformin, panadol, gabapentin, rituximab 500 mg twice daily for 30 days, add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks, and schedule a follow-up appointment next Tuesday at 3 pm');
+    await waitUntil(() => pageText().includes('Care plan (8)'));
 
-  it('refuses to add anything while no patient is selected', async () => {
-    store.dispatch(setCurrentPatient(null));
-    await renderAppAt('/patients');
+    const patient = patientSelectors.selectById(store.getState(), store.getState().patients.currentPatientId ?? '')!;
+    expect(patient.fullName).toBe('James Ahmed');
+    expect(router.state.location.pathname.startsWith('/summary')).toBe(true);
+    const values = (field: string) => [...document.querySelectorAll<HTMLInputElement>(`.care-plan-modal [id$="_${field}"]`)].map((el) => el.value);
+    expect(values('medicationName')).toEqual(['Metformin', 'Panadol', 'Gabapentin', 'Rituximab']);
+    expect(values('dosage')).toEqual(['500 mg', '500 mg', '500 mg', '500 mg']);
+    expect(values('duration')).toEqual(['30 days', '30 days', '30 days', '30 days']);
+    expect(values('description')).toContain('Hypertension');
+    expect(values('title')).toEqual(['Blood pressure monitoring']);
+    expect(values('reason')).toEqual(['Follow-up review', 'Follow-up']);
+    const kindTabs = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
+    expect(kindTabs).toEqual(['Medication4', 'Diagnosis1', 'Task1', 'Recall1', 'Appointment1']);
+    expect(store.getState().voice.pendingConfirmation?.formId).toBe('care_plan');
 
-    await say('add diagnosis hypertension');
-
-    expect(store.getState().voice.response).toContain('No patient is selected');
+    const owned = (kind: (typeof RECORD_KINDS)[number]) => (recordSlices[kind].selectors.selectAll(store.getState()) as Array<{ patientId: string }>).filter((r) => r.patientId === patient.id).length;
+    const before = Object.fromEntries(RECORD_KINDS.map((k) => [k, owned(k)]));
+    model.calls([call('confirm_pending_action')], 'Saved.');
+    await say('yes save it');
+    await waitUntil(() => owned('appointment') === before.appointment + 1);
+    expect(owned('medication')).toBe(before.medication + 4);
+    expect(owned('diagnosis')).toBe(before.diagnosis + 1);
+    expect(owned('task')).toBe(before.task + 1);
+    expect(owned('recall')).toBe(before.recall + 1);
+    const appt = (appointmentsSlice.selectors.selectAll(store.getState()) as Array<{ patientId: string; date: string; startTime: string }>).filter((a) => a.patientId === patient.id);
+    expect(appt.some((a) => a.date === tuesday.format('YYYY-MM-DD') && a.startTime === '15:00')).toBe(true);
     expect(store.getState().voice.pendingConfirmation).toBeNull();
-    expect(pageText()).not.toContain('Add Diagnosis');
+    expect(pageText()).not.toContain('Care plan (');
   }, TIMEOUT);
 
-  it('switches patient by voice and refreshes the context', async () => {
-    await renderAppAt('/dashboard');
-    const [first, second] = patientSelectors.selectAll(store.getState());
-    expect(store.getState().patients.currentPatientId).toBe(first.id);
-
-    await say(`select patient ${second.fullName}`);
-    await waitUntil(() => store.getState().patients.currentPatientId === second.id);
-
-    expect(store.getState().patients.currentPatientId).toBe(second.id);
-    expect(await waitUntil(() => pageText().includes(second.fullName))).toBe(true);
+  it('a record the model adds while the care plan is open joins it as a new tab', async () => {
+    await renderAppAt('/summary/medication');
+    model.then({ calls: [call('add_care_plan', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }], tasks: [{ title: 'Blood pressure monitoring' }] })] });
+    await say('add metformin 500 mg twice daily and a task for blood pressure monitoring');
+    await waitUntil(() => pageText().includes('Care plan (2)'));
+    const kindTabs = () => [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
+    // Only the kinds that were said get a tab.
+    expect(kindTabs()).toEqual(['Medication1', 'Task1']);
+    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Hypertension' }] })] });
+    await say('also add hypertension as a diagnosis');
+    await waitUntil(() => pageText().includes('Care plan (3)'));
+    expect(kindTabs()).toEqual(['Medication1', 'Diagnosis1', 'Task1']);
+    const values = (field: string) => [...document.querySelectorAll<HTMLInputElement>(`.care-plan-modal [id$="_${field}"]`)].map((el) => el.value);
+    expect(values('medicationName')).toEqual(['Metformin']);
+    expect(values('description')).toContain('Hypertension');
+    expect(store.getState().voice.pendingConfirmation?.formId).toBe('care_plan');
   }, TIMEOUT);
 
-  it('docks the dashboard summary on the right and closes it again', async () => {
-    await renderAppAt('/medications');
-
-    await say('please show me dashboard summary');
-    await waitUntil(() => store.getState().ui.dashboardSummaryOpen);
-
-    // It moved to the dashboard and the widget is on screen with the patient's data.
-    expect(store.getState().navigation.currentPageId).toBe('dashboard');
-    expect(store.getState().ui.dashboardSummaryOpen).toBe(true);
-    const dock = document.querySelector('.dash-dock');
-    expect(dock).not.toBeNull();
-    expect(dock?.textContent).toContain('Dashboard Summary');
-    expect(dock?.textContent).toContain(patientSelectors.selectAll(store.getState())[0].fullName);
-
-    await say('close dashboard summary');
-    await waitUntil(() => !store.getState().ui.dashboardSummaryOpen);
-    expect(document.querySelector('.dash-dock')).toBeNull();
-  }, TIMEOUT);
-
-  it('still understands the dashboard summary when the engine hears "somebody"', async () => {
-    await renderAppAt('/medications');
-
-    // What Chrome actually sends back when the user says "summary".
-    await say('please show me dashboard somebody');
-    await waitUntil(() => store.getState().ui.dashboardSummaryOpen);
-
-    expect(store.getState().navigation.currentPageId).toBe('dashboard');
-    expect(document.querySelector('.dash-dock')).not.toBeNull();
-    // The panel shows what was understood, and the debug trace keeps what was heard.
-    expect(store.getState().voice.transcript).toBe('please show me dashboard summary');
-    expect(store.getState().voice.trace?.rawTranscript).toBe('please show me dashboard somebody');
-
-    await say('close dashboard somebody');
-    await waitUntil(() => !store.getState().ui.dashboardSummaryOpen);
-    expect(document.querySelector('.dash-dock')).toBeNull();
-  }, TIMEOUT);
-
-  it('will not dock the dashboard summary without a patient', async () => {
+  it('filters and pages the real patient list by voice', async () => {
     store.dispatch(setCurrentPatient(null));
-    await renderAppAt('/patients');
-
-    await say('show dashboard summary');
-
-    expect(store.getState().voice.response).toContain('No patient is selected');
-    expect(store.getState().ui.dashboardSummaryOpen).toBe(false);
-    expect(document.querySelector('.dash-dock')).toBeNull();
-  }, TIMEOUT);
-
-  it('reads a record list back for the selected patient', async () => {
-    await renderAppAt('/dashboard');
-    await say('read the diagnosis list');
-    const response = store.getState().voice.response ?? '';
-    const expected = patientDiagnoses();
-    if (expected.length) expect(response).toContain(expected[0].description);
-    else expect(response).toContain('no diagnoses recorded');
+    await renderAppAt('/patients', () => pageText().includes('Add patient'));
+    const rows = () => document.querySelectorAll('.mobile-card, .table-row-clickable').length;
+    await waitUntil(() => rows() > 0);
+    model.calls([call('control_list', { filter: 'Gender', value: 'female' })], 'Showing female patients.');
+    await say('show only female patients');
+    const females = patientSelectors.selectAll(store.getState()).filter((p) => p.gender === 'Female').length;
+    await waitUntil(() => pageText().includes(`${females} result`) || pageText().includes(`${females} of`));
+    expect(model.lastToolResults()[0].message).toMatch(new RegExp(`patients list shows ${females} of \\d+ \\(Gender: Female\\), page 1 of`));
+    model.calls([call('control_list', { page: 'next' })], 'Page 2.');
+    await say('next page');
+    expect(model.lastToolResults()[0].message).toMatch(/page 2 of/);
+    model.calls([call('control_list', { filter: 'Gender', value: 'purple' })], 'Gender can only be Male, Female, Other or Unknown.');
+    await say('show only purple patients');
+    expect(model.lastToolResults()[0].message).toMatch(/Gender can be: Male, Female, Other, Unknown/);
   }, TIMEOUT);
 });

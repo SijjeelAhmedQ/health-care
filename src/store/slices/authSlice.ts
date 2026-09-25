@@ -14,7 +14,9 @@ const STORAGE_KEY = 'careflow.session';
 function loadSession(): AuthSession | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as AuthSession) : null;
+    const session = raw ? (JSON.parse(raw) as AuthSession) : null;
+    // A session from before sign-in was limited to providers is not carried over.
+    return session?.user.providerId ? session : null;
   } catch {
     return null;
   }

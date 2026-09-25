@@ -3,24 +3,20 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { Activity, Lock, LogIn, Mic, UserRound } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { login } from '@/store/slices/authSlice';
+import { authService } from '@/services/api';
 
-const demoAccounts = [
-  { username: 'mreed', role: 'Administrator' },
-  { username: 'sahmed', role: 'Physician' },
-];
+/** A handful of the provider accounts, to fill the form with one click. */
+const demoAccounts = authService.providerAccounts().slice(0, 4);
 
 export default function LoginPage() {
   const dispatch = useAppDispatch();
   const { status, error } = useAppSelector((s) => s.auth);
-  const hasPatient = useAppSelector((s) => !!s.patients.currentPatientId);
   const location = useLocation() as { state?: { from?: string } };
   const [form] = Form.useForm();
 
-  // Signing in always lands on the patient list first — you pick who you are
-  // working on before anything else opens. Signing in clears any earlier
-  // selection, so the previous session's patient is never carried over.
+  // Signing in lands on the provider's own dashboard (or where they were sent from).
   if (status === 'authenticated') {
-    return <Navigate to={hasPatient ? (location.state?.from ?? '/dashboard') : '/patients'} replace />;
+    return <Navigate to={location.state?.from ?? '/dashboard'} replace />;
   }
 
   return (
@@ -35,19 +31,19 @@ export default function LoginPage() {
         </div>
 
         <h1 className="auth-title">Sign in</h1>
-        <p className="auth-subtitle">Use your practice account to access patient records.</p>
+        <p className="auth-subtitle">Sign in with your provider account.</p>
 
         {error && <Alert type="error" message={error} description="Check your username and password, then try again." showIcon style={{ marginBottom: 16 }} />}
 
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ username: 'mreed', password: 'demo', remember: true }}
+          initialValues={{ username: demoAccounts[0]?.username ?? '', password: 'demo', remember: true }}
           onFinish={(v) => dispatch(login({ username: v.username, password: v.password }))}
           requiredMark={false}
         >
           <Form.Item name="username" label="Username or email" rules={[{ required: true, message: 'Enter your username to continue' }]}>
-            <Input prefix={<UserRound size={15} className="muted" />} autoComplete="username" size="large" placeholder="e.g. mreed" />
+            <Input prefix={<UserRound size={15} className="muted" />} autoComplete="username" size="large" placeholder={`e.g. ${demoAccounts[0]?.username ?? 'username'}`} />
           </Form.Item>
           <Form.Item name="password" label="Password" rules={[{ required: true, message: 'Enter your password to continue' }]}>
             <Input.Password prefix={<Lock size={15} className="muted" />} autoComplete="current-password" size="large" placeholder="Your password" />
@@ -72,7 +68,7 @@ export default function LoginPage() {
           <div className="auth-demo-accounts">
             {demoAccounts.map((a) => (
               <button key={a.username} type="button" onClick={() => form.setFieldsValue({ username: a.username, password: 'demo' })}>
-                {a.username} · {a.role}
+                {a.username} · {a.fullName}
               </button>
             ))}
           </div>

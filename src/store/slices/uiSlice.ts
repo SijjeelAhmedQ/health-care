@@ -7,8 +7,12 @@ interface UiState {
   debugPanelOpen: boolean;
   globalSearchQuery: string;
   notificationsOpen: boolean;
-  /** The dashboard summary docked to the right of the screen ("show dashboard summary"). */
-  dashboardSummaryOpen: boolean;
+  /** The selected patient's summary, docked to the right of the screen. */
+  patientPanelOpen: boolean;
+  /** The provider's dashboard summary, docked to the right of the Dashboard page. */
+  dashboardPanelOpen: boolean;
+  /** Bumped whenever the AI configuration changes (e.g. by the assistant), so open views reload it. */
+  aiConfigRevision: number;
   /** Generic overlay registry state: id -> open */
   overlays: Record<string, boolean>;
 }
@@ -20,7 +24,9 @@ const initialState: UiState = {
   debugPanelOpen: false,
   globalSearchQuery: '',
   notificationsOpen: false,
-  dashboardSummaryOpen: false,
+  patientPanelOpen: false,
+  dashboardPanelOpen: false,
+  aiConfigRevision: 0,
   overlays: {},
 };
 
@@ -49,8 +55,16 @@ const uiSlice = createSlice({
     setNotificationsOpen(state, action: PayloadAction<boolean>) {
       state.notificationsOpen = action.payload;
     },
-    setDashboardSummaryOpen(state, action: PayloadAction<boolean>) {
-      state.dashboardSummaryOpen = action.payload;
+    setPatientPanelOpen(state, action: PayloadAction<boolean>) {
+      state.patientPanelOpen = action.payload;
+      if (action.payload) state.dashboardPanelOpen = false;
+    },
+    setDashboardPanelOpen(state, action: PayloadAction<boolean>) {
+      state.dashboardPanelOpen = action.payload;
+      if (action.payload) state.patientPanelOpen = false;
+    },
+    aiConfigChanged(state) {
+      state.aiConfigRevision += 1;
     },
     setOverlay(state, action: PayloadAction<{ id: string; open: boolean }>) {
       state.overlays[action.payload.id] = action.payload.open;

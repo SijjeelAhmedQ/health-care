@@ -26,12 +26,12 @@ export function VoiceConfirmDialog() {
       size="sm"
       icon={<TriangleAlert size={18} />}
       title={pending.formTitle}
-      description="Asked for by voice — confirm before anything is removed."
-      onClose={() => void controller.handleTranscript('cancel')}
+      description="Asked for through the assistant — confirm before anything is removed."
+      onClose={() => void controller.resolvePending(false)}
       footer={
         <>
-          <Button onClick={() => void controller.handleTranscript('cancel')}>Cancel</Button>
-          <Button type="primary" danger icon={<Trash2 size={15} />} onClick={() => void controller.handleTranscript('yes')}>
+          <Button onClick={() => void controller.resolvePending(false)}>Cancel</Button>
+          <Button type="primary" danger icon={<Trash2 size={15} />} onClick={() => void controller.resolvePending(true)}>
             Delete
           </Button>
         </>
@@ -49,7 +49,7 @@ export function VoiceConfirmDialog() {
         ))}
       </div>
       <p className="muted" style={{ marginBottom: 0, fontSize: 12.5 }}>
-        Say <strong>“yes, delete it”</strong> to confirm or <strong>“cancel”</strong> to keep it.
+        Confirm here or tell the assistant — nothing is removed until you do.
       </p>
     </AppModal>
   );

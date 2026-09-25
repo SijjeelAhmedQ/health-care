@@ -1,10 +1,7 @@
 import { useState } from 'react';
 import { Button, Modal, Tag } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
-import {
-  Activity, CalendarDays, ClipboardList, Inbox, LayoutDashboard, ListChecks, LogOut, Menu as MenuIcon, Pill, Repeat,
-  Stethoscope, UserRound, UserRoundCog, Users, X,
-} from 'lucide-react';
+import { Activity, ClipboardList, Inbox, LayoutDashboard, LogOut, Menu as MenuIcon, Settings, UserRound, UserRoundCog, Users, X } from 'lucide-react';
 import { PageRegistry, moduleLabels, type PageModule } from '@/registry/pageRegistry';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { uiActions } from '@/store/slices/uiSlice';
@@ -17,21 +14,14 @@ export const moduleIcons: Record<PageModule, JSX.Element> = {
   dashboard: <LayoutDashboard size={18} />,
   patient: <Users size={18} />,
   inbox: <Inbox size={18} />,
-  medication: <Pill size={18} />,
-  diagnosis: <Stethoscope size={18} />,
-  task: <ListChecks size={18} />,
-  recall: <Repeat size={18} />,
-  appointment: <CalendarDays size={18} />,
   summary: <ClipboardList size={18} />,
+  configuration: <Settings size={18} />,
 };
 
-/** The four destinations staff reach for constantly, plus the full menu. */
-const primary: Array<{ label: string; path: string; module: PageModule }> = [
-  { label: 'Dashboard', path: '/dashboard', module: 'dashboard' },
-  { label: 'Patient', path: '/patients', module: 'patient' },
-  { label: 'Inbox', path: '/inbox', module: 'inbox' },
-  { label: 'Summary', path: '/summary', module: 'summary' },
-];
+/** The patient-work modules in the bottom bar; the rest (Configuration) is in the full menu. */
+const primary: Array<{ label: string; path: string; module: PageModule }> = PageRegistry.sidebarPages()
+  .filter((p) => p.module !== 'configuration')
+  .map((p) => ({ label: moduleLabels[p.module], path: p.path, module: p.module }));
 
 /**
  * Mobile navigation. A fixed bottom bar for the most-used modules and a
@@ -131,7 +121,7 @@ function MobileMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
             <>
               <div className="mobile-menu-patient-who">
                 <strong>No patient selected</strong>
-                <span className="muted">Select one to unlock the modules</span>
+                <span className="muted">Select one to open their Summary</span>
               </div>
               <Button size="small" type="primary" icon={<UserRound size={14} />} onClick={() => setPickerOpen(true)}>
                 Select

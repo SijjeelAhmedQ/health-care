@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Tag, Tooltip, message } from 'antd';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { LayoutDashboard, Pencil, Trash2, UserPlus, UserRoundCheck } from 'lucide-react';
+import { ClipboardList, Pencil, Trash2, UserPlus, UserRoundCheck } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { deletePatient, patientSelectors, setCurrentPatient } from '@/store/slices/patientSlice';
 import { usePatientOverview } from '@/hooks/usePatientData';
 import { RecordRegistry } from '@/registry/recordRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
+import { FieldRegistry } from '@/registry/fieldRegistry';
 import type { Patient } from '@/types/domain';
 import { Avatar, MetricCard, MetricGrid, PageHeader, StatusTag, confirmAction } from '@/components/common';
 import { DataTable, type DataColumn } from '@/components/tables/DataTable';
@@ -76,12 +77,12 @@ export default function PatientModulePage() {
 
   /**
    * Selecting a patient is the start of the workflow: the context is set and the
-   * user is taken into it — to the module they were heading for, or the dashboard.
+   * user is taken into it — to the page they were heading for, or their Summary.
    */
   const select = (patient: Patient) => {
     dispatch(setCurrentPatient(patient.id));
     message.success(`${patient.fullName} is now the selected patient`);
-    navigate(pendingDestination ?? '/dashboard');
+    navigate(pendingDestination ?? PageRegistry.get('summary')!.path);
   };
 
   const remove = (patient: Patient) => {
@@ -166,12 +167,12 @@ export default function PatientModulePage() {
     <div className="page page-fill">
       <PageHeader
         title="Patient"
-        subtitle="Search for a patient and select them. The selected patient is the context for the dashboard, medications, diagnoses, tasks, recalls, appointments and the summary."
+        subtitle="Search for a patient and select them. The selected patient's medications, diagnoses, tasks, recalls and appointments are all managed in their Summary."
         actions={
           <>
             {selected && (
-              <Button icon={<LayoutDashboard size={15} />} onClick={() => navigate('/dashboard')}>
-                Open dashboard
+              <Button icon={<ClipboardList size={15} />} onClick={() => navigate(PageRegistry.get('summary')!.path)}>
+                Open summary
               </Button>
             )}
             <Button type="primary" icon={<UserPlus size={16} />} onClick={openCreate}>
@@ -210,9 +211,10 @@ export default function PatientModulePage() {
           setSearch(v);
           setParams(v ? { q: v } : {}, { replace: true });
         }}
+        listName="patients"
         filters={[
-          { key: 'status', label: 'Status', options: ['Active', 'Inactive', 'Deceased', 'Pending'] },
-          { key: 'gender', label: 'Gender', options: ['Male', 'Female', 'Other', 'Unknown'] },
+          { key: 'status', label: 'Status', options: FieldRegistry.resolveField('patient', 'status')!.options! },
+          { key: 'gender', label: 'Gender', options: FieldRegistry.resolveField('patient', 'gender')!.options! },
           { key: 'riskLevel', label: 'Risk', options: ['Low', 'Medium', 'High'] },
         ]}
         onRowClick={(row) => select(row)}

@@ -1,30 +1,20 @@
 /**
- * One description of each record type, shared by the module pages, the voice
- * executor and the AI Summary. Everything here is pure: how a record is named,
- * how it is summarised for a confirmation dialog, how it is read back aloud,
- * and how a spoken phrase is matched to an existing record.
+ * One description of each record type, shared by the Summary tabs, the
+ * assistant's tools and the AI Summary. Everything here is pure: how a record is named,
+ * how it is summarised for a confirmation dialog, and how a name the user
+ * said is matched to an existing record.
  */
 import dayjs from 'dayjs';
-import type { AIRecordKind } from '@/types/ai';
+import type { EntityKind } from '@/types/records';
 import type { Appointment, Diagnosis, Medication, Patient, Recall, Task } from '@/types/domain';
 
 export type AnyRecord = Medication | Diagnosis | Task | Recall | Appointment | Patient;
-
-/** Record kind -> the form used to create/edit it. */
-export const recordFormId: Record<AIRecordKind, string> = {
-  patient: 'patient',
-  medication: 'medication',
-  diagnosis: 'diagnosis',
-  task: 'task',
-  recall: 'recall',
-  appointment: 'appointment',
-};
 
 const date = (value?: string) => (value ? dayjs(value).format('D MMM YYYY') : '—');
 const time = (value?: string) => (value ? dayjs(`2000-01-01T${value}`).format('h:mm A') : '');
 
 /** The one line that names a record in a list, a confirmation or a sentence. */
-export function recordLabel(kind: AIRecordKind, row: AnyRecord): string {
+export function recordLabel(kind: EntityKind, row: AnyRecord): string {
   switch (kind) {
     case 'medication':
       return (row as Medication).name;
@@ -44,7 +34,7 @@ export function recordLabel(kind: AIRecordKind, row: AnyRecord): string {
 }
 
 /** Secondary line: the detail that distinguishes two similar records. */
-export function recordSubtitle(kind: AIRecordKind, row: AnyRecord): string {
+export function recordSubtitle(kind: EntityKind, row: AnyRecord): string {
   switch (kind) {
     case 'medication': {
       const m = row as Medication;
@@ -74,7 +64,7 @@ export function recordSubtitle(kind: AIRecordKind, row: AnyRecord): string {
 }
 
 /** Key/value pairs shown before a destructive action, so the user sees exactly what goes. */
-export function recordSummary(kind: AIRecordKind, row: AnyRecord): Array<{ label: string; value: string }> {
+export function recordSummary(kind: EntityKind, row: AnyRecord): Array<{ label: string; value: string }> {
   const pairs: Array<[string, string | number | boolean | undefined]> = (() => {
     switch (kind) {
       case 'medication': {
@@ -106,43 +96,13 @@ export function recordSummary(kind: AIRecordKind, row: AnyRecord): Array<{ label
   return pairs.filter(([, v]) => v !== undefined && v !== '' && v !== null).map(([label, value]) => ({ label, value: String(value) }));
 }
 
-/** One spoken sentence per record — used when the assistant reads a list back. */
-export function recordSpoken(kind: AIRecordKind, row: AnyRecord): string {
-  switch (kind) {
-    case 'medication': {
-      const m = row as Medication;
-      return `${m.name}${m.dosage ? ` ${m.dosage}` : ''}${m.frequency ? `, ${m.frequency.toLowerCase()}` : ''}${m.status !== 'Active' ? ` (${m.status.toLowerCase()})` : ''}`;
-    }
-    case 'diagnosis': {
-      const d = row as Diagnosis;
-      return `${d.description}${d.status ? `, ${d.status.toLowerCase()}` : ''}${d.onsetDate ? `, since ${date(d.onsetDate)}` : ''}`;
-    }
-    case 'task': {
-      const t = row as Task;
-      return `${t.title}, ${t.status.toLowerCase()}, due ${date(t.dueDate)}`;
-    }
-    case 'recall': {
-      const r = row as Recall;
-      return `${r.reason}, ${r.type.toLowerCase()}, due ${date(r.dueDate)}`;
-    }
-    case 'appointment': {
-      const a = row as Appointment;
-      return `${a.type} with ${a.providerName} on ${date(a.date)} at ${time(a.startTime)}, ${a.status.toLowerCase()}`;
-    }
-    case 'patient': {
-      const p = row as Patient;
-      return `${p.fullName}, ${p.age} year old ${p.gender.toLowerCase()}, MRN ${p.mrn}`;
-    }
-  }
-}
-
 /** Everything a spoken phrase may be matched against. */
-export function recordSearchText(kind: AIRecordKind, row: AnyRecord): string {
+export function recordSearchText(kind: EntityKind, row: AnyRecord): string {
   return `${recordLabel(kind, row)} ${recordSubtitle(kind, row)}`.toLowerCase();
 }
 
 /** The date a record belongs to — used for sorting and "what is due" questions. */
-export function recordDate(kind: AIRecordKind, row: AnyRecord): string {
+export function recordDate(kind: EntityKind, row: AnyRecord): string {
   switch (kind) {
     case 'medication':
       return (row as Medication).startDate;
@@ -159,7 +119,7 @@ export function recordDate(kind: AIRecordKind, row: AnyRecord): string {
   }
 }
 
-export function recordStatus(kind: AIRecordKind, row: AnyRecord): string {
+export function recordStatus(kind: EntityKind, row: AnyRecord): string {
   switch (kind) {
     case 'medication':
       return (row as Medication).status;
@@ -188,7 +148,7 @@ export interface MatchResult<T> {
  * Deliberately strict: when several records match, nothing is chosen — the
  * caller asks the user which one rather than guessing.
  */
-export function matchRecord<T extends { id: string }>(kind: AIRecordKind, rows: T[], query: string | undefined): MatchResult<T> {
+export function matchRecord<T extends { id: string }>(kind: EntityKind, rows: T[], query: string | undefined): MatchResult<T> {
   if (!rows.length) return { candidates: [] };
   const q = (query ?? '').toLowerCase().replace(/^(?:the|this|that|my)\s+/, '').replace(/\s+(?:record|entry)$/, '').trim();
   if (!q) return { candidates: rows.length === 1 ? rows : [], match: rows.length === 1 ? rows[0] : undefined };

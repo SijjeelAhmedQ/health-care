@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Input, Tag, Tooltip, message } from 'antd';
-import { Bot, CalendarPlus, Eraser, ListChecks, Mic, MicOff, Pill, Repeat, Sparkles, Stethoscope, Wand2 } from 'lucide-react';
+import { Bot, CalendarPlus, ClipboardList, Eraser, ListChecks, Mic, MicOff, Pill, Repeat, Sparkles, Stethoscope, Wand2 } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { useSelectedPatient, usePatientOverview } from '@/hooks/usePatientData';
 import { getVoiceController, VoiceController } from '@/services/ai/voiceController';
-import { extractFromTranscript, extractionKinds, type ExtractionKind } from '@/services/ai/summaryExtractor';
+import { RECORD_KINDS, type RecordKind } from '@/types/records';
 import { buildPatientNarrative } from '@/services/records/patientNarrative';
 import { FieldRegistry } from '@/registry/fieldRegistry';
 import type { ExtractedItem, ExtractionResult, FieldValues } from '@/types/ai';
 import { EmptyState, InlineEmpty, SectionCard } from '@/components/common';
 import { RecordFormModal } from '@/components/forms/RecordForms';
+import { AiSummaryRegistry } from '@/registry/aiSummaryRegistry';
+import { CarePlanRegistry, type CarePlanItems } from '@/registry/carePlanRegistry';
 
-const kindMeta: Record<ExtractionKind, { label: string; icon: React.ReactNode; addLabel: string }> = {
+const kindMeta: Record<RecordKind, { label: string; icon: React.ReactNode; addLabel: string }> = {
   medication: { label: 'Medication', icon: <Pill size={16} />, addLabel: 'Add medication' },
   diagnosis: { label: 'Diagnosis', icon: <Stethoscope size={16} />, addLabel: 'Add diagnosis' },
   task: { label: 'Task', icon: <ListChecks size={16} />, addLabel: 'Add task' },
@@ -26,11 +28,11 @@ const EXAMPLE =
 /**
  * AI Summary.
  *
- * The clinician dictates one paragraph; the existing speech-to-text model turns
- * it into the transcript shown below, and the existing Qwen model extracts the
- * medication, diagnosis, task, recall and appointment information it contains.
- * Extracted items are proposals: each one opens the normal form, pre-filled,
- * and is only stored when the user saves it.
+ * The clinician dictates a note; Omi Med STT streams it into the transcript
+ * below, and Qwen extracts the medications, diagnoses, tasks, recalls and
+ * appointments it contains (through its record_note_findings tool). Extracted
+ * items are proposals: each one opens the normal form, pre-filled, and is only
+ * stored when the user saves it.
  */
 export function AiSummaryTab() {
   const patient = useSelectedPatient();
@@ -43,7 +45,7 @@ export function AiSummaryTab() {
   const [result, setResult] = useState<ExtractionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
-  const [pending, setPending] = useState<{ kind: ExtractionKind; prefill: FieldValues; key: string } | null>(null);
+  const [pending, setPending] = useState<{ kind: RecordKind; prefill: FieldValues; key: string } | null>(null);
   const dispatch = useAppDispatch();
   const handoff = useAppSelector((s) => s.voice.summaryHandoff);
   const stopRef = useRef<(() => void) | null>(null);
@@ -83,10 +85,10 @@ export function AiSummaryTab() {
       setExtracting(true);
       setError(null);
       try {
-        const extraction = await extractFromTranscript(text, getVoiceController().llmProvider);
+        const extraction = await getVoiceController().extractNote(text);
         setResult(extraction);
         setDismissed(new Set());
-        const total = extractionKinds.reduce((n, k) => n + extraction.items[k].length, 0);
+        const total = RECORD_KINDS.reduce((n, k) => n + extraction.items[k].length, 0);
         if (!total) setError('The AI did not find any medication, diagnosis, task, recall or appointment in that paragraph. Try being more specific.');
       } catch (e) {
         setError((e as Error).message || 'Extraction failed.');
@@ -151,9 +153,45 @@ export function AiSummaryTab() {
     [patient, overview],
   );
 
-  const totalFound = result ? extractionKinds.reduce((n, k) => n + result.items[k].length, 0) : 0;
+  const totalFound = result ? RECORD_KINDS.reduce((n, k) => n + result.items[k].length, 0) : 0;
 
-  const renderItem = (kind: ExtractionKind, item: ExtractedItem, index: number) => {
+  /** Every item still on screen, in one Care Plan dialog (a tab per kind, a tab per record). */
+  const openCarePlan = () => {
+    if (!result) return;
+    const items: CarePlanItems = Object.fromEntries(RECORD_KINDS.map((kind) => [kind, result.items[kind].filter((_, i) => !dismissed.has(`${kind}-${i}`)).map((item) => item.fields)]));
+    CarePlanRegistry.get()?.open(items);
+  };
+
+  // The assistant can open an extracted item ("add the medication from the summary") while this tab is on screen.
+  const live = useRef({ result, dismissed, runExtraction });
+  live.current = { result, dismissed, runExtraction };
+  useEffect(() => {
+    const onScreen = () => {
+      const { result: r, dismissed: d } = live.current;
+      if (!r) return [];
+      return RECORD_KINDS.flatMap((kind) =>
+        r.items[kind]
+          .map((item, index) => ({ kind, index, item }))
+          .filter(({ kind: k, index }) => !d.has(`${k}-${index}`))
+          .map(({ kind: k, index, item }, i) => ({ kind: k, position: i + 1, index, fields: item.fields })),
+      );
+    };
+    return AiSummaryRegistry.register({
+      items: () => onScreen().map(({ kind, position, fields }) => ({ kind, position, fields })),
+      add: (kind, position) => {
+        const hit = onScreen().find((x) => x.kind === kind && x.position === position);
+        if (!hit) return false;
+        setPending({ kind, prefill: hit.fields, key: `${kind}-${hit.index}` });
+        return true;
+      },
+      extract: (note) => {
+        if (note) setTranscript(note);
+        void live.current.runExtraction(note);
+      },
+    });
+  }, []);
+
+  const renderItem = (kind: RecordKind, item: ExtractedItem, index: number) => {
     const key = `${kind}-${index}`;
     if (dismissed.has(key)) return null;
     const def = FieldRegistry.getForm(kind)!;
@@ -240,7 +278,7 @@ export function AiSummaryTab() {
         title="AI extracted information"
         icon={<Sparkles size={16} />}
         description="What the model understood from the paragraph. Nothing is saved until you add it — every item opens the normal form so you can check it first."
-        extra={result && <Tag color={result.provider.startsWith('rules') ? 'default' : 'blue'}>{result.provider}</Tag>}
+        extra={result && <Tag color="blue">{result.provider}</Tag>}
       >
         {!result ? (
           <EmptyState
@@ -272,7 +310,7 @@ export function AiSummaryTab() {
             )}
 
             <div className="extracted-grid">
-              {extractionKinds.map((kind) => {
+              {RECORD_KINDS.map((kind) => {
                 const items = result.items[kind];
                 const visible = items.map((item, i) => renderItem(kind, item, i)).filter(Boolean);
                 return (
@@ -289,9 +327,14 @@ export function AiSummaryTab() {
             </div>
 
             {totalFound > 0 && (
-              <p className="muted ai-summary-footnote">
-                {totalFound} item{totalFound === 1 ? '' : 's'} extracted for {patient?.fullName ?? 'this patient'}. The AI only proposes — review each one before saving.
-              </p>
+              <div className="ai-summary-footnote">
+                <p className="muted">
+                  {totalFound} item{totalFound === 1 ? '' : 's'} extracted for {patient?.fullName ?? 'this patient'}. The AI only proposes — review each one before saving.
+                </p>
+                <Button type="primary" icon={<ClipboardList size={15} />} onClick={openCarePlan} disabled={!patient}>
+                  Review all in care plan
+                </Button>
+              </div>
             )}
           </>
         )}

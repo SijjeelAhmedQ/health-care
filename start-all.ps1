@@ -11,7 +11,7 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) { throw "Ollama is 
 try { Invoke-RestMethod http://127.0.0.1:11434/api/tags -TimeoutSec 3 | Out-Null } catch { Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden; Start-Sleep -Seconds 4 }
 if (-not (ollama list | Select-String -Quiet "qwen3.5:4b")) { Write-Host "Pulling qwen3.5:4b (3.4 GB)…"; ollama pull qwen3.5:4b }
 Write-Host "Warming qwen3.5:4b on the GPU…"
-Invoke-RestMethod -Method Post http://127.0.0.1:11434/api/generate -Body '{"model":"qwen3.5:4b","prompt":"","keep_alive":"30m","options":{"num_gpu":99,"num_ctx":4096}}' -ContentType "application/json" | Out-Null
+Invoke-RestMethod -Method Post http://127.0.0.1:11434/api/generate -Body '{"model":"qwen3.5:4b","prompt":"","keep_alive":"30m","options":{"num_gpu":99,"num_ctx":12288}}' -ContentType "application/json" | Out-Null
 ollama ps
 
 # --- 2. STT bridge (omi-med-stt) ---------------------------------------------------
@@ -34,5 +34,5 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health | ConvertTo-Json -Depth 4
 
 # --- 3. Frontend -------------------------------------------------------------------
 if (-not (Test-Path "node_modules")) { npm install }
-Write-Host "`nCareFlow -> http://localhost:5173   (login with any credentials, press Ctrl+Shift+V to talk)`n"
+Write-Host "`nCareFlow -> http://localhost:5173   (sign in with a provider account, e.g. sahmed; press Ctrl+Shift+V to talk)`n"
 npm run dev

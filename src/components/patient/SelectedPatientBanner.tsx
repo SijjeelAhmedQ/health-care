@@ -5,6 +5,7 @@ import { CalendarDays, ClipboardList, ListChecks, Mail, Phone, Pill, Repeat, Ste
 import dayjs from 'dayjs';
 import { Avatar } from '@/components/common';
 import { usePatientOverview, useSelectedPatient } from '@/hooks/usePatientData';
+import { PageRegistry } from '@/registry/pageRegistry';
 import { PatientPicker } from './PatientPicker';
 
 interface QuickStat {
@@ -40,7 +41,7 @@ export function SelectedPatientBanner() {
       value: String(counts.medication),
       hint: `${highlights.activeMedications} active of ${counts.medication}`,
       icon: <Pill size={15} />,
-      to: '/medications',
+      to: PageRegistry.recordTab('medication').path,
     },
     {
       key: 'diagnosis',
@@ -48,7 +49,7 @@ export function SelectedPatientBanner() {
       value: String(counts.diagnosis),
       hint: `${highlights.activeDiagnoses} active or chronic`,
       icon: <Stethoscope size={15} />,
-      to: '/diagnoses',
+      to: PageRegistry.recordTab('diagnosis').path,
     },
     {
       key: 'task',
@@ -56,7 +57,7 @@ export function SelectedPatientBanner() {
       value: String(highlights.openTasks),
       hint: highlights.overdueTasks ? `${highlights.overdueTasks} overdue of ${highlights.openTasks} open` : `${highlights.openTasks} open of ${counts.task}`,
       icon: <ListChecks size={15} />,
-      to: '/tasks',
+      to: PageRegistry.recordTab('task').path,
       tone: highlights.overdueTasks ? 'warning' : 'normal',
     },
     {
@@ -65,7 +66,7 @@ export function SelectedPatientBanner() {
       value: String(highlights.dueRecalls),
       hint: `${highlights.dueRecalls} due of ${counts.recall}`,
       icon: <Repeat size={15} />,
-      to: '/recalls',
+      to: PageRegistry.recordTab('recall').path,
       tone: highlights.dueRecalls ? 'warning' : 'normal',
     },
     {
@@ -76,7 +77,7 @@ export function SelectedPatientBanner() {
         ? `Next: ${highlights.nextAppointment.type} with ${highlights.nextAppointment.providerName}`
         : `No upcoming appointment (${counts.appointment} in history)`,
       icon: <CalendarDays size={15} />,
-      to: '/appointments',
+      to: PageRegistry.recordTab('appointment').path,
     },
   ];
 

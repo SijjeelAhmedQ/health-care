@@ -50,7 +50,7 @@ export function CommandPalette() {
     close();
     const controller = getVoiceController();
     void cmd.run({
-      execute: (command) => controller.executeCommand(command),
+      act: (action) => controller.runAction(action),
       toggleDebugPanel: () => dispatch(uiActions.setDebugPanelOpen(true)),
       toggleSidebar: () => dispatch(uiActions.toggleSidebar()),
       openVoicePanel: () => {
@@ -98,7 +98,7 @@ export function CommandPalette() {
             <icons.Sparkles size={16} className="muted" />
             <div>
               <div className="command-palette-item-title">Ask the assistant: “{query}”</div>
-              <div className="command-palette-item-sub">Interpret as a natural-language voice command</div>
+              <div className="command-palette-item-sub">Send it to the assistant as a request in your own words</div>
             </div>
           </div>
         ) : (
@@ -126,7 +126,7 @@ export function CommandPalette() {
         <span><kbd>↑</kbd> <kbd>↓</kbd> navigate</span>
         <span><kbd>↵</kbd> run</span>
         <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd> voice</span>
-        <span style={{ marginLeft: 'auto' }}>Voice and palette share the same command registry</span>
+        <span style={{ marginLeft: 'auto' }}>Palette entries run the same actions as the assistant</span>
       </div>
     </Modal>
   );

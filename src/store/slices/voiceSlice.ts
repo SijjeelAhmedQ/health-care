@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { AICommand, DebugTrace, ExecutionStep, PendingConfirmation } from '@/types/ai';
+import type { AgentStep, DebugTrace, PendingConfirmation } from '@/types/ai';
 
 export type VoiceStatus =
   | 'idle'
@@ -33,7 +33,6 @@ interface VoiceState {
   status: VoiceStatus;
   transcript: string;
   interimTranscript: string;
-  commands: AICommand[];
   currentAction: string | null;
   response: string | null;
   requiresConfirmation: boolean;
@@ -53,6 +52,13 @@ interface VoiceState {
   summaryHandoff: { id: string; text: string } | null;
   /** The voice command reference ("what can I say?"). */
   helpOpen: boolean;
+  /**
+   * The language model: loading into memory, warming (already in memory — priming its prompt cache,
+   * normally a second), ready, or failed to load. The first request waits for either.
+   */
+  model: { status: 'unknown' | 'loading' | 'warming' | 'ready' | 'error'; since: number | null; error: string | null };
+  /** When the request now in progress started — the panel shows how long it has taken. */
+  busySince: number | null;
 }
 
 const initialState: VoiceState = {
@@ -61,7 +67,6 @@ const initialState: VoiceState = {
   status: 'idle',
   transcript: '',
   interimTranscript: '',
-  commands: [],
   currentAction: null,
   response: null,
   requiresConfirmation: false,
@@ -71,13 +76,15 @@ const initialState: VoiceState = {
   history: [],
   trace: null,
   traceHistory: [],
-  sttProvider: 'mock',
-  llmProvider: 'mock',
+  sttProvider: '',
+  llmProvider: '',
   micSupported: true,
   micActive: false,
   lastCommandAt: null,
   summaryHandoff: null,
   helpOpen: false,
+  model: { status: 'unknown', since: null, error: null },
+  busySince: null,
 };
 
 const voiceSlice = createSlice({
@@ -88,6 +95,9 @@ const voiceSlice = createSlice({
       state.panelOpen = action.payload;
     },
     setStatus(state, action: PayloadAction<VoiceStatus>) {
+      const working = action.payload === 'processing' || action.payload === 'executing';
+      if (working && !state.busySince) state.busySince = Date.now();
+      if (!working) state.busySince = null;
       state.status = action.payload;
       if (action.payload === 'listening') {
         state.error = null;
@@ -100,9 +110,6 @@ const voiceSlice = createSlice({
     setTranscript(state, action: PayloadAction<string>) {
       state.transcript = action.payload;
       state.interimTranscript = '';
-    },
-    setCommands(state, action: PayloadAction<AICommand[]>) {
-      state.commands = action.payload;
     },
     setCurrentAction(state, action: PayloadAction<string | null>) {
       state.currentAction = action.payload;
@@ -129,7 +136,7 @@ const voiceSlice = createSlice({
     setTrace(state, action: PayloadAction<DebugTrace | null>) {
       state.trace = action.payload;
     },
-    updateTraceStep(state, action: PayloadAction<ExecutionStep>) {
+    upsertTraceStep(state, action: PayloadAction<AgentStep>) {
       if (!state.trace) return;
       const idx = state.trace.steps.findIndex((s) => s.id === action.payload.id);
       if (idx === -1) state.trace.steps.push(action.payload);
@@ -154,6 +161,9 @@ const voiceSlice = createSlice({
     setSummaryHandoff(state, action: PayloadAction<{ id: string; text: string } | null>) {
       state.summaryHandoff = action.payload;
     },
+    setModelStatus(state, action: PayloadAction<{ status: VoiceState['model']['status']; error?: string | null }>) {
+      state.model = { status: action.payload.status, since: Date.now(), error: action.payload.error ?? null };
+    },
     setHelpOpen(state, action: PayloadAction<boolean>) {
       state.helpOpen = action.payload;
     },
@@ -164,7 +174,6 @@ const voiceSlice = createSlice({
       state.status = 'idle';
       state.transcript = '';
       state.interimTranscript = '';
-      state.commands = [];
       state.currentAction = null;
       state.response = null;
       state.requiresConfirmation = false;

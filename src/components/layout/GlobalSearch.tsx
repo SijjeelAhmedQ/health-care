@@ -5,11 +5,11 @@ import { FileText, Search, Users } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { patientSelectors, setCurrentPatient } from '@/store/slices/patientSlice';
 import { usePatientOverview } from '@/hooks/usePatientData';
-import { PageRegistry, moduleLabels } from '@/registry/pageRegistry';
+import { PageRegistry } from '@/registry/pageRegistry';
 import { recordLabel, recordSubtitle, type AnyRecord } from '@/services/records/recordMapping';
-import { moduleIcons } from './MobileNav';
+import { RecordIcon } from '@/components/common/recordIcons';
 import { useDebouncedValue } from '@/hooks';
-import type { AIRecordKind } from '@/types/ai';
+import { RECORD_KINDS } from '@/types/records';
 
 interface Hit {
   key: string;
@@ -43,27 +43,24 @@ export function GlobalSearch({ autoFocus, onSelect }: { autoFocus?: boolean; onS
       out.push({
         title: 'Patients — select to switch context',
         icon: <Users size={14} />,
-        hits: pts.map((p) => ({ key: `p-${p.id}`, label: p.fullName, sub: `${p.mrn} · ${p.age}y ${p.gender}`, path: '/dashboard', patientId: p.id })),
+        hits: pts.map((p) => ({ key: `p-${p.id}`, label: p.fullName, sub: `${p.mrn} · ${p.age}y ${p.gender}`, path: PageRegistry.get('summary')!.path, patientId: p.id })),
       });
     }
 
     // Records of the patient currently being worked on.
-    const kinds: Array<[AIRecordKind, AnyRecord[], string]> = [
-      ['medication', overview.medications, '/medications'],
-      ['diagnosis', overview.diagnoses, '/diagnoses'],
-      ['task', overview.tasks, '/tasks'],
-      ['recall', overview.recalls, '/recalls'],
-      ['appointment', overview.appointments, '/appointments'],
-    ];
-    for (const [kind, rows, path] of kinds) {
+    const byKind = { medication: overview.medications, diagnosis: overview.diagnoses, task: overview.tasks, recall: overview.recalls, appointment: overview.appointments };
+    for (const kind of RECORD_KINDS) {
+      const rows: AnyRecord[] = byKind[kind];
+      const tab = PageRegistry.recordTab(kind);
+      const path = tab.path;
       const hits = rows
         .filter((r) => `${recordLabel(kind, r)} ${recordSubtitle(kind, r)}`.toLowerCase().includes(q))
         .slice(0, 3)
         .map((r) => ({ key: `${kind}-${(r as { id: string }).id}`, label: recordLabel(kind, r), sub: recordSubtitle(kind, r), path }));
-      if (hits.length) out.push({ title: `${moduleLabels[kind]} — this patient`, icon: moduleIcons[kind], hits });
+      if (hits.length) out.push({ title: `${tab.title} — this patient`, icon: <RecordIcon kind={kind} size={14} />, hits });
     }
 
-    const pages = PageRegistry.sidebarPages().filter((p) => has(p.title) || p.aliases.some((a) => a.includes(q)) || String(p.number) === q);
+    const pages = PageRegistry.sidebarPages().filter((p) => has(p.title) || p.keywords.some((k) => k.includes(q)) || String(p.number) === q);
     if (pages.length) {
       out.push({
         title: 'Modules',

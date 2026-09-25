@@ -11,6 +11,7 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "eval:llm": "vitest run --config vitest.eval.config.ts",
     "lint": "eslint . --ext .ts,.tsx",
     "bridge": "powershell -NoProfile -ExecutionPolicy Bypass -File python/start.ps1",
     "bridge:health": "curl -s http://127.0.0.1:8765/api/health"
@@ -25,7 +26,8 @@
     "react-redux": "^9.2.0",
     "react-router-dom": "^6.28.0",
     "recharts": "^2.15.0",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -6,6 +6,7 @@ import { uiActions } from '@/store/slices/uiSlice';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { fetchPatients } from '@/store/slices/patientSlice';
 import { fetchProviders } from '@/store/slices/providerSlice';
+import { fetchInbox } from '@/store/slices/inboxSlice';
 import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, tasksSlice } from '@/store/slices/recordSlices';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
 import { PageRegistry } from '@/registry/pageRegistry';
@@ -16,9 +17,11 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { MobileNav } from './MobileNav';
 import { SelectedPatientBanner } from '@/components/patient/SelectedPatientBanner';
-import { DashboardSummaryWidget } from '@/components/dashboard/DashboardSummaryWidget';
+import { PatientSummaryPanel } from '@/components/patient/PatientSummaryPanel';
+import { DashboardSummaryPanel } from '@/components/dashboard/DashboardSummaryPanel';
 import { VoiceAssistant } from '@/components/voice/VoiceAssistant';
 import { VoiceConfirmDialog } from '@/components/voice/VoiceConfirmDialog';
+import { AssistantHelp } from '@/components/voice/AssistantHelp';
 import { CommandPalette } from '@/components/command-palette/CommandPalette';
 import { DebugPanel } from '@/components/debug/DebugPanel';
 
@@ -46,12 +49,16 @@ export function AppLayout() {
   const { isMobile, isTablet } = useResponsive();
   const collapsed = useAppSelector((s) => s.ui.sidebarCollapsed);
   const hasPatient = useAppSelector((s) => !!s.patients.currentPatientId);
-  // "show dashboard summary" docks the dashboard to the right; it belongs to the
-  // selected patient, so it is only on screen while there is one.
-  const dashboardSummaryOpen = useAppSelector((s) => s.ui.dashboardSummaryOpen) && hasPatient;
+  // The patient summary panel docks to the right; it belongs to the selected
+  // patient, so it is only on screen while there is one.
+  const patientPanelOpen = useAppSelector((s) => s.ui.patientPanelOpen) && hasPatient;
+  // The provider's dashboard summary belongs to the Dashboard page and docks beside it.
+  const dashboardPanelOpen = useAppSelector((s) => s.ui.dashboardPanelOpen) && PageRegistry.matchPath(location.pathname)?.id === 'dashboard';
+  const rightDock = dashboardPanelOpen ? 'dashboard' : patientPanelOpen ? 'patient' : null;
+  const helpOpen = useAppSelector((s) => s.voice.helpOpen);
   usePageTracking();
 
-  // Install imperative navigation for the command executor.
+  // Install imperative navigation for the assistant's tools.
   useEffect(() => {
     NavigationRegistry.install((to, options) => (typeof to === 'number' ? navigate(to) : navigate(to, options)));
   }, [navigate]);
@@ -65,7 +72,13 @@ export function AppLayout() {
     dispatch(tasksSlice.fetchAll());
     dispatch(recallsSlice.fetchAll());
     dispatch(appointmentsSlice.fetchAll());
+    dispatch(fetchInbox());
   }, [dispatch]);
+
+  // Load the assistant's model in the background so the first request is not the slow one.
+  useEffect(() => {
+    if (aiConfig.enableVoice) void getVoiceController().warmUp();
+  }, []);
 
   // Global keyboard shortcuts.
   useEffect(() => {
@@ -86,7 +99,8 @@ export function AppLayout() {
         dispatch(uiActions.toggleSidebar());
       } else if (e.key === 'Escape') {
         dispatch(voiceActions.setPanelOpen(false));
-        dispatch(uiActions.setDashboardSummaryOpen(false));
+        dispatch(uiActions.setPatientPanelOpen(false));
+        dispatch(uiActions.setDashboardPanelOpen(false));
       }
     };
     window.addEventListener('keydown', handler);
@@ -103,18 +117,19 @@ export function AppLayout() {
     if (isTablet) dispatch(uiActions.setSidebarCollapsed(true));
   }, [isTablet, dispatch]);
 
-  // The banner belongs to the patient workflow — it is shown wherever a patient
-  // is selected, so the active context is never in doubt. The Inbox is the
-  // exception: it spans every patient and names each item's own patient, so a
-  // banner for a different (selected) patient above it would invite a
-  // wrong-patient mistake. The selection stays visible in the header and sidebar.
+  // The banner belongs to the patient workflow — it is shown on the patient
+  // pages whenever a patient is selected, so the active context is never in
+  // doubt. The Dashboard is the provider's own view and the Inbox spans every
+  // patient and names each item's own patient, so a banner for the selected
+  // patient above either would invite a wrong-patient mistake. The selection
+  // stays visible in the header and sidebar.
   const page = PageRegistry.matchPath(location.pathname);
-  const showBanner = hasPatient && page?.id !== undefined && page.module !== 'inbox';
+  const showBanner = hasPatient && (page?.module === 'patient' || page?.module === 'summary');
 
   return (
     // The shell is exactly one viewport tall: the header, sidebar and mobile nav
     // stay put, and only #main-content (or a region inside a workspace page) scrolls.
-    <Layout className={`app-shell${dashboardSummaryOpen ? ' has-right-dock' : ''}`}>
+    <Layout className={`app-shell${rightDock ? ' has-right-dock' : ''}`}>
       <a href="#main-content" className="skip-link">Skip to content</a>
       {!isMobile && <Sidebar collapsed={collapsed} onCollapse={(c) => dispatch(uiActions.setSidebarCollapsed(c))} />}
       <Layout className="app-main">
@@ -126,10 +141,12 @@ export function AppLayout() {
           </Suspense>
         </Layout.Content>
       </Layout>
-      {dashboardSummaryOpen && <DashboardSummaryWidget />}
+      {rightDock === 'dashboard' && <DashboardSummaryPanel />}
+      {rightDock === 'patient' && <PatientSummaryPanel />}
       {isMobile && <MobileNav />}
       {aiConfig.enableVoice && <VoiceAssistant />}
       <VoiceConfirmDialog />
+      <AssistantHelp open={helpOpen} onClose={() => dispatch(voiceActions.setHelpOpen(false))} />
       <CommandPalette />
       {aiConfig.enableDebugPanel && <DebugPanel />}
     </Layout>

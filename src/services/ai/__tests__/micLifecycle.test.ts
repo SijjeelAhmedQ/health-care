@@ -1,64 +1,57 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configureStore } from '@reduxjs/toolkit';
 import authReducer from '@/store/slices/authSlice';
 import patientReducer from '@/store/slices/patientSlice';
 import providerReducer from '@/store/slices/providerSlice';
+import inboxReducer from '@/store/slices/inboxSlice';
 import { appointmentsSlice, diagnosesSlice, medicationsSlice, recallsSlice, tasksSlice } from '@/store/slices/recordSlices';
 import uiReducer from '@/store/slices/uiSlice';
 import voiceReducer from '@/store/slices/voiceSlice';
 import navigationReducer, { navigationActions } from '@/store/slices/navigationSlice';
-import { VoiceController, isClinicalParagraph } from '../voiceController';
-import { MockLLMProvider } from '../providers/llmProviders';
-import type { ListeningCallbacks, ListeningSession, MicrophoneRecognizer } from '../providers/sttProviders';
 import { NavigationRegistry } from '@/registry/navigationRegistry';
-
-/** A scripted microphone: the test decides when segments, engine restarts and errors happen. */
-class FakeRecognizer implements MicrophoneRecognizer {
-  readonly providerName = 'fake';
-  sessions: Array<{ callbacks: ListeningCallbacks; stopped: boolean; cancelled: boolean }> = [];
-  isSupported() {
-    return true;
-  }
-  start(callbacks: ListeningCallbacks): ListeningSession {
-    const entry = { callbacks, stopped: false, cancelled: false };
-    this.sessions.push(entry);
-    return {
-      stop: () => {
-        entry.stopped = true;
-        callbacks.onEnd?.();
-      },
-      cancel: () => {
-        entry.cancelled = true;
-        callbacks.onEnd?.();
-      },
-    };
-  }
-  get current() {
-    return this.sessions[this.sessions.length - 1];
-  }
-}
+import { VoiceController } from '../voiceController';
+import { FakeMic, ScriptedLLM, call } from './fakes';
 
 const makeStore = () =>
   configureStore({
-    reducer: { auth: authReducer, patients: patientReducer, appointments: appointmentsSlice.reducer, providers: providerReducer, medications: medicationsSlice.reducer,
+    reducer: {
+      auth: authReducer,
+      patients: patientReducer,
+      providers: providerReducer,
+      inbox: inboxReducer,
+      appointments: appointmentsSlice.reducer,
+      medications: medicationsSlice.reducer,
       diagnoses: diagnosesSlice.reducer,
       tasks: tasksSlice.reducer,
-      recalls: recallsSlice.reducer, ui: uiReducer, voice: voiceReducer, navigation: navigationReducer },
+      recalls: recallsSlice.reducer,
+      ui: uiReducer,
+      voice: voiceReducer,
+      navigation: navigationReducer,
+    },
     middleware: (g) => g({ serializableCheck: false }),
   });
 
+// The loudspeaker: whether the assistant is talking right now.
+const speaker = vi.hoisted(() => ({ speaking: false }));
+vi.mock('../speech', async (original) => ({ ...(await original<typeof import('../speech')>()), isAssistantSpeaking: () => speaker.speaking }));
+
 const flush = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+// These tests hand each utterance over at once; the turn grace has its own tests below.
+VoiceController.TURN_GRACE_MS = 0;
 
 describe('microphone lifecycle — stays on until the user turns it off', () => {
   let store: ReturnType<typeof makeStore>;
-  let mic: FakeRecognizer;
+  let mic: FakeMic;
+  let llm: ScriptedLLM;
   let controller: VoiceController;
 
   beforeEach(() => {
     store = makeStore();
-    mic = new FakeRecognizer();
+    mic = new FakeMic();
+    llm = new ScriptedLLM();
     NavigationRegistry.install((to) => NavigationRegistry.setPathname(String(to)));
-    controller = new VoiceController(store as never, { stt: mic, llm: new MockLLMProvider() });
+    controller = new VoiceController(store as never, { stt: mic, llm });
   });
 
   it('turns on with startListening and reports micActive', () => {
@@ -69,244 +62,291 @@ describe('microphone lifecycle — stays on until the user turns it off', () => 
     expect(mic.sessions).toHaveLength(1);
   });
 
-  it('does NOT stop after a transcription segment is processed; returns to listening', async () => {
+  it('shows the live partial transcript while the user speaks', () => {
     controller.startListening();
-    mic.current.callbacks.onFinal('go to patient search');
-    await flush(1000); // mock LLM latency + navigation/execution waits
-    expect(controller.isMicActive).toBe(true);
-    expect(mic.current.stopped).toBe(false);
-    expect(mic.current.cancelled).toBe(false);
-    expect(store.getState().voice.history[0].transcript).toBe('go to patient search');
-    // status goes completed -> listening (not idle) because the mic is still on
-    await flush(2600);
-    expect(store.getState().voice.status).toBe('listening');
-    expect(store.getState().voice.micActive).toBe(true);
+    mic.current.callbacks.onInterim?.('add metformin five');
+    expect(store.getState().voice.interimTranscript).toBe('add metformin five');
   });
 
-  it('keeps capturing consecutive segments across pauses and queues them in order', async () => {
+  it("ignores its own spoken reply picked up by the microphone, then hears the user again", async () => {
+    llm.then({ content: 'Opened.' });
     controller.startListening();
-    mic.current.callbacks.onFinal('go to patient search');
-    mic.current.callbacks.onFinal('go to page 30');
-    await flush(900);
-    const transcripts = store.getState().voice.history.map((h) => h.transcript).reverse();
-    expect(transcripts).toEqual(['go to patient search', 'go to page 30']);
+    speaker.speaking = true;
+    mic.say('Here is the dashboard summary.');
+    speaker.speaking = false;
+    await flush(50);
+    expect(llm.requests).toHaveLength(0);
+    expect(store.getState().voice.interimTranscript).toBe('');
+    mic.say('open the inbox');
+    await flush(50);
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: open the inbox$/);
+  });
+
+  it('hands each finished utterance to the model and keeps listening afterwards', async () => {
+    llm.then({ content: 'Hello — how can I help?' });
+    controller.startListening();
+    mic.say('hello there');
+    await flush(50);
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: hello there$/);
+    expect(store.getState().voice.history[0]).toMatchObject({ transcript: 'hello there', response: 'Hello — how can I help?' });
     expect(controller.isMicActive).toBe(true);
+    expect(mic.current.stopped).toBe(false);
+    await flush(2600);
+    expect(store.getState().voice.status).toBe('listening');
+  });
+
+  it('queues utterances and handles them in order', async () => {
+    llm.then({ content: 'one' }, { content: 'two' });
+    controller.startListening();
+    mic.say('first');
+    mic.say('second');
+    await flush(80);
+    expect(store.getState().voice.history.map((h) => h.transcript).reverse()).toEqual(['first', 'second']);
     expect(mic.sessions).toHaveLength(1); // same session, never re-armed by the user
   });
 
-  it('re-opens the session automatically if the engine ends on its own while the mic is on', async () => {
+  it('re-opens the session if it ends on its own while the mic is on; not after Mic Off', async () => {
     controller.startListening();
-    mic.current.callbacks.onEnd?.(); // engine-side end (e.g. silence timeout) — not a user action
+    mic.current.callbacks.onEnd?.();
     await flush(400);
-    expect(controller.isMicActive).toBe(true);
     expect(mic.sessions).toHaveLength(2);
+    controller.stopListening();
+    mic.current.callbacks.onEnd?.();
+    await flush(400);
+    expect(mic.sessions).toHaveLength(2);
+    expect(controller.isMicActive).toBe(false);
   });
 
-  it('stops ONLY on explicit Mic Off', () => {
+  it('a stopped session that ends late cannot replace or duplicate the one running now', async () => {
+    llm.then({ content: 'Opened.' });
+    controller.startListening();
+    const old = mic.current;
+    controller.stopListening(); // Mic Off (or the silence timeout): the bridge is still flushing
+    controller.startListening(); // Speak again before the old session has finished
+    const live = mic.current;
+    // The old session now finishes: its last final and its end arrive late.
+    old.callbacks.onFinal('ghost words');
+    old.callbacks.onEnd?.();
+    await flush(400);
+    expect(mic.sessions).toHaveLength(2); // no third session opened behind the user's back
+    expect(live.cancelled || live.stopped).toBe(false);
+    live.callbacks.onFinal('open the inbox');
+    await flush(1500);
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: open the inbox$/);
+    controller.stopListening();
+    expect(live.stopped).toBe(true); // the running session is still the one Mic Off reaches
+  });
+
+  it('a final with the second recogniser\'s version reaches the model as ALSO HEARD', async () => {
+    llm.then({ content: 'Selected.' });
+    controller.startListening();
+    mic.current.callbacks.onSpeechStart?.();
+    mic.current.callbacks.onFinal('select patient pharma volt', 'Select patient Fatima Malik.');
+    await flush(1500);
+    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: select patient pharma volt\nALSO HEARD: Select patient Fatima Malik\.$/);
+  });
+
+  it('Mic Off stops the session; Cancel aborts it', () => {
     controller.startListening();
     controller.stopListening();
-    expect(controller.isMicActive).toBe(false);
-    expect(store.getState().voice.micActive).toBe(false);
     expect(mic.current.stopped).toBe(true);
     expect(store.getState().voice.status).toBe('idle');
-  });
-
-  it('audio flushed after Mic Off does not leave the status on "Transcribing…"', () => {
-    controller.startListening();
-    const { callbacks } = mic.current;
-    controller.stopListening(); // e.g. the user switched to the keyboard
-    callbacks.onInterim?.('Hearing you…');
-    callbacks.onTranscribing?.(); // the HTTP recorder transcribes its last segment on stop
-    callbacks.onFinal('go to');
-    expect(store.getState().voice.status).toBe('idle');
-    expect(store.getState().voice.interimTranscript).toBe('');
-  });
-
-  it('stops on explicit Cancel', () => {
     controller.startListening();
     controller.cancel();
-    expect(controller.isMicActive).toBe(false);
     expect(mic.current.cancelled).toBe(true);
     expect(store.getState().voice.status).toBe('cancelled');
   });
 
-  it('does not re-open after the user stopped it, even if the engine fires onEnd later', async () => {
+  it('a non-fatal STT error keeps the mic on; a fatal one turns it off', () => {
     controller.startListening();
-    controller.stopListening();
-    mic.current.callbacks.onEnd?.();
-    await flush(400);
-    expect(mic.sessions).toHaveLength(1);
-    expect(controller.isMicActive).toBe(false);
-  });
-
-  it('a non-fatal STT error keeps the mic on; a fatal one (permission denied) turns it off', async () => {
-    controller.startListening();
-    mic.current.callbacks.onError(new Error('STT service responded 503'), false);
+    mic.current.callbacks.onError(new Error('Connection to Omi Med STT dropped — reconnecting…'), false);
     expect(controller.isMicActive).toBe(true);
-    expect(store.getState().voice.error).toContain('503');
-    mic.current.callbacks.onError(new Error('Microphone access was denied'), true);
+    mic.current.callbacks.onError(new Error('Microphone permission was denied.'), true);
     expect(controller.isMicActive).toBe(false);
     expect(store.getState().voice.micActive).toBe(false);
   });
 
-  it('merges a short mid-sentence fragment with the next segment instead of executing it', async () => {
+  it('the model can hold an unfinished fragment; it is joined with what the user says next', async () => {
+    llm.then({ calls: [call('wait_for_more_speech')] }, { content: 'Opening the patient list.' });
     controller.startListening();
-    mic.current.callbacks.onFinal('I am');            // pause mid-sentence
-    await flush(300);
-    expect(store.getState().voice.history).toHaveLength(0);      // held, not executed
-    expect(store.getState().voice.interimTranscript).toBe('I am …');
-    mic.current.callbacks.onFinal('going to patient search');
-    await flush(1200);
-    expect(store.getState().voice.history[0].transcript).toBe('I am going to patient search');
-    expect(store.getState().voice.history).toHaveLength(1);
+    mic.say('I am going to');
+    await flush(50);
+    expect(store.getState().voice.history).toHaveLength(0); // nothing done, nothing recorded
+    expect(store.getState().voice.interimTranscript).toBe('I am going to …');
+    mic.say('open the patient list');
+    await flush(50);
+    expect(llm.requests[1].at(-1)?.content).toMatch(/SAID: I am going to open the patient list$/);
+    expect(store.getState().voice.history[0].transcript).toBe('I am going to open the patient list');
   });
 
-  it('processes a held fragment on its own after the hold period', async () => {
+  it('the model turning the mic off ends listening', async () => {
+    llm.calls([call('stop_listening')], 'Microphone off.');
     controller.startListening();
-    mic.current.callbacks.onFinal('hello');
-    await flush(2600 + 900);
-    expect(store.getState().voice.history[0]?.transcript).toBe('hello');
-  });
-
-  it('short answers to a pending question are processed immediately', async () => {
-    controller.startListening();
-    store.dispatch({ type: 'voice/setPendingSlot', payload: { formId: 'medication', field: 'dosage', label: 'Dosage', question: 'What dosage?' } });
-    mic.current.callbacks.onFinal('500 mg');
-    await flush(300);
-    // not held as a fragment: processing started right away
-    expect(store.getState().voice.interimTranscript).not.toBe('500 mg …');
-    expect(store.getState().voice.transcript).toBe('500 mg');
-  });
-
-  it('toggleListening flips the user switch', () => {
-    controller.toggleListening();
-    expect(controller.isMicActive).toBe(true);
-    controller.toggleListening();
+    mic.say('stop listening');
+    await flush(80);
     expect(controller.isMicActive).toBe(false);
+    expect(mic.current.stopped).toBe(true);
+  });
+
+  it('a model that cannot be reached is reported, and the mic stays on', async () => {
+    const failing = new ScriptedLLM();
+    failing.chat = async () => {
+      throw new Error('Could not reach the model');
+    };
+    const c = new VoiceController(store as never, { stt: mic, llm: failing });
+    c.startListening();
+    mic.say('open the dashboard');
+    await flush(50);
+    expect(store.getState().voice.error).toMatch(/Could not reach the model/);
+    expect(c.isMicActive).toBe(true);
   });
 });
 
-describe('clinical paragraph — a pause ends it, mic off, AI Summary extracts it', () => {
-  const PARAGRAPH =
-    'Start the patient on metformin, Panadol, paracetamol 500 mg twice daily for 30 days, add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks, and schedule a follow-up appointment next Tuesday at 3 pm.';
+describe('model warm-up status', () => {
+  const make = (loaded: boolean) => {
+    const store = makeStore();
+    const llm = new ScriptedLLM();
+    Object.assign(llm, { isLoaded: async () => loaded, warmUp: async () => null });
+    const controller = new VoiceController(store as never, { stt: new FakeMic(), llm });
+    return { store, controller };
+  };
+
+  it('a model already in memory (a page refresh) only warms up — no loading notice', async () => {
+    const { store, controller } = make(true);
+    const seen: string[] = [];
+    store.subscribe(() => seen.push(store.getState().voice.model.status));
+    await controller.warmUp();
+    expect(seen).not.toContain('loading');
+    expect(seen).toContain('warming');
+    expect(store.getState().voice.model.status).toBe('ready');
+  });
+
+  it('a model that is not in memory is reported as loading', async () => {
+    const { store, controller } = make(false);
+    const seen: string[] = [];
+    store.subscribe(() => seen.push(store.getState().voice.model.status));
+    await controller.warmUp();
+    expect(seen).toContain('loading');
+    expect(store.getState().voice.model.status).toBe('ready');
+  });
+});
+
+describe('dictated clinical note — the model decides, a pause ends it, the AI Summary extracts it', () => {
   const original = VoiceController.SILENCE_MS;
   let store: ReturnType<typeof makeStore>;
-  let mic: FakeRecognizer;
+  let mic: FakeMic;
+  let llm: ScriptedLLM;
   let controller: VoiceController;
 
   beforeEach(() => {
     VoiceController.SILENCE_MS = 300;
     store = makeStore();
-    mic = new FakeRecognizer();
+    mic = new FakeMic();
+    llm = new ScriptedLLM();
     NavigationRegistry.install((to) => NavigationRegistry.setPathname(String(to)));
-    controller = new VoiceController(store as never, { stt: mic, llm: new MockLLMProvider() });
+    controller = new VoiceController(store as never, { stt: mic, llm });
   });
   afterEach(() => {
     VoiceController.SILENCE_MS = original;
   });
 
-  it('recognises the dictated note but not ordinary commands', () => {
-    expect(isClinicalParagraph(PARAGRAPH)).toBe(true);
-    expect(isClinicalParagraph('add metformin 500 mg twice daily')).toBe(false);
-    expect(isClinicalParagraph('go to patient search')).toBe(false);
-  });
-
-  it('collects the note, then after the pause turns the mic off and hands it to the AI Summary tab', async () => {
+  it('a whole note in one utterance goes straight to the AI Summary', async () => {
+    const note = 'BP 160/100, start amlodipine 5 mg daily, add hypertension, recall in a month.';
+    llm.calls([call('take_clinical_note', { note })], 'Extracting your note in the AI Summary.');
     controller.startListening();
-    mic.current.callbacks.onFinal(PARAGRAPH);
-    await flush(150);
-    expect(controller.isCapturingParagraph).toBe(true);
-    expect(controller.isMicActive).toBe(true);
-    expect(store.getState().voice.history).toHaveLength(0); // not executed as commands
-    await flush(300);
-    expect(controller.isMicActive).toBe(false);
-    expect(mic.current.stopped).toBe(true);
-    expect(store.getState().voice.summaryHandoff?.text).toBe(PARAGRAPH);
+    mic.say(note);
+    await flush(60);
+    expect(store.getState().voice.summaryHandoff?.text).toBe(note);
     expect(NavigationRegistry.pathname()).toBe('/summary/ai-summary');
   });
 
-  it('keeps listening while the user is still talking and joins every segment', async () => {
+  it('"take a note": everything said until the pause is collected, then handed over — none of it is a command', async () => {
+    llm.then({ calls: [call('take_clinical_note')] });
     controller.startListening();
-    mic.current.callbacks.onFinal('add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks');
-    await flush(200);
-    mic.current.callbacks.onInterim?.('and schedule');
-    await flush(200);
-    mic.current.callbacks.onFinal('and schedule a follow-up appointment next Tuesday at 3 pm');
-    await flush(200);
-    expect(controller.isMicActive).toBe(true);
-    await flush(200);
+    mic.say('take a note');
+    await flush(40);
+    mic.say('start metformin 500 mg twice daily');
+    mic.say('and recall her in two weeks');
+    await flush(40);
+    expect(llm.requests).toHaveLength(1); // the note itself never went to the command model
+    await flush(400);
+    expect(store.getState().voice.summaryHandoff?.text).toBe('start metformin 500 mg twice daily and recall her in two weeks');
     expect(controller.isMicActive).toBe(false);
-    expect(store.getState().voice.summaryHandoff?.text).toBe(
-      'add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks and schedule a follow-up appointment next Tuesday at 3 pm',
+  });
+
+  it('turns the mic off after a pause with no speech — but not during patient work', async () => {
+    controller.startListening();
+    await flush(450);
+    expect(controller.isMicActive).toBe(false);
+    store.dispatch(navigationActions.setCurrentPage({ pageId: 'patients', path: '/patients', title: 'Patients' }));
+    controller.startListening();
+    await flush(450);
+    expect(controller.isMicActive).toBe(true);
+    controller.stopListening();
+  });
+});
+
+describe('a turn is handed over only when the speaker has finished', () => {
+  let store: ReturnType<typeof makeStore>;
+  let mic: FakeMic;
+  let llm: ScriptedLLM;
+  let controller: VoiceController;
+
+  beforeEach(() => {
+    VoiceController.TURN_GRACE_MS = 150;
+    store = makeStore();
+    mic = new FakeMic();
+    llm = new ScriptedLLM();
+    NavigationRegistry.install((to) => NavigationRegistry.setPathname(String(to)));
+    controller = new VoiceController(store as never, { stt: mic, llm });
+  });
+  afterEach(() => {
+    VoiceController.TURN_GRACE_MS = 0;
+  });
+
+  it('pauses inside a long instruction do not split it', async () => {
+    llm.then({ content: 'Done.' });
+    controller.startListening();
+    mic.say('go to patients, select James Ahmed and add metformin, Panadol, gabapentin,');
+    await flush(80);
+    mic.say('create a task for blood pressure monitoring');
+    await flush(80);
+    mic.say('and schedule a follow-up next Tuesday at 3 pm');
+    await flush(80);
+    expect(llm.requests).toHaveLength(0);
+    expect(store.getState().voice.interimTranscript).toMatch(/James Ahmed .* blood pressure .* 3 pm …$/);
+    await flush(150);
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0].at(-1)?.content).toMatch(
+      /SAID: go to patients, select James Ahmed and add metformin, Panadol, gabapentin, create a task for blood pressure monitoring and schedule a follow-up next Tuesday at 3 pm$/,
     );
   });
 
-  it('typed into the assistant: goes straight to the AI Summary instead of opening the medication form', async () => {
-    const results = await controller.handleTranscript(`“${PARAGRAPH}”`);
-    expect(results).toEqual([]);
-    expect(store.getState().voice.commands).toEqual([]);
-    expect(store.getState().navigation.openFormId).toBeNull();
-    expect(store.getState().voice.summaryHandoff?.text).toBe(PARAGRAPH);
-    expect(NavigationRegistry.pathname()).toBe('/summary/ai-summary');
-  });
-
-  it('turns the mic off after a pause with no speech', async () => {
+  it('while the speaker is still talking the turn waits, however long the pause before the final', async () => {
+    llm.then({ content: 'Done.' });
     controller.startListening();
-    await flush(150);
-    expect(controller.isMicActive).toBe(true);
+    mic.say('add metformin');
+    await flush(100);
+    mic.current.callbacks.onSpeechStart?.();
+    mic.current.callbacks.onInterim?.('and');
+    await flush(300);
+    expect(llm.requests).toHaveLength(0);
+    mic.current.callbacks.onFinal('and Panadol');
     await flush(250);
-    expect(controller.isMicActive).toBe(false);
-    expect(mic.current.stopped).toBe(true);
-    expect(store.getState().voice.micActive).toBe(false);
+    expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: add metformin and Panadol$/);
   });
 
-  it('keeps the mic on through a pause during patient work — only "mic off" ends it', async () => {
-    store.dispatch(navigationActions.setCurrentPage({ pageId: 'patients', path: '/patients', title: 'Patient' }));
+  it('Mic Off sends what was just said at once', async () => {
+    llm.then({ content: 'Done.' });
     controller.startListening();
-    await flush(700);
-    expect(controller.isMicActive).toBe(true);
-    await controller.handleTranscript('mic off');
-    expect(controller.isMicActive).toBe(false);
-  });
-
-  it('speech restarts the pause countdown', async () => {
-    controller.startListening();
-    await flush(200);
-    mic.current.callbacks.onInterim?.('go to');
-    await flush(200);
-    expect(controller.isMicActive).toBe(true); // 400 ms since start, but only 200 since speech
-    await flush(200);
-    expect(controller.isMicActive).toBe(false);
-  });
-
-  it('Cancel throws the note away', async () => {
-    controller.startListening();
-    mic.current.callbacks.onFinal(PARAGRAPH);
-    controller.cancel();
-    await flush(400);
-    expect(store.getState().voice.summaryHandoff).toBeNull();
+    mic.say('open the inbox');
+    controller.stopListening();
+    await flush(30);
+    expect(llm.requests).toHaveLength(1);
   });
 });
 
-describe('medication list guard — a model that drops a spoken drug is corrected by the rules', () => {
-  it('re-adds Paracetamol when the model returned only Panadol, keeping the model details', async () => {
-    const store = makeStore();
-    NavigationRegistry.install((to) => NavigationRegistry.setPathname(String(to)));
-    // Behaves like qwen3.5:4b on "add panadol paracetamol 200mg twice daily": one medication, Paracetamol gone.
-    const forgetful = {
-      name: 'fake-llm',
-      async generateCommands() {
-        return { commands: [{ action: 'add_medication' as const, fields: { medicationName: 'Panadol', dosage: '200 mg', frequency: 'Twice daily', duration: '10 days' } }], raw: '' };
-      },
-    };
-    const controller = new VoiceController(store as never, { stt: new FakeRecognizer(), llm: forgetful });
-    await controller.handleTranscript('Add panadol paracetamol 200mg twice daily for 10 days');
-    await flush(50);
-    const cmd = store.getState().voice.commands[0] as { action: string; kind?: string; records?: Array<Record<string, unknown>> };
-    expect(cmd.action).toBe('add_record');
-    expect(cmd.kind).toBe('medication');
-    expect(cmd.records?.map((m) => m.medicationName)).toEqual(['Panadol', 'Paracetamol']);
-    expect(cmd.records?.[0]).toMatchObject({ dosage: '200 mg', frequency: 'Twice daily', duration: '10 days' });
-    expect(cmd.records?.[1]).toMatchObject({ dosage: '200 mg', frequency: 'Twice daily', duration: '10 days' });
-  });
-});

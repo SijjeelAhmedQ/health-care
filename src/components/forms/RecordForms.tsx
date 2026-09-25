@@ -7,14 +7,15 @@ import { providerSelectors } from '@/store/slices/providerSlice';
 import { recordSlices } from '@/store/slices/recordSlices';
 import { useSelectedPatient } from '@/hooks/usePatientData';
 import type { EntryStore } from '@/hooks';
-import type { AIRecordKind, FieldValues } from '@/types/ai';
+import type { FieldValues } from '@/types/ai';
+import type { RecordKind } from '@/types/records';
 import type { Appointment, Diagnosis, Medication, Recall, Task } from '@/types/domain';
 import { FieldRegistry } from '@/registry/fieldRegistry';
 import { FormGrid, FormSection } from '@/components/common';
 import { RegisteredFormModal } from './RegisteredForm';
 import { CheckboxField, DateField, NumberField, ProviderSelectField, SelectField, TextField, TimeField } from './fields';
 
-export type RecordKind = Exclude<AIRecordKind, 'patient'>;
+export type { RecordKind };
 type AnyValues = Record<string, unknown>;
 
 const icons: Record<RecordKind, React.ReactNode> = {
@@ -70,7 +71,6 @@ export function toFormInitialValues(formId: string, values: Record<string, unkno
         break;
       }
       case 'checkbox':
-      case 'switch':
         out[field.name] = raw === true || raw === 'true' || raw === 'Yes';
         break;
       default:
@@ -130,7 +130,7 @@ export function recordToFormValues(kind: RecordKind, row: Medication | Diagnosis
 }
 
 /** Fresh-record defaults, so a dictated record is complete enough to save. */
-function defaultValues(kind: RecordKind, authorName: string): AnyValues {
+export function defaultValues(kind: RecordKind, authorName: string): AnyValues {
   switch (kind) {
     case 'medication':
       return { route: 'Oral', startDate: dayjs(), refills: 0, status: 'Active', prescribedBy: authorName };
@@ -416,7 +416,7 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   );
 }
 
-function RecordFields({ kind, fc }: { kind: RecordKind; fc: (name: string) => string | undefined }) {
+export function RecordFields({ kind, fc }: { kind: RecordKind; fc: (name: string) => string | undefined }) {
   const formId = kind;
   switch (kind) {
     case 'medication':

@@ -25,7 +25,7 @@ afterEach(unmountApp);
 
 beforeEach(async () => {
   store.dispatch(inboxActions.markUnreviewed(store.getState().inbox.reviewedIds));
-  await store.dispatch(login({ username: 'mreed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
   await store.dispatch(fetchInbox()).unwrap();
 });

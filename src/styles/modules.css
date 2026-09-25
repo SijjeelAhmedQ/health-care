@@ -153,7 +153,8 @@
 .mini-list { list-style: none; margin: 0; padding: 0; }
 .mini-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--color-border); }
 .mini-list li:last-child { border-bottom: none; padding-bottom: 0; }
-.mini-list-main { display: flex; flex-direction: column; min-width: 0; font-size: 13.5px; }
+.mini-list-main { display: flex; flex-direction: column; flex: 1; min-width: 0; font-size: 13.5px; }
+.mini-list li.is-next { background: var(--color-primary-bg, rgba(42, 120, 214, 0.06)); margin: 0 -8px; padding-inline: 8px; border-radius: 6px; }
 .mini-list-main .muted { font-size: 12.5px; }
 
 .summary-tabs .ant-tabs-nav { margin-bottom: 16px; }
@@ -179,7 +180,13 @@
    ========================================================================= */
 .ai-summary { display: flex; flex-direction: column; gap: 16px; }
 .ai-summary-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-.ai-summary-footnote { margin: 14px 0 0; font-size: 12.5px; }
+.ai-summary-footnote { margin: 14px 0 0; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ai-summary-footnote p { margin: 0; }
+
+/* Care plan: a tab per record kind, a tab per record inside it. */
+.care-plan-kinds .ant-tabs-nav { margin-bottom: 12px; }
+.care-plan-entries > .ant-tabs-nav { margin-bottom: 8px; }
+.care-plan-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px 0; }
 .ai-summary textarea.is-dictating { border-color: var(--color-error); box-shadow: 0 0 0 3px rgba(214, 69, 69, 0.12); }
 .dictation-status { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 13px; color: var(--color-error); }
 
@@ -212,3 +219,21 @@
 @media (max-width: 600px) {
   .narrative > div { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* Assistant capabilities (generated from the tool registry) */
+.assistant-help { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; }
+.assistant-help li { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--color-border); border-radius: 8px; font-size: 13px; }
+.assistant-help li .muted { font-size: 12.5px; }
+
+/* Configuration */
+.config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 520px) { .config-grid { grid-template-columns: minmax(0, 1fr); } }
+.config-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; min-width: 0; }
+.config-field > label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.config-hint { font-size: 12px; color: var(--color-text-muted); }
+.config-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; font-size: 13px; }
+.config-model-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.config-model-tags { display: inline-flex; flex-wrap: wrap; gap: 2px; }
+.config-advanced { margin-bottom: 4px; }
+.config-advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 16px; }
+.config-actions { margin-top: 14px; }

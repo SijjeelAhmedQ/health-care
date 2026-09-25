@@ -27,6 +27,20 @@ export function setSpeakReplies(enabled: boolean) {
   if (!enabled) stopSpeaking();
 }
 
+/** When the last spoken reply ended (ms since epoch); 0 while none has been spoken. */
+let lastSpeechEndedAt = 0;
+let speaking = false;
+
+/**
+ * The assistant is talking, or stopped a moment ago. The microphone hears the loudspeaker, so speech
+ * that starts in this window is the assistant's own voice, not the user's.
+ */
+export function isAssistantSpeaking(tailMs = 400): boolean {
+  if (typeof window === 'undefined') return false;
+  if (speaking || (isSpeechSupported() && window.speechSynthesis.speaking)) return true;
+  return Date.now() - lastSpeechEndedAt < tailMs;
+}
+
 export function stopSpeaking() {
   if (!isSpeechSupported()) return;
   window.speechSynthesis.cancel();
@@ -50,5 +64,12 @@ export function speak(text: string, options?: { force?: boolean }) {
   utterance.rate = 1.02;
   utterance.pitch = 1;
   utterance.lang = 'en-US';
+  speaking = true;
+  const done = () => {
+    speaking = false;
+    lastSpeechEndedAt = Date.now();
+  };
+  utterance.onend = done;
+  utterance.onerror = done;
   window.speechSynthesis.speak(utterance);
 }

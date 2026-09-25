@@ -1,14 +1,17 @@
 /**
- * Application command registry. Voice, the command palette (Ctrl+K) and regular
- * UI buttons all execute the same commands, so behaviour is identical whichever
- * way the user asks.
+ * The command palette's entries (Ctrl+K). Each runs the same runtime action
+ * the assistant's tools use (services/ai/agent/runtime.ts), so a palette entry
+ * and a spoken request behave identically. Anything typed that is not an entry
+ * goes to the assistant as a request in plain words.
  */
-import type { AICommand, AIRecordKind } from '@/types/ai';
-import { PageRegistry, moduleLabels, type PageDefinition } from './pageRegistry';
+import type { ToolResult } from '@/types/ai';
+import type { EntityKind } from '@/types/records';
+import type { AppRuntime } from '@/services/ai/agent/runtime';
+import { PageRegistry, type PageDefinition } from './pageRegistry';
 
 export interface AppCommandContext {
-  /** Execute a structured AI command through the deterministic executor. */
-  execute(command: AICommand): Promise<unknown>;
+  /** Run a runtime action (the same code the assistant's tools run). */
+  act(action: (runtime: AppRuntime) => ToolResult | Promise<ToolResult>): Promise<ToolResult>;
   toggleDebugPanel(): void;
   toggleSidebar(): void;
   openVoicePanel(): void;
@@ -31,62 +34,47 @@ const iconForModule: Record<PageDefinition['module'], string> = {
   dashboard: 'LayoutDashboard',
   patient: 'Users',
   inbox: 'Inbox',
+  summary: 'ClipboardList',
+  configuration: 'Settings',
+};
+
+const iconForKind: Record<EntityKind, string> = {
+  patient: 'UserPlus',
   medication: 'Pill',
   diagnosis: 'Stethoscope',
   task: 'ListChecks',
   recall: 'Repeat',
-  appointment: 'CalendarDays',
-  summary: 'ClipboardList',
+  appointment: 'CalendarPlus',
 };
 
 const navigationCommands: AppCommand[] = PageRegistry.all().map((pg) => ({
   id: `nav:${pg.id}`,
   title: pg.parentId ? `Open ${pg.title}` : `Go to ${pg.title}`,
-  group: pg.parentId ? 'Summary tabs' : 'Modules',
-  keywords: [pg.title.toLowerCase(), ...pg.aliases, `page ${pg.number}`, String(pg.number)],
-  icon: iconForModule[pg.module],
+  group: pg.parentId === 'summary' ? 'Summary tabs' : pg.parentId ? 'Inbox' : 'Modules',
+  keywords: [pg.title.toLowerCase(), ...pg.keywords, `page ${pg.number}`, String(pg.number)],
+  icon: pg.recordKind ? iconForKind[pg.recordKind] : iconForModule[pg.module],
   pageId: pg.id,
-  run: (ctx) => ctx.execute({ action: 'navigate', target: pg.id }),
+  run: (ctx) => ctx.act((r) => r.openPage(pg.id)),
 }));
 
-const addCommands: AppCommand[] = (
-  [
-    ['medication', 'Add Medication', 'Pill', ['prescribe', 'drug', 'medicine']],
-    ['diagnosis', 'Add Diagnosis', 'Stethoscope', ['problem', 'condition', 'icd']],
-    ['task', 'Add Task', 'ListChecks', ['to do', 'todo', 'follow up']],
-    ['recall', 'Add Recall', 'Repeat', ['reminder', 'bring back', 'review']],
-    ['appointment', 'Add Appointment', 'CalendarPlus', ['book', 'schedule', 'visit']],
-    ['patient', 'Add Patient', 'UserPlus', ['register', 'new patient']],
-  ] as Array<[AIRecordKind, string, string, string[]]>
-).map(([kind, title, icon, keywords]) => ({
+const addCommands: AppCommand[] = (['patient', 'medication', 'diagnosis', 'task', 'recall', 'appointment'] as EntityKind[]).map((kind) => ({
   id: `act:add-${kind}`,
-  title,
+  title: `Add ${kind}`,
   group: 'Actions',
-  keywords: [kind, `add ${kind}`, `new ${kind}`, ...keywords],
-  icon,
-  run: (ctx) => ctx.execute({ action: 'add_record', kind }),
-}));
-
-const readCommands: AppCommand[] = (['medication', 'diagnosis', 'task', 'recall', 'appointment'] as AIRecordKind[]).map((kind) => ({
-  id: `act:read-${kind}`,
-  title: `Read ${moduleLabels[kind as keyof typeof moduleLabels] ?? kind} list aloud`,
-  group: 'Actions',
-  keywords: ['read', 'speak', 'aloud', kind],
-  icon: 'Volume2',
-  run: (ctx) => ctx.execute({ action: 'read_records', kind }),
+  keywords: [kind, `new ${kind}`],
+  icon: iconForKind[kind],
+  run: (ctx) => ctx.act((r) => r.createRecords(kind, [{}])),
 }));
 
 const actionCommands: AppCommand[] = [
-  { id: 'act:select-patient', title: 'Select / change patient', group: 'Actions', keywords: ['patient', 'switch', 'change', 'context'], icon: 'UserRoundCog', run: (ctx) => ctx.execute({ action: 'navigate', target: 'patients' }) },
-  { id: 'act:summary', title: 'Summarise this patient', group: 'Actions', keywords: ['summary', 'overview', 'brief'], icon: 'Sparkles', run: (ctx) => ctx.execute({ action: 'summarize_patient' }) },
-  { id: 'act:dashboard-summary', title: 'Show dashboard summary', group: 'Actions', keywords: ['dashboard summary', 'summary widget', 'summary panel', 'side panel', 'overview'], icon: 'PanelRight', run: (ctx) => ctx.execute({ action: 'open_dashboard_summary' }) },
-  { id: 'act:dashboard-summary-close', title: 'Close dashboard summary', group: 'Actions', keywords: ['close dashboard summary', 'hide summary', 'close widget', 'close panel'], icon: 'PanelRightClose', run: (ctx) => ctx.execute({ action: 'close_dashboard_summary' }) },
+  { id: 'act:select-patient', title: 'Select / change patient', group: 'Actions', keywords: ['patient', 'switch', 'change'], icon: 'UserRoundCog', run: (ctx) => ctx.act((r) => r.openPage('patients')) },
+  { id: 'act:patient-panel', title: 'Show patient summary panel', group: 'Actions', keywords: ['summary panel', 'side panel', 'overview'], icon: 'PanelRight', run: (ctx) => ctx.act((r) => r.setPatientPanel(true)) },
+  { id: 'act:patient-panel-close', title: 'Close patient summary panel', group: 'Actions', keywords: ['close panel', 'hide summary'], icon: 'PanelRightClose', run: (ctx) => ctx.act((r) => r.setPatientPanel(false)) },
   ...addCommands,
-  ...readCommands,
-  { id: 'sys:voice', title: 'Open Voice Assistant', group: 'System', keywords: ['voice', 'mic', 'speak', 'assistant'], icon: 'Mic', shortcut: 'Ctrl+Shift+V', run: (ctx) => ctx.openVoicePanel() },
+  { id: 'sys:voice', title: 'Open the assistant', group: 'System', keywords: ['voice', 'mic', 'speak', 'assistant'], icon: 'Mic', shortcut: 'Ctrl+Shift+V', run: (ctx) => ctx.openVoicePanel() },
   { id: 'sys:debug', title: 'Toggle Debug Panel', group: 'System', keywords: ['debug', 'developer', 'trace'], icon: 'Bug', shortcut: 'Ctrl+Shift+D', run: (ctx) => ctx.toggleDebugPanel() },
   { id: 'sys:sidebar', title: 'Toggle Sidebar', group: 'System', keywords: ['sidebar', 'menu', 'collapse'], icon: 'PanelLeft', shortcut: 'Ctrl+B', run: (ctx) => ctx.toggleSidebar() },
-  { id: 'sys:back', title: 'Go Back', group: 'System', keywords: ['back', 'previous'], icon: 'ArrowLeft', run: (ctx) => ctx.execute({ action: 'go_back' }) },
+  { id: 'sys:back', title: 'Go Back', group: 'System', keywords: ['back', 'previous'], icon: 'ArrowLeft', run: (ctx) => ctx.act((r) => r.goBack()) },
   { id: 'sys:signout', title: 'Sign Out', group: 'System', keywords: ['logout', 'sign out', 'exit'], icon: 'LogOut', run: (ctx) => ctx.signOut() },
 ];
 
