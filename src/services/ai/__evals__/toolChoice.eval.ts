@@ -16,7 +16,7 @@ import type { AIContext, ToolCall } from '@/types/ai';
 import { OllamaChat, type ChatMessage } from '../providers/llm';
 import { buildTools } from '../agent/tools';
 import { toToolSchema } from '../agent/tool';
-import { buildUserMessage, SYSTEM_PROMPT } from '../agent/prompt';
+import { buildSessionMessage, buildUserMessage, SESSION_ACK, SYSTEM_PROMPT } from '../agent/prompt';
 
 const today = dayjs();
 const iso = (d: dayjs.Dayjs) => d.format('YYYY-MM-DD');
@@ -190,12 +190,14 @@ const MODEL = process.env.EVAL_LLM_MODEL ?? 'qwen3.5:4b';
 const URL = process.env.EVAL_LLM_URL ?? 'http://127.0.0.1:11434';
 const ONLY = process.env.EVAL_ONLY;
 const MIN_PASS = Number(process.env.EVAL_MIN_PASS ?? 0.85);
+/** GPU layers: 99 = all; EVAL_NUM_GPU=auto lets Ollama fit what it can (a model bigger than the GPU). */
+const NUM_GPU = process.env.EVAL_NUM_GPU === 'auto' ? (undefined as unknown as number) : Number(process.env.EVAL_NUM_GPU ?? 99);
 
 describe('live model: tool choice', () => {
   it(
     'chooses the right tools',
     async () => {
-      const llm = new OllamaChat({ provider: 'ollama', apiUrl: URL, model: MODEL, timeoutMs: 240000, numGpu: 99, numCtx: 12288, maxSteps: 6 });
+      const llm = new OllamaChat({ provider: 'ollama', apiUrl: URL, model: MODEL, timeoutMs: 900000, numGpu: NUM_GPU, numCtx: 12288, maxSteps: 6 });
       llm.dispose();
       const tools = buildTools().map(toToolSchema);
       const selected = cases.filter((c) => !ONLY || c.id.includes(ONLY));
@@ -203,12 +205,29 @@ describe('live model: tool choice', () => {
 
       // Warm-up exactly as the app does at start: loads the model and parks the cache checkpoint.
       const started = Date.now();
-      await llm.warmUp([{ role: 'system', content: SYSTEM_PROMPT }], tools);
+      // Exactly the app's prefix: system prompt + tools, then the SESSION exchange (today's date, the next
+      // days, the provider) — without it the model cannot resolve "tomorrow" or "next Tuesday".
+      const prefix = (): ChatMessage[] => [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: buildSessionMessage(baseContext()) },
+        { role: 'assistant', content: SESSION_ACK },
+      ];
+      await llm.warmUp(prefix(), tools);
       console.log(`warm-up: ${Date.now() - started} ms, tools ${tools.length}, schema chars ${JSON.stringify(tools).length}`);
 
       for (const c of selected) {
-        const messages: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: buildUserMessage(c.said, baseContext(c.context)) }];
-        let turn = await llm.chat(messages, tools);
+        const messages: ChatMessage[] = [...prefix(), { role: 'user', content: buildUserMessage(c.said, baseContext(c.context)) }];
+        let turn: Awaited<ReturnType<typeof llm.chat>>;
+        try {
+          turn = await llm.chat(messages, tools);
+        } catch (e) {
+          // The runtime could not read the model's answer (e.g. a malformed tool call): that case failed.
+          const why = `model error: ${(e as Error).message.slice(0, 160)}`;
+          rows.push({ id: c.id, pass: false, ms: 0, called: 'error', why });
+          console.log(`FAIL  ${c.id.padEnd(18)}  error
+      -> ${why}`);
+          continue;
+        }
         let steps = 1;
         // A lookup first is allowed: answer it and let the model take its next step.
         if (c.lookup && turn.toolCalls.length && turn.toolCalls.every((t) => t.name === 'list_records')) {
@@ -217,7 +236,7 @@ describe('live model: tool choice', () => {
             { role: 'assistant', content: first.content, tool_calls: first.toolCalls.map((t) => ({ function: { name: t.name, arguments: t.arguments } })) },
             ...first.toolCalls.map((t) => ({ role: 'tool' as const, tool_name: t.name, content: JSON.stringify(c.lookup) })),
           );
-          turn = await llm.chat(messages, tools);
+          turn = await llm.chat(messages, tools).catch((e: Error) => ({ content: `model error: ${e.message.slice(0, 160)}`, toolCalls: [] }));
           turn = { ...turn, usage: { ms: (first.usage?.ms ?? 0) + (turn.usage?.ms ?? 0) } };
           steps = 2;
         }

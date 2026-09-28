@@ -18,6 +18,7 @@ import type { FieldValues, PendingConfirmation, ToolResult } from '@/types/ai';
 import type { Patient } from '@/types/domain';
 import { RECORD_KINDS, type EntityKind, type RecordKind } from '@/types/records';
 import { categoryMeta, type InboxItem, type InboxView } from '@/services/inbox/inboxModel';
+import { findPatientByRef, patientRef, patientRefName } from '@/services/records/patientRef';
 import { InboxVoiceRegistry, getConfirmFiling, inboxNoun, ordinalWord, type InboxVoiceController } from '@/services/inbox/inboxVoice';
 import { FieldRegistry, type CoerceResult, type FieldDefinition, type FieldScalar, type FormDefinition } from '@/registry/fieldRegistry';
 import { FormRegistry, type FormController } from '@/registry/formRegistry';
@@ -136,6 +137,11 @@ function primaryField(def: FormDefinition): FieldDefinition | undefined {
 }
 
 /** True when none of the record-defining required fields have a value. */
+/** Say which spoken patient names were taken as a close match ("Noor Andersen" -> Noor Anderson). */
+function withHeard(result: ToolResult, heard: string[]): ToolResult {
+  return heard.length ? { ...result, message: `${heard.join('; ')}. ${result.message}` } : result;
+}
+
 function isBlank(def: FormDefinition, values: Record<string, unknown>): boolean {
   return def.fields.filter((f) => f.required).every((f) => values[f.name] === undefined || values[f.name] === '' || values[f.name] === null);
 }
@@ -433,6 +439,15 @@ export class AppRuntime {
 
   /** Open the create dialog pre-filled with one or more records (several = one tab each). */
   async createRecords(kind: EntityKind, items: FieldValues[]): Promise<ToolResult> {
+    if (kind === 'patient') return this.openRecords(kind, items);
+    // Records named for other patients ("…for John Anderson, James Ahmed and Noor Anderson"): each
+    // patient is found first — none guessed; nothing opens while one of them is unclear.
+    const named = await this.resolveItemPatients(items);
+    if ('ok' in named) return named;
+    return withHeard(await this.openRecords(kind, named.items), named.heard);
+  }
+
+  private async openRecords(kind: EntityKind, items: FieldValues[]): Promise<ToolResult> {
     if (kind !== 'patient') {
       const blocked = this.requirePatient(`add a ${recordLabels[kind].singular}`);
       if (blocked) return blocked;
@@ -611,7 +626,8 @@ export class AppRuntime {
         errors.push(`"${name}" is not a field of the ${def.title} form`);
         continue;
       }
-      const coerced = field.optionsFrom === 'providers' ? this.resolveProvider(field.name, raw) : FieldRegistry.coerceValue(field, raw);
+      const coerced =
+        field.optionsFrom === 'providers' ? this.resolveProvider(field.name, raw) : field.optionsFrom === 'patients' ? this.resolvePatientField(raw) : FieldRegistry.coerceValue(field, raw);
       if (!coerced.ok) {
         errors.push(coerced.error);
         continue;
@@ -648,8 +664,23 @@ export class AppRuntime {
         await sleep(60);
       }
     }
+    const named = await this.resolveItemPatients(RECORD_KINDS.flatMap((kind) => args.items[kind] ?? []));
+    if ('ok' in named) return named;
+    const resolved: CarePlanItems = {};
+    let at = 0;
+    for (const kind of RECORD_KINDS) {
+      const given = args.items[kind];
+      if (!given) continue;
+      resolved[kind] = named.items.slice(at, at + given.length);
+      at += given.length;
+    }
+    args = { ...args, items: resolved };
     const blocked = this.requirePatient('open a care plan');
     if (blocked) return blocked;
+    return withHeard(await this.openCarePlan(args), named.heard);
+  }
+
+  private async openCarePlan(args: { patient?: string; items: CarePlanItems }): Promise<ToolResult> {
 
     const errors: string[] = [];
     const modified: NonNullable<ToolResult['fieldsModified']> = [];
@@ -764,7 +795,10 @@ export class AppRuntime {
     const all = controller.entries ? controller.entries.getAll() : [controller.getValues()];
     const multi = all.length > 1;
     const primary = primaryField(def);
-    const nameOf = (values: Record<string, unknown>, i: number) => (primary && values[primary.name] ? String(values[primary.name]) : `${def.title.toLowerCase()} ${i + 1}`);
+    // Records for several patients are told apart by their patient ("the appointment for Noor Anderson").
+    const severalPatients = new Set(all.map((v) => v.patient).filter(Boolean)).size > 1;
+    const nameOf = (values: Record<string, unknown>, i: number) =>
+      `${primary && values[primary.name] ? String(values[primary.name]) : `${def.title.toLowerCase()} ${i + 1}`}${severalPatients && values.patient ? ` for ${patientRefName(values.patient)}` : ''}`;
     const filled = modified.map((m) => `${FieldRegistry.resolveField(def.id, m.field)?.label ?? m.field}: ${m.value}`).join(', ');
     const lead = filled ? `${def.title} form: ${filled}.` : `${def.title} form is open.`;
 
@@ -788,6 +822,48 @@ export class AppRuntime {
     this.stage({ kind: 'form', formId: def.id, formTitle: def.title, summary: controller.summarize(), description: def.sensitiveDescription });
     const what = multi ? `${def.title} form ready with ${all.length} entries — ${all.map(nameOf).join(', ')}.` : filled ? `${def.title} form ready — ${filled}.` : `${def.title} form is complete.`;
     return ask(`${what} Review it, then confirm to ${def.sensitiveDescription.toLowerCase()}, or cancel.`, { fieldsModified: modified });
+  }
+
+  /** A patient named in a record's Patient field: their reference ("Full Name (MRN)"), or why not. */
+  private resolvePatientField(raw: FieldScalar): CoerceResult {
+    const known = findPatientByRef(this.deps.allPatients(), raw);
+    if (known) return { ok: true, value: patientRef(known) };
+    const found = this.resolvePatient(String(raw));
+    if ('ok' in found) return { ok: false, error: `patient: ${found.message}` };
+    return { ok: true, value: patientRef(found.patient) };
+  }
+
+  /**
+   * Find the patient each record names. Any that cannot be found for certain stops everything — a
+   * record must never fall back to the selected patient because another one's name was unclear. With
+   * no patient selected, the first one named is selected (the records' page belongs to a patient).
+   */
+  private async resolveItemPatients(items: FieldValues[]): Promise<{ items: FieldValues[]; heard: string[] } | ToolResult> {
+    const all = this.deps.allPatients();
+    const out: FieldValues[] = [];
+    const heard: string[] = [];
+    let first: Patient | undefined;
+    for (const item of items) {
+      const raw = item.patient;
+      if (raw === undefined || raw === null || String(raw).trim() === '') {
+        out.push(item);
+        continue;
+      }
+      let patient = findPatientByRef(all, raw);
+      if (!patient) {
+        const found = this.resolvePatient(String(raw));
+        if ('ok' in found) return { ...found, message: `Nothing was opened — ${found.message}` };
+        patient = found.patient;
+        if (found.heardAs) heard.push(`"${found.heardAs}" was taken as ${patient.fullName}`);
+      }
+      first ??= patient;
+      out.push({ ...item, patient: patientRef(patient) });
+    }
+    if (first && !this.state().currentPatientId) {
+      this.deps.setCurrentPatient(first.id);
+      await sleep(60);
+    }
+    return { items: out, heard };
   }
 
   /** A provider named in a field: the full name, or enough of it to identify exactly one provider. */

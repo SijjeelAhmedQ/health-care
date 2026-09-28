@@ -15,3 +15,6 @@ python/models
 python/stt_settings.json
 python/recordings
 python/compute_settings.json
+
+# Screen recordings are too big for GitHub (100 MB per file)
+Recording *.mp4

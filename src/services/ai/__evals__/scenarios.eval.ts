@@ -19,7 +19,9 @@ import { FakeMic } from '@/services/ai/__tests__/fakes';
 import { installBrowserStubs, pageText, renderAppAt, unmountApp, wait, waitUntil } from '@/__tests__/harness';
 
 const MODEL = process.env.EVAL_MODEL ?? 'qwen3.5:4b';
-const llm = new OllamaChat({ provider: 'ollama', apiUrl: 'http://127.0.0.1:11434', model: MODEL, timeoutMs: 600000, numGpu: 99, numCtx: 12288, maxSteps: 8 });
+/** GPU layers: 99 = all; EVAL_NUM_GPU=auto lets Ollama fit what it can (a model bigger than the GPU). */
+const NUM_GPU = process.env.EVAL_NUM_GPU === 'auto' ? (undefined as unknown as number) : Number(process.env.EVAL_NUM_GPU ?? 99);
+const llm = new OllamaChat({ provider: 'ollama', apiUrl: process.env.EVAL_LLM_URL ?? 'http://127.0.0.1:11434', model: MODEL, timeoutMs: 900000, numGpu: NUM_GPU, numCtx: 12288, maxSteps: 8 });
 
 // Log what each model call cost: prompt tokens processed vs. reused from the cache, and time.
 const chat = llm.chat.bind(llm);
@@ -58,7 +60,8 @@ async function run(said: string) {
   const modelCalls = modelSteps.length;
   const modelMs = modelSteps.map((s) => (s.finishedAt ?? 0) - s.startedAt);
   const patient = patientSelectors.selectById(state, state.patients.currentPatientId ?? '')?.fullName ?? null;
-  const out = { said, ms: Date.now() - started, modelCalls, modelMs, plan: state.voice.plan?.map((s) => `${s.status}: ${s.text}`) ?? null, calls, reply: state.voice.response, path: router.state.location.pathname, patient, dialog: openDialog(), pending: state.voice.pendingConfirmation?.kind ?? null };
+  const errors = [state.voice.error, ...modelSteps.map((s) => (s.type === 'model' ? s.error : undefined))].filter(Boolean);
+  const out = { said, ms: Date.now() - started, modelCalls, modelMs, errors, plan: state.voice.plan?.map((s) => `${s.status}: ${s.text}`) ?? null, calls, reply: state.voice.response, path: router.state.location.pathname, patient, dialog: openDialog(), pending: state.voice.pendingConfirmation?.kind ?? null };
   console.log(JSON.stringify(out, null, 2));
   return out;
 }
@@ -129,6 +132,16 @@ describe(`multi-step requests — ${MODEL}`, () => {
     const kinds = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
     console.log('care plan tabs:', kinds, '| reply:', r.reply);
     for (const kind of ['Medication', 'Task', 'Recall', 'Appointment']) expect(kinds.some((k) => k.startsWith(kind))).toBe(true);
+  });
+
+  it('8: four appointments for four patients, said in one breath', async () => {
+    const r = await run(
+      'crate four appointments against Dr Sarah Ahmed appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm John Anderson, James Ahmed, Ethan Anderson, Noor Anderson',
+    );
+    const tabs = [...document.querySelectorAll('.app-modal-entries .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    console.log('appointment tabs:', tabs, '| reply:', r.reply);
+    expect(r.dialog?.title).toMatch(/Add Appointment \(4\)/);
+    for (const name of ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson']) expect(tabs.some((t) => t.includes(name))).toBe(true);
   });
 
   // Exactly what speech recognition produced for the provider's spoken request (the recall came out garbled).

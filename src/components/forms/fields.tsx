@@ -4,6 +4,7 @@ import { FieldRegistry } from '@/registry/fieldRegistry';
 import { useAppSelector } from '@/store';
 import { patientSelectors } from '@/store/slices/patientSlice';
 import { providerSelectors } from '@/store/slices/providerSlice';
+import { patientRef } from '@/services/records/patientRef';
 
 interface BaseFieldProps {
   formId: string;
@@ -73,7 +74,11 @@ export function SelectField({ formId, name, fc, span, rules, placeholder, label,
   );
 }
 
-export function PatientSelectField({ formId, name = 'patientName', fc, span, disabled }: Omit<BaseFieldProps, 'name'> & { name?: string }) {
+/**
+ * Who the record is for — the selected patient unless changed, so records for several patients can be
+ * added in one go (one tab each). The value is the patient's reference, "Full Name (MRN)".
+ */
+export function PatientSelectField({ formId, name = 'patient', fc, span, disabled }: Omit<BaseFieldProps, 'name'> & { name?: string }) {
   const def = useDef(formId, name);
   const patients = useAppSelector(patientSelectors.selectAll);
   return (
@@ -81,16 +86,15 @@ export function PatientSelectField({ formId, name = 'patientName', fc, span, dis
       name={name}
       label={def.label}
       className={cls(span, fc, name)}
-      rules={def.required ? [{ required: true, message: 'Select the patient this is for' }] : []}
-      extra={disabled ? 'Locked to the patient whose chart you are in.' : undefined}
+      rules={[{ required: true, message: 'Select the patient this is for' }]}
+      extra={disabled ? 'An existing record stays with its patient.' : undefined}
     >
       <Select
         showSearch
-        allowClear
         placeholder="Search by name or MRN"
         disabled={disabled}
         optionFilterProp="label"
-        options={patients.map((p) => ({ value: p.fullName, label: `${p.fullName} · ${p.mrn}` }))}
+        options={patients.map((p) => ({ value: patientRef(p), label: patientRef(p) }))}
         notFoundContent={<span className="muted" style={{ fontSize: 13 }}>No patient matches — try the MRN</span>}
       />
     </Form.Item>

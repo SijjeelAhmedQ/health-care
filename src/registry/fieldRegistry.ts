@@ -19,7 +19,7 @@ export interface FieldDefinition {
   /** The fixed choices of a select. */
   options?: string[];
   /** A select whose choices are live data rather than a fixed list. */
-  optionsFrom?: 'providers';
+  optionsFrom?: 'providers' | 'patients';
   /** Format guidance for free-text values, given to the model with the tool schema. */
   hint?: string;
   required?: boolean;
@@ -66,6 +66,18 @@ export const TASK_PRIORITY_OPTIONS = ['Low', 'Normal', 'High', 'Urgent'];
 /** "amoxicillin" -> "Amoxicillin": names are displayed capitalised whoever typed them. */
 export const normalizeName = (raw: string): string => raw.trim().replace(/(^|\s)([a-z])/g, (_, sp: string, c: string) => sp + c.toUpperCase());
 
+/**
+ * Who a record is for. Defaults to the selected patient; set per record (per tab) when records are
+ * added for several patients at once. Held as "Full Name (MRN)" — see services/records/patientRef.
+ */
+const patientField: FieldDefinition = {
+  name: 'patient',
+  label: 'Patient',
+  type: 'select',
+  optionsFrom: 'patients',
+  hint: "Only for a patient other than the selected one: that patient's full name. Records for several patients: one record per patient, each with its patient",
+};
+
 export const forms: FormDefinition[] = [
   {
     id: 'patient',
@@ -103,6 +115,7 @@ export const forms: FormDefinition[] = [
     submitLabel: 'Save Medication',
     sensitiveDescription: 'Save this medication to the patient record',
     fields: [
+      patientField,
       { name: 'medicationName', label: 'Medication Name', type: 'text', required: true, normalize: normalizeName, knownFrom: 'medication', hint: "The drug the provider named, e.g. 'Metformin'" },
       { name: 'dosage', label: 'Dosage', type: 'text', required: true, hint: "Strength with its unit, e.g. '500 mg', '10 ml', '2 puffs'", shape: { test: (v) => /\d/.test(v), expected: "an amount with its unit, e.g. '500 mg' — leave it out if no dose was said for this drug" } },
       { name: 'route', label: 'Route', type: 'select', options: ROUTE_OPTIONS },
@@ -125,6 +138,7 @@ export const forms: FormDefinition[] = [
     submitLabel: 'Save Diagnosis',
     sensitiveDescription: 'Add this diagnosis to the problem list',
     fields: [
+      patientField,
       { name: 'description', label: 'Diagnosis', type: 'text', required: true, normalize: normalizeName, knownFrom: 'diagnosis' },
       { name: 'icd10', label: 'ICD-10 Code', type: 'text', hint: "Only when the clinician says the code, e.g. 'I10'" },
       { name: 'status', label: 'Status', type: 'select', options: DIAGNOSIS_STATUS_OPTIONS },
@@ -140,6 +154,7 @@ export const forms: FormDefinition[] = [
     submitLabel: 'Save Task',
     sensitiveDescription: 'Save this task for the patient',
     fields: [
+      patientField,
       { name: 'title', label: 'Task', type: 'text', required: true },
       { name: 'category', label: 'Category', type: 'select', options: TASK_CATEGORY_OPTIONS },
       { name: 'assignedTo', label: 'Assigned To', type: 'select', optionsFrom: 'providers' },
@@ -155,6 +170,7 @@ export const forms: FormDefinition[] = [
     submitLabel: 'Save Recall',
     sensitiveDescription: 'Add this recall to the patient record',
     fields: [
+      patientField,
       { name: 'reason', label: 'Reason', type: 'text', required: true },
       { name: 'type', label: 'Recall Type', type: 'select', options: RECALL_TYPE_OPTIONS },
       { name: 'dueDate', label: 'Due Date', type: 'date', required: true },
@@ -169,6 +185,7 @@ export const forms: FormDefinition[] = [
     submitLabel: 'Book Appointment',
     sensitiveDescription: 'Book this appointment',
     fields: [
+      patientField,
       { name: 'providerName', label: 'Provider', type: 'select', required: true, optionsFrom: 'providers', hint: 'Defaults to the signed-in provider when not said' },
       { name: 'date', label: 'Date', type: 'date', required: true },
       { name: 'startTime', label: 'Time', type: 'time', required: true },

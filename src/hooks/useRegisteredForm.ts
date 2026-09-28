@@ -161,7 +161,7 @@ export function useRegisteredForm<T extends object>({ formId, form, isOpen, open
         const entriesValues = allEntries();
         if (entriesValues.length > 1) {
           // One line per entry: "Panadol — Dosage: 500 mg, Frequency: Twice daily, Duration: 10 days".
-          const keyFields = (def?.fields ?? []).filter((f) => (f.required || ['duration', 'route'].includes(f.name)) && f.name !== 'patientName');
+          const keyFields = (def?.fields ?? []).filter((f) => (f.required || ['patient', 'duration', 'route'].includes(f.name)));
           return entriesValues.map((values, i) => ({
             label: `${i + 1}. ${entryLabel(values, i)}`,
             value: keyFields.filter((f) => values[f.name] !== undefined && values[f.name] !== '' && values[f.name] !== null && String(values[f.name]) !== entryLabel(values, i)).map((f) => `${f.label}: ${String(values[f.name])}`).join(', ') || '—',

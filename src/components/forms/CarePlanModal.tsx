@@ -3,6 +3,8 @@ import { Button, Dropdown, Form, Modal, Tabs, message, type FormInstance } from 
 import { AlertTriangle, CheckCircle2, ClipboardList, MessageCircleQuestion, Mic, Plus, Save, X } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { providerSelectors } from '@/store/slices/providerSlice';
+import { patientSelectors } from '@/store/slices/patientSlice';
+import { findPatientByRef, patientRef, patientRefName } from '@/services/records/patientRef';
 import { recordSlices } from '@/store/slices/recordSlices';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { useSelectedPatient } from '@/hooks/usePatientData';
@@ -51,6 +53,7 @@ export function CarePlanHost() {
   const patient = useSelectedPatient();
   const user = useAppSelector((s) => s.auth.user);
   const providers = useAppSelector(providerSelectors.selectAll);
+  const patients = useAppSelector(patientSelectors.selectAll);
   const pending = useAppSelector((s) => s.voice.pendingConfirmation);
   const slot = useAppSelector((s) => s.voice.pendingSlot);
   const [open, setOpen] = useState(false);
@@ -117,6 +120,9 @@ export function CarePlanHost() {
     return { errors, firstBad };
   };
 
+  /** Who each record is for: the patient its form names (the selected patient unless changed). */
+  const entryPatient = (values: AnyValues) => findPatientByRef(patients, values.patient) ?? patient;
+
   const submit = async (): Promise<number> => {
     if (!patient) throw new Error('No patient is selected — select a patient before saving.');
     const { errors, firstBad } = await validate();
@@ -126,11 +132,14 @@ export function CarePlanHost() {
     }
     setSaving(true);
     let saved = 0;
+    const savedFor = new Set<string>();
     try {
       for (const e of entries) {
         const values = forms.current.get(e.id)?.getFieldsValue(true) as AnyValues;
         const provider = providers.find((p) => p.fullName === values.providerName);
-        const payload = formValuesToRecord(e.kind, values, { patientId: patient.id, patientName: patient.fullName, patientMrn: patient.mrn, authorName, providerId: provider?.id });
+        const target = entryPatient(values)!;
+        savedFor.add(target.fullName);
+        const payload = formValuesToRecord(e.kind, values, { patientId: target.id, patientName: target.fullName, patientMrn: target.mrn, authorName, providerId: provider?.id });
         const slice = recordSlices[e.kind] as (typeof recordSlices)['medication'];
         await dispatch(slice.create(payload as never)).unwrap();
         saved++;
@@ -143,7 +152,7 @@ export function CarePlanHost() {
     } finally {
       setSaving(false);
     }
-    message.success(`${saved} record${saved === 1 ? '' : 's'} saved for ${patient.fullName}`);
+    message.success(`${saved} record${saved === 1 ? '' : 's'} saved for ${savedFor.size > 1 ? `${savedFor.size} patients` : [...savedFor][0]}`);
     releaseVoice();
     reset();
     return saved;
@@ -153,7 +162,7 @@ export function CarePlanHost() {
     entries.map((e) => {
       const values = FormRegistry.get(e.kind, CARE_PLAN_INSTANCE + e.id)?.getValues() ?? e.values;
       const def = FieldRegistry.getForm(e.kind)!;
-      const key = def.fields.filter((f) => (f.required || ['duration', 'route'].includes(f.name)) && f.name !== primaryField[e.kind] && hasValue(values[f.name]));
+      const key = def.fields.filter((f) => (f.required || ['patient', 'duration', 'route'].includes(f.name)) && f.name !== primaryField[e.kind] && hasValue(values[f.name]));
       return {
         label: `${titles[e.kind].one}: ${String(values[primaryField[e.kind]] ?? entryLabel(e))}`,
         value: key.map((f) => `${f.label}: ${String(values[f.name])}`).join(', ') || '—',
@@ -282,7 +291,7 @@ export function CarePlanHost() {
               <PlanEntryForm
                 entry={e}
                 active={open && currentKind === kind && current === e.id}
-                initial={{ ...defaultValues(kind, authorName), ...(kind === 'appointment' && ownProvider ? { providerName: ownProvider } : {}) }}
+                initial={{ ...defaultValues(kind, authorName), patient: patient ? patientRef(patient) : undefined, ...(kind === 'appointment' && ownProvider ? { providerName: ownProvider } : {}) }}
                 onRegister={registerForm}
                 onLabel={setLabel}
                 onFocus={() => focus(e.id, live.current.entries)}
@@ -302,13 +311,15 @@ export function CarePlanHost() {
     </Dropdown>
   ) : null;
 
+  const planPatients = [...new Set(entries.map((e) => patientRefName(e.values.patient) || patient?.fullName || ''))].filter(Boolean);
+
   return (
     <AppModal
       open
       size="xl"
       icon={<ClipboardList size={18} />}
       title={`Care plan${entries.length ? ` (${entries.length})` : ''}`}
-      description={patient ? `Every record below is saved for ${patient.fullName} once you confirm — nothing is saved yet.` : 'Select a patient first.'}
+      description={patient ? `Every record below is saved for ${planPatients.length > 1 ? `its patient (${planPatients.join(', ')})` : patient.fullName} once you confirm — nothing is saved yet.` : 'Select a patient first.'}
       onClose={requestClose}
       maskClosable={false}
       className="care-plan-modal"

@@ -16,6 +16,7 @@ import { fetchProviders } from '@/store/slices/providerSlice';
 import dayjs from 'dayjs';
 import { appointmentsSlice, diagnosesSlice, recordSlices } from '@/store/slices/recordSlices';
 import { RECORD_KINDS } from '@/types/records';
+import { appointmentService, diagnosisService } from '@/services/api';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { RecordRegistry } from '@/registry/recordRegistry';
 import { router } from '@/app/router';
@@ -31,6 +32,15 @@ const patientDiagnoses = () => {
   const patientId = store.getState().patients.currentPatientId;
   return diagnosesSlice.selectors.selectAll(store.getState()).filter((d) => d.patientId === patientId);
 };
+/** Wait for something only a service call can tell (saved records). */
+async function pollUntil(check: () => Promise<boolean>, timeoutMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  expect(await check(), 'timed out waiting').toBe(true);
+}
 const inputValue = (id: string) => (document.querySelector(`#${id}`) as HTMLInputElement | null)?.value;
 
 beforeEach(async () => {
@@ -331,6 +341,62 @@ describe('the assistant against the real application', () => {
     expect(document.querySelector('.va-plan input')).toBeNull();
     // Nothing was saved: that still waits for the provider.
     expect(store.getState().voice.pendingSlot ?? store.getState().voice.pendingConfirmation).not.toBeNull();
+  }, TIMEOUT);
+
+  it('"create four appointments … John Anderson, James Ahmed, Ethan Anderson, Noor Anderson": one per patient, each saved for its own patient', async () => {
+    store.dispatch(setCurrentPatient(null)); // said from anywhere, with nobody selected
+    await renderAppAt('/dashboard');
+    const today = dayjs().format('YYYY-MM-DD');
+    const names = ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'];
+    const reason = 'Blood Pressure monitoring';
+    const bookedToday = async () => (await appointmentService.byDate(today)).filter((a) => a.reason === reason && a.startTime === '18:00');
+    const before = (await bookedToday()).length;
+
+    model.then({
+      calls: [call('add_appointments', { appointments: names.map((patient) => ({ patient, providerName: 'Dr Sarah Ahmed', date: today, startTime: '18:00', reason })) })],
+    });
+    await say('crate four appointments against Dr Sarah Ahmed appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm John Anderson, James Ahmed, Ethan Anderson, Noor Anderson');
+    await waitUntil(() => pageText().includes('Add Appointment (4)'));
+    // One tab per patient, saying whose it is; one confirmation for all four.
+    const tabs = [...document.querySelectorAll('.app-modal-entries .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    names.forEach((n, i) => expect(tabs[i]).toContain(n));
+    expect(pageText()).toContain('4 appointments will be saved for 4 patients');
+    expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
+    expect((await bookedToday()).length).toBe(before); // nothing saved yet
+
+    model.calls([call('confirm_pending_action')], 'Booked.');
+    await say('yes');
+    await pollUntil(async () => (await bookedToday()).length === before + 4);
+    const booked = (await bookedToday()).slice(0, 4);
+    const byName = Object.fromEntries(patientSelectors.selectAll(store.getState()).map((p) => [p.fullName, p.id]));
+    expect(new Set(booked.map((a) => a.patientId))).toEqual(new Set(names.map((n) => byName[n])));
+    for (const a of booked) {
+      expect(a.patientName).toBe(patientSelectors.selectById(store.getState(), a.patientId)!.fullName);
+      expect(a.providerName).toBe('Dr. Sarah Ahmed');
+    }
+  }, TIMEOUT);
+
+  it('a patient name that matches nobody for certain opens nothing — no record falls back to another patient', async () => {
+    await renderAppAt('/summary/task');
+    model.then({ calls: [call('add_tasks', { tasks: [{ title: 'BP check', patient: 'James Ahmed' }, { title: 'BP check', patient: 'Zzyzx Qwerty' }] })] });
+    await say('create a task bp check for james ahmed and zzyzx qwerty');
+    expect(model.lastToolResults()[0].message).toMatch(/^Nothing was opened — No patient (matches|is called) "Zzyzx Qwerty"/);
+    expect(pageText()).not.toContain('Add Task');
+  }, TIMEOUT);
+
+  it('a record named for another patient is saved for that patient, not the selected one', async () => {
+    await renderAppAt('/summary/diagnosis');
+    await waitUntil(() => !!RecordRegistry.get('diagnosis'));
+    const selected = store.getState().patients.currentPatientId;
+    const other = patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Noor Anderson')!;
+    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Migraine', patient: 'Noor Anderson' }] })] });
+    await say('add migraine for noor anderson');
+    await waitUntil(() => pageText().includes('will be saved for Noor Anderson'));
+    expect(other.id).not.toBe(selected);
+    model.calls([call('confirm_pending_action')], 'Saved.');
+    await say('yes');
+    await pollUntil(async () => (await diagnosisService.byPatient(other.id)).some((d) => d.description === 'Migraine'));
+    expect((await diagnosisService.byPatient(selected!)).some((d) => d.description === 'Migraine')).toBe(false);
   }, TIMEOUT);
 
   it('the model sending the whole plan again adds only what is new — nothing twice', async () => {

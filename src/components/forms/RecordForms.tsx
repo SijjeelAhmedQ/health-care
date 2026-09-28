@@ -4,6 +4,7 @@ import { CalendarPlus, ListChecks, Pill, Repeat, Stethoscope } from 'lucide-reac
 import dayjs, { type Dayjs } from 'dayjs';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { providerSelectors } from '@/store/slices/providerSlice';
+import { patientSelectors } from '@/store/slices/patientSlice';
 import { recordSlices } from '@/store/slices/recordSlices';
 import { useSelectedPatient } from '@/hooks/usePatientData';
 import type { EntryStore } from '@/hooks';
@@ -13,7 +14,8 @@ import type { Appointment, Diagnosis, Medication, Recall, Task } from '@/types/d
 import { FieldRegistry } from '@/registry/fieldRegistry';
 import { FormGrid, FormSection } from '@/components/common';
 import { RegisteredFormModal } from './RegisteredForm';
-import { CheckboxField, DateField, NumberField, ProviderSelectField, SelectField, TextField, TimeField } from './fields';
+import { CheckboxField, DateField, NumberField, PatientSelectField, ProviderSelectField, SelectField, TextField, TimeField } from './fields';
+import { findPatientByRef, patientRef, patientRefName } from '@/services/records/patientRef';
 
 export type { RecordKind };
 type AnyValues = Record<string, unknown>;
@@ -279,6 +281,7 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   const patient = useSelectedPatient();
   const user = useAppSelector((s) => s.auth.user);
   const providers = useAppSelector(providerSelectors.selectAll);
+  const patients = useAppSelector(patientSelectors.selectAll);
   const [form] = Form.useForm<AnyValues>();
   // Every record slice has the same shape; picking one concrete type keeps the
   // dispatch calls below monomorphic instead of a five-way thunk union.
@@ -286,11 +289,15 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   const authorName = user?.fullName ?? 'Unknown';
   const editing = !!record;
 
+  // New records are for the selected patient unless their Patient field is changed (each tab its own).
+  const recordPatient = record ? patients.find((p) => p.id === record.patientId) : undefined;
+  const defaultPatient = recordPatient ?? patient;
+  const defaultRef = defaultPatient ? patientRef(defaultPatient) : undefined;
   const initialValues = useMemo<AnyValues>(() => {
-    if (record) return recordToFormValues(kind, record);
-    return { ...defaultValues(kind, authorName), ...toFormInitialValues(kind, prefill) };
+    if (record) return { ...recordToFormValues(kind, record), patient: defaultRef };
+    return { ...defaultValues(kind, authorName), patient: defaultRef, ...toFormInitialValues(kind, prefill) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, record, authorName, JSON.stringify(prefill ?? {})]);
+  }, [kind, record, authorName, defaultRef, JSON.stringify(prefill ?? {})]);
 
   // Re-seed the form whenever it is opened for a different record (edit vs add).
   useEffect(() => {
@@ -311,6 +318,10 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   const count = itemsRef.current.length;
   const primaryName = { medication: 'medicationName', diagnosis: 'description', task: 'title', recall: 'reason', appointment: 'reason' }[kind];
   const liveLabel = Form.useWatch(primaryName, form) as string | undefined;
+  const livePatient = Form.useWatch('patient', form) as string | undefined;
+  /** Each entry's patient reference, the one on screen read live. */
+  const entryPatients = itemsRef.current.map((it, i) => (i === activeRef.current ? livePatient : (it.patient as string | undefined)) ?? defaultRef);
+  const distinctPatients = [...new Set(entryPatients.filter(Boolean))];
 
   const snapshotActive = () => {
     const live = form.getFieldsValue(true) as AnyValues;
@@ -355,12 +366,14 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   };
 
   const submit = async (values: AnyValues) => {
-    if (!patient) throw new Error('No patient is selected — select a patient before saving.');
+    // An existing record stays with its patient; a new one goes to the patient its form names.
+    const target = record ? (recordPatient ?? patient) : (findPatientByRef(patients, values.patient) ?? patient);
+    if (!target) throw new Error('No patient is selected — choose the patient this is for before saving.');
     const provider = providers.find((p) => p.fullName === values.providerName);
     const payload = formValuesToRecord(kind, values, {
-      patientId: patient.id,
-      patientName: patient.fullName,
-      patientMrn: patient.mrn,
+      patientId: target.id,
+      patientName: target.fullName,
+      patientMrn: target.mrn,
       authorName,
       providerId: provider?.id,
       existing: record,
@@ -371,13 +384,14 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
   };
 
   const title = editing ? `Edit ${titles[kind]}` : `Add ${titles[kind]}${count > 1 ? ` (${count})` : ''}`;
-  const description = patient
+  const who = distinctPatients.length > 1 ? `${distinctPatients.length} patients` : patientRefName(distinctPatients[0]) || defaultPatient?.fullName;
+  const description = who
     ? editing
-      ? `Update this ${titles[kind].toLowerCase()} for ${patient.fullName}.`
+      ? `Update this ${titles[kind].toLowerCase()} for ${who}.`
       : count > 1
-        ? `${count} ${titles[kind].toLowerCase()}s will be saved for ${patient.fullName} once you confirm.`
-        : `This ${titles[kind].toLowerCase()} will be saved for ${patient.fullName}.`
-    : 'Select a patient first.';
+        ? `${count} ${titles[kind].toLowerCase()}s will be saved for ${who} once you confirm.`
+        : `This ${titles[kind].toLowerCase()} will be saved for ${who}.`
+    : 'Choose the patient this is for.';
 
   return (
     <RegisteredFormModal<AnyValues>
@@ -403,7 +417,13 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
             onEdit={(key, action) => (action === 'add' ? addEntry() : removeEntry(Number(key)))}
             items={itemsRef.current.map((it, i) => ({
               key: String(i),
-              label: (i === activeRef.current ? liveLabel : (it[primaryName] as string)) || `${titles[kind]} ${i + 1}`,
+              label: [
+                (i === activeRef.current ? liveLabel : (it[primaryName] as string)) || `${titles[kind]} ${i + 1}`,
+                // Several patients: say whose each tab is.
+                distinctPatients.length > 1 ? patientRefName(entryPatients[i]) : '',
+              ]
+                .filter(Boolean)
+                .join(' · '),
               closable: count > 1,
             }))}
             style={{ marginBottom: 8 }}
@@ -411,19 +431,21 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
         ) : undefined
       }
     >
-      {({ fc }) => <RecordFields kind={kind} fc={fc} />}
+      {({ fc }) => <RecordFields kind={kind} fc={fc} lockPatient={editing} />}
     </RegisteredFormModal>
   );
 }
 
-export function RecordFields({ kind, fc }: { kind: RecordKind; fc: (name: string) => string | undefined }) {
+export function RecordFields({ kind, fc, lockPatient }: { kind: RecordKind; fc: (name: string) => string | undefined; lockPatient?: boolean }) {
   const formId = kind;
+  const who = <PatientSelectField formId={formId} fc={fc} span={2} disabled={lockPatient} />;
   switch (kind) {
     case 'medication':
       return (
         <>
           <FormSection title="Medication">
             <FormGrid cols={2}>
+              {who}
               <TextField formId={formId} name="medicationName" fc={fc} span={2} placeholder="e.g. Amoxicillin" />
               <TextField formId={formId} name="dosage" fc={fc} placeholder="e.g. 500 mg" />
               <SelectField formId={formId} name="route" fc={fc} />
@@ -455,6 +477,7 @@ export function RecordFields({ kind, fc }: { kind: RecordKind; fc: (name: string
         <>
           <FormSection title="Diagnosis">
             <FormGrid cols={2}>
+              {who}
               <TextField formId={formId} name="description" fc={fc} span={2} placeholder="e.g. Hypertension" />
               <TextField formId={formId} name="icd10" fc={fc} placeholder="e.g. I10" help="Optional — leave empty if unknown" />
               <DateField formId={formId} name="onsetDate" fc={fc} />
@@ -475,6 +498,7 @@ export function RecordFields({ kind, fc }: { kind: RecordKind; fc: (name: string
         <>
           <FormSection title="Task">
             <FormGrid cols={2}>
+              {who}
               <TextField formId={formId} name="title" fc={fc} span={2} placeholder="e.g. Blood pressure monitoring" />
               <SelectField formId={formId} name="category" fc={fc} />
               <ProviderSelectField formId={formId} name="assignedTo" fc={fc} label="Assigned To" />
@@ -495,6 +519,7 @@ export function RecordFields({ kind, fc }: { kind: RecordKind; fc: (name: string
         <>
           <FormSection title="Recall">
             <FormGrid cols={2}>
+              {who}
               <TextField formId={formId} name="reason" fc={fc} span={2} placeholder="e.g. Blood pressure review" />
               <SelectField formId={formId} name="type" fc={fc} />
               <DateField formId={formId} name="dueDate" fc={fc} />
@@ -514,6 +539,7 @@ export function RecordFields({ kind, fc }: { kind: RecordKind; fc: (name: string
         <>
           <FormSection title="When">
             <FormGrid cols={2}>
+              {who}
               <DateField formId={formId} name="date" fc={fc} />
               <TimeField formId={formId} name="startTime" fc={fc} />
               <NumberField formId={formId} name="durationMinutes" fc={fc} min={5} max={240} suffix="min" />
