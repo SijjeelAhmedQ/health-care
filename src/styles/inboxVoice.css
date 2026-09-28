@@ -4,16 +4,16 @@
    toggle, row numbers while the microphone is on, and the command sheet.
    ========================================================================= */
 .ibx-head-sep { width: 1px; height: 20px; margin: 0 4px; background: var(--color-border); }
-.ibx-voice-setting { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 4px; font-size: 12.5px; color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; }
-.ibx-voice-help-btn { height: 30px; border-radius: 999px; }
+.ibx-voice-setting { display: inline-flex; align-items: center; gap: 8px; padding: 0 2px; font-size: 12.5px; font-weight: 600; color: var(--color-text-secondary); white-space: nowrap; }
+.ibx-voice-help-btn { height: 36px; border-radius: 999px; }
 /* Tablet and phone: the controls keep their icons and lose their words. */
 @media (max-width: 991.98px) {
-  .ibx-voice-setting span, .ibx-voice-help-text { display: none; }
+  .ibx-voice-setting > span, .ibx-voice-help-text { display: none; }
   .ibx-head-sep { display: none; }
 }
 /* ---- selected patient only / all patients ------------------------------- */
 .ibx-scope-toggle {
-  display: inline-flex; align-items: center; gap: 7px; height: 30px; max-width: 260px; padding: 0 6px 0 11px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; max-width: 280px; padding: 0 8px 0 13px; border-radius: 999px;
   border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary);
   font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
   transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
@@ -40,7 +40,7 @@
 
 /* ---- row numbers while the microphone is on ------------------------------ */
 .ibx-row-pos {
-  flex-shrink: 0; min-width: 20px; height: 20px; margin-top: 6px; padding: 0 5px; border-radius: 6px;
+  flex-shrink: 0; min-width: 22px; height: 22px; margin-top: 5px; padding: 0 6px; border-radius: 8px;
   display: grid; place-items: center; font-size: 11.5px; font-weight: 700; font-variant-numeric: tabular-nums;
   color: var(--color-primary); background: var(--color-primary-soft); border: 1px solid var(--color-primary-soft-strong);
   animation: ibxPosIn 0.2s var(--ease, ease-out);
@@ -48,3 +48,7 @@
 .ibx-row.is-selected .ibx-row-pos { color: #fff; background: var(--color-primary); border-color: var(--color-primary); }
 .ibx.is-compact .ibx-row-pos { margin-top: 3px; }
 @keyframes ibxPosIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: none; } }
+
+/* The pill's colour, icon and words already say which scope is on — no switch drawn inside it. */
+.ibx-scope-toggle-track { display: none; }
+.ibx-scope-toggle { padding-right: 13px; }

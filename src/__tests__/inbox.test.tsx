@@ -230,7 +230,7 @@ describe('inbox module', () => {
     const referrals = store.getState().inbox.items.filter((i) => i.category === 'referral');
     await renderAppAt('/inbox/referral', () => !!firstRow());
 
-    (document.querySelector('.ibx-listhead-check input') as HTMLInputElement).click();
+    (document.querySelector('button.ibx-listhead-check') as HTMLButtonElement).click();
     expect(await waitUntil(() => listHead().includes(`${referrals.length} selected`))).toBe(true);
     buttonExactly('File')!.click();
 

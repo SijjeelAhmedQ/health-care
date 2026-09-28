@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
-import { Button, Checkbox, Dropdown, Tooltip } from 'antd';
+import { Button, Dropdown, Tooltip } from 'antd';
 import { Archive, ArchiveRestore, CheckCheck, Ellipsis, FilterX, RefreshCw, SearchX, ServerCrash, X } from 'lucide-react';
 import type { Patient } from '@/types/domain';
+import { SelectToggle } from '@/components/common';
 import { categoryMeta, type InboxItem, type InboxView } from '@/services/inbox/inboxModel';
 import type { ItemGroup } from './inboxFilters';
 import { CategoryIcon, viewLabel } from './inboxUi';
@@ -117,13 +118,13 @@ export function InboxList({
 
   const head = (
     <div className={`ibx-listhead ${checkedHere.length ? 'is-bulk' : ''}`}>
-      <Checkbox
+      <SelectToggle
         className="ibx-listhead-check"
-        checked={allChecked}
-        indeterminate={!!checkedHere.length && !allChecked}
+        pressed={allChecked}
+        mixed={!!checkedHere.length && !allChecked}
         disabled={!ids.length}
-        onChange={(e) => onCheck(ids, e.target.checked)}
-        aria-label={allChecked ? 'Deselect all items' : 'Select all items in this list'}
+        onChange={(on) => onCheck(ids, on)}
+        label={allChecked ? 'Deselect all items' : 'Select all items in this list'}
       />
       {checkedHere.length ? (
         <>

@@ -30,6 +30,8 @@ export interface FieldDefinition {
    * misspelling from speech recognition ("metforman") is matched to one of them.
    */
   knownFrom?: RecordKind;
+  /** A free-text value must look like this (checked when the assistant fills it), and what it should be. */
+  shape?: { test: (value: string) => boolean; expected: string };
 }
 
 export interface FormDefinition {
@@ -102,7 +104,7 @@ export const forms: FormDefinition[] = [
     sensitiveDescription: 'Save this medication to the patient record',
     fields: [
       { name: 'medicationName', label: 'Medication Name', type: 'text', required: true, normalize: normalizeName, knownFrom: 'medication', hint: "The drug the provider named, e.g. 'Metformin'" },
-      { name: 'dosage', label: 'Dosage', type: 'text', required: true, hint: "Strength with its unit, e.g. '500 mg', '10 ml', '2 puffs'" },
+      { name: 'dosage', label: 'Dosage', type: 'text', required: true, hint: "Strength with its unit, e.g. '500 mg', '10 ml', '2 puffs'", shape: { test: (v) => /\d/.test(v), expected: "an amount with its unit, e.g. '500 mg' — leave it out if no dose was said for this drug" } },
       { name: 'route', label: 'Route', type: 'select', options: ROUTE_OPTIONS },
       { name: 'frequency', label: 'Frequency', type: 'select', options: FREQUENCY_OPTIONS, required: true, hint: 'How many times a day: Once daily = 1, Twice daily = 2, Three times daily = 3, Four times daily = 4' },
       { name: 'duration', label: 'Duration', type: 'text', hint: "How long to take it, e.g. '7 days', '3 months'" },
@@ -225,6 +227,7 @@ export const FieldRegistry = {
       }
       default: {
         const v = String(raw).trim();
+        if (field.shape && v && !field.shape.test(v)) return { ok: false, error: `${field.name} "${v}" is not ${field.shape.expected}` };
         return { ok: true, value: field.normalize ? field.normalize(v) : v };
       }
     }

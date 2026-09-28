@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { Alert, Button, Card, Empty, Skeleton, Tag, Tooltip } from 'antd';
-import { Inbox, Info, RefreshCw } from 'lucide-react';
+import { Check, Inbox, Info, Minus, RefreshCw } from 'lucide-react';
 import { statusColor } from '@/constants/status';
 import { hashColor, initials } from '@/utils/format';
 
@@ -73,7 +73,11 @@ export function SectionCard({
   const heading =
     title !== undefined ? (
       <>
-        {icon}
+        {icon && (
+          <span className="section-card-icon" aria-hidden>
+            {icon}
+          </span>
+        )}
         <span>{title}</span>
         {count !== undefined && <span className="section-card-count">{count}</span>}
         {description && (
@@ -106,10 +110,10 @@ export function EmptyState({
   return (
     <div className="empty-state-wrap">
       <Empty
-        image={<div style={{ display: 'grid', placeItems: 'center', height: 64, color: 'var(--color-text-muted)' }}>{icon ?? <Inbox size={44} strokeWidth={1.4} />}</div>}
+        image={<div className="empty-state-icon">{icon ?? <Inbox size={34} strokeWidth={1.6} />}</div>}
         description={
           <div>
-            <div style={{ fontWeight: 600, color: 'var(--color-text)', fontSize: 15 }}>{title}</div>
+            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--color-ink)', fontSize: 16 }}>{title}</div>
             {description && <div className="muted" style={{ marginTop: 6, maxWidth: 420, marginInline: 'auto', lineHeight: 1.5 }}>{description}</div>}
           </div>
         }
@@ -201,5 +205,69 @@ export function InlineEmpty({ children, icon }: { children: ReactNode; icon?: Re
       {icon}
       <span>{children}</span>
     </div>
+  );
+}
+
+/**
+ * A chip that is either on or off — the app's replacement for a checkbox.
+ * It is a real button (aria-pressed), so it reads and behaves as a toggle.
+ */
+export function ToggleChip({
+  pressed,
+  onChange,
+  children,
+  disabled,
+  title,
+}: {
+  pressed: boolean;
+  onChange: (next: boolean) => void;
+  children: ReactNode;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button type="button" className="toggle-chip" aria-pressed={pressed} disabled={disabled} title={title} onClick={() => onChange(!pressed)}>
+      <span className="toggle-chip-mark" aria-hidden>
+        <Check size={11} strokeWidth={3.2} />
+      </span>
+      {children}
+    </button>
+  );
+}
+
+/**
+ * The round "select this row" toggle used for bulk actions in lists. `mixed`
+ * draws the part-selected state of a select-all control.
+ */
+export function SelectToggle({
+  pressed,
+  mixed,
+  onChange,
+  label,
+  className,
+  disabled,
+}: {
+  pressed: boolean;
+  mixed?: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+  className?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={['sel-toggle', mixed && !pressed ? 'is-mixed' : '', className ?? ''].filter(Boolean).join(' ')}
+      aria-pressed={mixed && !pressed ? 'mixed' : pressed}
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        onChange(!pressed);
+      }}
+    >
+      {mixed && !pressed ? <Minus size={12} strokeWidth={3.2} aria-hidden /> : <Check size={12} strokeWidth={3.2} aria-hidden />}
+    </button>
   );
 }

@@ -75,6 +75,12 @@ export const categoryMeta: Record<InboxCategory, InboxCategoryMeta> = {
 /** How a status reads on screen. Never the only signal — the label is always shown too. */
 export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
+export const inboxStatuses = ['Abnormal', 'Normal'] as const;
+export type InboxStatus = (typeof inboxStatuses)[number];
+
+const verdict = (abnormal: boolean | undefined): { status: InboxStatus; statusTone: StatusTone } =>
+  abnormal ? { status: 'Abnormal', statusTone: 'danger' } : { status: 'Normal', statusTone: 'success' };
+
 export interface InboxResultRow {
   test: string;
   value: string;
@@ -96,8 +102,11 @@ export interface InboxItem {
   from: string;
   /** When it landed in the inbox (ISO). */
   receivedAt: string;
-  status: string;
+  /** Every Inbox record is either Abnormal or Normal — the one status the Inbox shows. */
+  status: InboxStatus;
   statusTone: StatusTone;
+  /** Where the record is in its own workflow (a referral "Declined", a note "Draft") — shown in its details. */
+  sourceStatus: string;
   priority?: string;
   /** True when a clinician needs to look at this one before the others. */
   attention: boolean;
@@ -117,13 +126,6 @@ const date = (value?: string) => (value ? dayjs(value).format('D MMM YYYY') : '�
 
 const URGENT = new Set(['STAT', 'Urgent', 'Emergency', 'High']);
 
-function labTone(status: LabOrder['status'], abnormal?: boolean): StatusTone {
-  if (abnormal) return 'danger';
-  if (status === 'Resulted') return 'success';
-  if (status === 'Cancelled') return 'neutral';
-  return 'info';
-}
-
 function labItem(lab: LabOrder): InboxItem {
   const abnormal = lab.abnormal === true;
   const urgent = URGENT.has(lab.priority);
@@ -136,8 +138,8 @@ function labItem(lab: LabOrder): InboxItem {
     patientName: lab.patientName,
     from: lab.lab,
     receivedAt: iso(lab.resultedAt ?? lab.orderedAt),
-    status: abnormal ? 'Abnormal' : lab.status,
-    statusTone: labTone(lab.status, abnormal),
+    ...verdict(abnormal),
+    sourceStatus: lab.status,
     priority: lab.priority,
     attention: abnormal || urgent,
     attentionReason: abnormal ? 'Result outside reference range' : urgent ? `${lab.priority} priority` : undefined,
@@ -164,6 +166,7 @@ function labItem(lab: LabOrder): InboxItem {
 
 function imagingItem(order: ImagingOrder): InboxItem {
   const urgent = URGENT.has(order.priority);
+  const abnormal = order.abnormal === true;
   return {
     id: `radiology:${order.id}`,
     category: 'radiology',
@@ -173,11 +176,11 @@ function imagingItem(order: ImagingOrder): InboxItem {
     patientName: order.patientName,
     from: order.facility,
     receivedAt: iso(order.scheduledFor ?? order.orderedAt),
-    status: order.status,
-    statusTone: order.status === 'Reported' ? 'success' : order.status === 'Cancelled' ? 'neutral' : 'info',
+    ...verdict(abnormal),
+    sourceStatus: order.status,
     priority: order.priority,
-    attention: urgent,
-    attentionReason: urgent ? `${order.priority} priority` : undefined,
+    attention: abnormal || urgent,
+    attentionReason: abnormal ? 'Abnormal findings' : urgent ? `${order.priority} priority` : undefined,
     preview: order.clinicalIndication,
     meta: [
       { label: 'Order number', value: order.orderNumber },
@@ -188,13 +191,16 @@ function imagingItem(order: ImagingOrder): InboxItem {
       { label: 'Ordered', value: date(order.orderedAt) },
       { label: 'Performed', value: date(order.scheduledFor) },
     ],
-    body: `Clinical indication: ${order.clinicalIndication}.\n\nExamination: ${order.modality} of ${order.bodyPart}${order.contrast ? ' with contrast' : ''}, performed at ${order.facility}.`,
+    body: `Clinical indication: ${order.clinicalIndication}.\n\nExamination: ${order.modality} of ${order.bodyPart}${order.contrast ? ' with contrast' : ''}, performed at ${order.facility}.${order.findings ? `
+
+Findings: ${order.findings}` : ''}`,
   };
 }
 
 function referralItem(referral: Referral): InboxItem {
   const urgent = URGENT.has(referral.priority);
   const declined = referral.status === 'Declined';
+  const abnormal = referral.abnormal === true;
   return {
     id: `referral:${referral.id}`,
     category: 'referral',
@@ -204,17 +210,18 @@ function referralItem(referral: Referral): InboxItem {
     patientName: referral.patientName,
     from: referral.referredTo,
     receivedAt: iso(referral.createdAt),
-    status: referral.status,
-    statusTone: declined ? 'danger' : referral.status === 'Completed' || referral.status === 'Accepted' ? 'success' : referral.status === 'Pending' ? 'warning' : 'info',
+    ...verdict(abnormal),
+    sourceStatus: referral.status,
     priority: referral.priority,
-    attention: declined || urgent,
-    attentionReason: declined ? 'Referral was declined' : urgent ? `${referral.priority} priority` : undefined,
+    attention: abnormal || declined || urgent,
+    attentionReason: abnormal ? 'Abnormal finding' : declined ? 'Referral was declined' : urgent ? `${referral.priority} priority` : undefined,
     preview: referral.reason,
     meta: [
       { label: 'Referral number', value: referral.referralNumber },
       { label: 'Specialty', value: referral.specialty },
       { label: 'Referred to', value: referral.referredTo },
       { label: 'Referred by', value: referral.referringProvider },
+      { label: 'Referral status', value: referral.status },
       { label: 'Created', value: date(referral.createdAt) },
       { label: 'Expires', value: date(referral.expiresAt) },
       ...(referral.insuranceAuth ? [{ label: 'Insurance auth', value: referral.insuranceAuth }] : []),
@@ -225,6 +232,7 @@ function referralItem(referral: Referral): InboxItem {
 
 function dischargeNoteItem(note: ClinicalNote): InboxItem {
   const draft = note.status === 'Draft';
+  const abnormal = note.abnormal === true;
   return {
     id: `discharge:note:${note.id}`,
     category: 'discharge',
@@ -234,10 +242,10 @@ function dischargeNoteItem(note: ClinicalNote): InboxItem {
     patientName: note.patientName,
     from: note.author,
     receivedAt: iso(note.createdAt),
-    status: note.status,
-    statusTone: note.status === 'Signed' ? 'success' : draft ? 'warning' : 'info',
-    attention: draft,
-    attentionReason: draft ? 'Unsigned draft' : undefined,
+    ...verdict(abnormal),
+    sourceStatus: note.status,
+    attention: abnormal || draft,
+    attentionReason: abnormal ? 'Abnormal finding' : draft ? 'Unsigned draft' : undefined,
     preview: note.body.slice(0, 140),
     meta: [
       { label: 'Type', value: note.type },
@@ -251,6 +259,7 @@ function dischargeNoteItem(note: ClinicalNote): InboxItem {
 
 function dischargeDocumentItem(doc: ClinicalDocument): InboxItem {
   const pending = doc.status === 'Pending Review';
+  const abnormal = doc.abnormal === true;
   return {
     id: `discharge:doc:${doc.id}`,
     category: 'discharge',
@@ -260,16 +269,17 @@ function dischargeDocumentItem(doc: ClinicalDocument): InboxItem {
     patientName: doc.patientName ?? 'Unassigned',
     from: doc.uploadedBy,
     receivedAt: iso(doc.uploadedAt),
-    status: doc.status,
-    statusTone: doc.status === 'Final' || doc.status === 'Signed' ? 'success' : pending ? 'warning' : 'info',
-    attention: pending,
-    attentionReason: pending ? 'Awaiting review' : undefined,
+    ...verdict(abnormal),
+    sourceStatus: doc.status,
+    attention: abnormal || pending,
+    attentionReason: abnormal ? 'Abnormal finding' : pending ? 'Awaiting review' : undefined,
     preview: `${doc.fileType} document${doc.tags.length ? ` · ${doc.tags.join(', ')}` : ''}`,
     meta: [
       { label: 'Category', value: doc.category },
       { label: 'File type', value: doc.fileType },
       { label: 'Size', value: doc.sizeKb > 1024 ? `${(doc.sizeKb / 1024).toFixed(1)} MB` : `${doc.sizeKb} KB` },
       { label: 'Uploaded by', value: doc.uploadedBy },
+      { label: 'Document status', value: doc.status },
       { label: 'Received', value: date(doc.uploadedAt) },
     ],
   };

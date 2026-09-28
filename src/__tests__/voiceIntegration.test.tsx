@@ -74,7 +74,7 @@ describe('the assistant against the real application', () => {
     model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Asthma' }] }), call('confirm_pending_action')] });
     await say('add asthma');
     expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
-    expect(model.requests).toHaveLength(1); // the loop stopped at the confirmation
+    expect(model.requests).toHaveLength(2); // its own confirm was refused; the model was asked once more, and nothing saved
     expect(patientDiagnoses()).toHaveLength(before);
   }, TIMEOUT);
 
@@ -113,7 +113,7 @@ describe('the assistant against the real application', () => {
     const med = { medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' };
     model.then({ calls: [call('add_medications', { medications: [{ ...med, startDate: 'tomorrow' }] })] }, { calls: [call('add_medications', { medications: [{ ...med, startDate: '2026-09-25' }] })] });
     await say('metformin 500 mg twice daily starting tomorrow');
-    expect(model.requests).toHaveLength(2);
+    expect(model.requests).toHaveLength(3);
     expect(model.requests[1].filter((m) => m.role === 'tool')[0].content).toMatch(/startDate: use YYYY-MM-DD/);
     expect(inputValue('medicationName')).toBe('Metformin');
     expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
@@ -228,7 +228,7 @@ describe('the assistant against the real application', () => {
     expect(inputValue('title')).toBe('Blood pressure monitoring');
     // Nothing is saved until the provider confirms.
     expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
-    expect(model.requests).toHaveLength(3);
+    expect(model.requests).toHaveLength(4);
   }, TIMEOUT);
 
   it('one request with medications, a diagnosis, a task, a recall and an appointment fills one care plan, saved together on "yes"', async () => {
@@ -279,6 +279,71 @@ describe('the assistant against the real application', () => {
     expect(appt.some((a) => a.date === tuesday.format('YYYY-MM-DD') && a.startTime === '15:00')).toBe(true);
     expect(store.getState().voice.pendingConfirmation).toBeNull();
     expect(pageText()).not.toContain('Care plan (');
+  }, TIMEOUT);
+
+  it('medications first, then a task and an appointment in the same request: nothing is lost — they meet in one care plan', async () => {
+    await renderAppAt('/summary/medication');
+    const tuesday = dayjs().day() < 2 ? dayjs().day(2) : dayjs().add(1, 'week').day(2);
+    model.then(
+      // The model adds the medications on their own first; Panadol has no dose, so the form asks for it…
+      { calls: [call('add_medications', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }, { medicationName: 'Panadol' }] })] },
+      // …it must not answer that question itself…
+      { calls: [call('fill_open_form', { dosage: '1000 mg' })] },
+      // …and the rest of what was said still gets done.
+      { calls: [call('add_tasks', { tasks: [{ title: 'Blood pressure monitoring' }] })] },
+      { calls: [call('add_appointments', { appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '15:00', type: 'Follow-up', reason: 'Follow-up' }] })] },
+      { content: 'Care plan ready.' },
+    );
+    await say('add metformin 500 mg twice daily and panadol, create a task for blood pressure monitoring and a follow-up next Tuesday at 3 pm');
+    await waitUntil(() => pageText().includes('Care plan (4)'));
+    const kindTabs = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
+    expect(kindTabs).toEqual(['Medication2', 'Task1', 'Appointment1']);
+    const values = (field: string) => [...document.querySelectorAll<HTMLInputElement>(`.care-plan-modal [id$="_${field}"]`)].map((el) => el.value);
+    expect(values('medicationName')).toEqual(['Metformin', 'Panadol']);
+    expect(values('dosage')).not.toContain('1000 mg'); // nobody said a dose for Panadol
+    expect(values('title')).toEqual(['Blood pressure monitoring']);
+  }, TIMEOUT);
+
+  it('a long request is split into steps, done one by one — they meet in one care plan, and the steps show as progress', async () => {
+    model = useScriptedModel({ planSteps: true });
+    await renderAppAt('/summary/medication');
+    const tuesday = dayjs().day() < 2 ? dayjs().day(2) : dayjs().add(1, 'week').day(2);
+    model.then(
+      { calls: [call('plan_steps', { steps: ['Add metformin 500 mg twice daily and Panadol', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday at 3 pm'] })] },
+      { calls: [call('add_medications', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }, { medicationName: 'Panadol' }] })] },
+      { content: 'Medications added.' },
+      { calls: [call('add_tasks', { tasks: [{ title: 'Blood pressure monitoring' }] })] },
+      { content: 'Task added.' },
+      { calls: [call('add_appointments', { appointments: [{ date: tuesday.format('YYYY-MM-DD'), startTime: '15:00', type: 'Follow-up', reason: 'Follow-up' }] })] },
+      { content: 'Appointment added.' },
+    );
+    await say('add metformin 500 mg twice daily and panadol, create a task for blood pressure monitoring and a follow-up next Tuesday at 3 pm');
+    await waitUntil(() => pageText().includes('Care plan (4)'));
+    const kindTabs = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
+    expect(kindTabs).toEqual(['Medication2', 'Task1', 'Appointment1']);
+    // Each step was its own request, told which step it is.
+    const stepSaid = model.requests.map((m) => String(m.at(-1)?.content ?? '')).filter((c) => c.includes('request: step')).map((c) => c.match(/SAID: (.*)/)?.[1]);
+    expect(stepSaid).toEqual(['Add metformin 500 mg twice daily and Panadol', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday at 3 pm']);
+    // Progress only — every step finished, nothing for the provider to tick.
+    const plan = store.getState().voice.plan!;
+    expect(plan.map((s) => s.status).every((s) => s === 'done' || s === 'waiting')).toBe(true);
+    expect(document.querySelectorAll('.va-plan li')).toHaveLength(3);
+    expect(document.querySelector('.va-plan input')).toBeNull();
+    // Nothing was saved: that still waits for the provider.
+    expect(store.getState().voice.pendingSlot ?? store.getState().voice.pendingConfirmation).not.toBeNull();
+  }, TIMEOUT);
+
+  it('the model sending the whole plan again adds only what is new — nothing twice', async () => {
+    await renderAppAt('/summary/medication');
+    model.then(
+      { calls: [call('add_care_plan', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }] })] },
+      { calls: [call('add_care_plan', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }], recalls: [{ reason: 'Review', dueDate: dayjs().add(2, 'week').format('YYYY-MM-DD') }] })] },
+      { content: 'Care plan ready.' },
+    );
+    await say('add metformin 500 mg twice daily and recall him in two weeks');
+    await waitUntil(() => pageText().includes('Care plan (2)'));
+    const kindTabs = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim());
+    expect(kindTabs).toEqual(['Medication1', 'Recall1']);
   }, TIMEOUT);
 
   it('a record the model adds while the care plan is open joins it as a new tab', async () => {

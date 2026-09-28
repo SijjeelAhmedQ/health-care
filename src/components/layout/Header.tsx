@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Avatar as AntAvatar, Button, Dropdown, Layout, Modal, Tag, Tooltip } from 'antd';
-import { Activity, Bug, Command, LogOut, Mic, Search, UserRoundCog } from 'lucide-react';
+import { Activity, Bug, ChevronDown, Command, LogOut, Mic, Search, UserRoundPlus } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { uiActions } from '@/store/slices/uiSlice';
 import { logout } from '@/store/slices/authSlice';
@@ -8,6 +8,7 @@ import { selectCurrentPatient } from '@/store/slices/patientSlice';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { aiConfig } from '@/services/ai/config';
 import { PatientPicker } from '@/components/patient/PatientPicker';
+import { Avatar } from '@/components/common';
 import { useResponsive } from '@/hooks';
 import { GlobalSearch } from './GlobalSearch';
 
@@ -29,7 +30,7 @@ export function Header({ isMobile }: { isMobile: boolean }) {
         {isMobile ? (
           <div className="app-header-brand-mobile">
             <div className="app-sider-brand-mark">
-              <Activity size={15} color="#fff" />
+              <Activity size={17} color="#fff" strokeWidth={2.4} />
             </div>
             CareFlow
           </div>
@@ -47,9 +48,15 @@ export function Header({ isMobile }: { isMobile: boolean }) {
         {/* The working context is never more than one glance and one click away. */}
         <Tooltip title={patient ? `Working on ${patient.fullName} — click to change` : 'No patient selected — click to select one'}>
           <button type="button" className={`header-patient-chip ${patient ? '' : 'is-empty'}`} onClick={() => setPickerOpen(true)}>
-            <UserRoundCog size={15} aria-hidden />
-            {!isMobile && <span>{patient ? patient.fullName : 'Select patient'}</span>}
+            {patient ? <Avatar name={patient.fullName} size={30} /> : <span className="header-patient-chip-icon"><UserRoundPlus size={15} aria-hidden /></span>}
+            {!isMobile && (
+              <span className="header-patient-chip-text">
+                <span className="header-patient-chip-label">{patient ? 'Patient' : 'No patient'}</span>
+                <span className="header-patient-chip-name">{patient ? patient.fullName : 'Select patient'}</span>
+              </span>
+            )}
             {patient && !isMobile && <Tag>{patient.mrn}</Tag>}
+            {!isMobile && <ChevronDown size={14} className="header-patient-chip-chev" aria-hidden />}
           </button>
         </Tooltip>
 
@@ -107,7 +114,7 @@ export function Header({ isMobile }: { isMobile: boolean }) {
           }}
         >
           <button type="button" className="app-account-btn" aria-label={`Account menu for ${user?.fullName ?? 'user'}`}>
-            <AntAvatar style={{ background: user?.avatarColor ?? '#0f6e8c', fontWeight: 600 }} size={34}>
+            <AntAvatar style={{ background: user?.avatarColor ?? 'var(--color-primary)', fontWeight: 700, fontFamily: 'var(--font-display)' }} size={36}>
               {user ? `${user.firstName[0]}${user.lastName[0]}` : 'U'}
             </AntAvatar>
             {!compact && (

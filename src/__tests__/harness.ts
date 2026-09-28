@@ -83,9 +83,9 @@ export async function unmountApp() {
  * Put a scripted model (and a fake microphone) behind the real application's assistant.
  * The test then scripts which tools "the model" calls for each utterance.
  */
-export function useScriptedModel(): ScriptedLLM {
+export function useScriptedModel(options: { planSteps?: boolean } = {}): ScriptedLLM {
   const llm = new ScriptedLLM();
-  getVoiceController().reconfigure({ llm, stt: new FakeMic() });
+  getVoiceController().reconfigure({ llm, stt: new FakeMic(), planSteps: options.planSteps });
   return llm;
 }
 

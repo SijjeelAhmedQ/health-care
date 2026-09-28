@@ -70,7 +70,8 @@ export function PatientPicker({ open, onClose, onSelected, title = 'Select a pat
         ref={inputRef}
         size="large"
         allowClear
-        prefix={<Search size={16} className="muted" />}
+        className="patient-picker-search"
+        prefix={<Search size={17} className="muted" />}
         placeholder="Search by name, MRN, phone or email…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}

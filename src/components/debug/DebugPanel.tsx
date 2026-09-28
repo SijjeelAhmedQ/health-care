@@ -13,7 +13,7 @@ import { AppModal } from '@/components/common/AppModal';
 
 function stepColor(step: AgentStep) {
   if (!step.finishedAt) return 'blue';
-  if (step.type === 'model') return step.error ? 'red' : 'purple';
+  if (step.type === 'model') return step.error ? 'red' : 'blue';
   if (!step.result) return 'gray';
   if (step.result.awaitUser) return 'orange';
   return step.result.ok ? 'green' : 'red';
@@ -26,10 +26,10 @@ function StepView({ step }: { step: AgentStep }) {
       <div style={{ fontSize: 13 }}>
         <div className="flex items-center gap-2">
           <strong>Model</strong>
-          {step.toolCalls?.length ? <Tag color="purple">{step.toolCalls.length} tool call{step.toolCalls.length === 1 ? '' : 's'}</Tag> : step.finishedAt && !step.error ? <Tag>reply</Tag> : null}
+          {step.toolCalls?.length ? <Tag color="blue">{step.toolCalls.length} tool call{step.toolCalls.length === 1 ? '' : 's'}</Tag> : step.finishedAt && !step.error ? <Tag>reply</Tag> : null}
           {ms}
         </div>
-        {step.error && <div style={{ color: '#d64545' }}>{step.error}</div>}
+        {step.error && <div style={{ color: '#e5484d' }}>{step.error}</div>}
         {step.content && <div className="muted" style={{ marginTop: 2 }}>{step.content}</div>}
         {step.toolCalls?.map((c, i) => (
           <pre key={i} className="debug-block" style={{ marginTop: 6, maxHeight: 160 }}>{`${c.name}(${JSON.stringify(c.arguments, null, 2)})`}</pre>
@@ -61,7 +61,7 @@ function TraceView({ trace }: { trace: DebugTrace }) {
         <dt>Reply</dt><dd>{trace.reply ?? '—'}</dd>
         <dt>Confirmation pending</dt><dd>{pending ? <Tag color="orange">yes — {pending.formTitle}</Tag> : 'no'}</dd>
         <dt>Duration</dt><dd>{trace.finishedAt ? `${trace.finishedAt - trace.startedAt} ms` : 'running…'}</dd>
-        {trace.error && (<><dt>Error</dt><dd style={{ color: '#d64545' }}>{trace.error}</dd></>)}
+        {trace.error && (<><dt>Error</dt><dd style={{ color: '#e5484d' }}>{trace.error}</dd></>)}
       </dl>
       <Collapse
         size="small"
@@ -105,7 +105,7 @@ export function DebugPanel() {
       description={
         <span className="flex items-center gap-2 wrap">
           <Tag color="blue" className="tag-plain">STT: {voice.sttProvider}</Tag>
-          <Tag color="purple" className="tag-plain">LLM: {voice.llmProvider}</Tag>
+          <Tag color="blue" className="tag-plain">LLM: {voice.llmProvider}</Tag>
           <Tag className="tag-plain">{voice.status}</Tag>
         </span>
       }

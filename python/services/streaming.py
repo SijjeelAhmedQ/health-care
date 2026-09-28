@@ -45,6 +45,10 @@ import numpy as np
 
 from .vad import FRAME, SAMPLE_RATE, create_vad
 
+#: What a recogniser returns when it heard something but is too unsure of the words to act on them
+#: (e.g. Whisper over noise: "Thank you. Thank you."). The final then says so instead of guessing.
+UNCLEAR = "\u0000unclear"
+
 FRAME_MS = FRAME * 1000 // SAMPLE_RATE  # 32
 
 Decode = Callable[[np.ndarray], str]
@@ -250,6 +254,8 @@ class StreamingSession:
             except Exception as exc:  # noqa: BLE001 — a failed partial is not worth interrupting speech for
                 await self._emit({"type": "error", "message": f"partial decode failed: {exc}"[:300]})
                 return
+            if tail == UNCLEAR:
+                return  # not sure of the words yet: show nothing rather than a guess
             if utterance == self._utterance_id and self._in_speech:
                 text = self._text(tail)
                 if text != self._last_text:
@@ -297,10 +303,13 @@ class StreamingSession:
             except Exception as exc:  # noqa: BLE001
                 await self._emit({"type": "error", "message": f"decode failed: {exc}"[:300]})
                 tail = ""
+            unclear = tail == UNCLEAR
+            if unclear:
+                tail = ""
             text = " ".join(t for t in [*committed, tail] if t).strip()
             alt = await second if second is not None else ""
             # Whisper invents words for noise ("Thank you."); only speech Omi heard gets a second version.
-            event = {"type": "final", "text": text, **({"alt": alt} if text and alt else {})}
+            event = {"type": "final", "text": text, **({"alt": alt} if text and alt else {}), **({"unclear": True} if unclear and not text else {})}
             await self._emit(event)
             if self._on_final is not None:
                 info = {"final_decode_ms": round((time.perf_counter() - started) * 1000), "chunks": len(committed) + 1, "endpoint_ms": self.config.endpoint_ms, **({"alt": alt} if alt else {})}

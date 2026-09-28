@@ -282,7 +282,12 @@ class RemoteSTT(BaseSTT):
                 continue
             break
         res.raise_for_status()
-        return str(res.json().get("text", "")).strip()
+        data = res.json()
+        if data.get("unclear"):
+            from .streaming import UNCLEAR
+
+            return UNCLEAR
+        return str(data.get("text", "")).strip()
 
     def info(self) -> dict:
         return {**super().info(), "backend": self.device, "gpu": self.gpu, "url": self._url, "latency_ms": self.latency_ms}

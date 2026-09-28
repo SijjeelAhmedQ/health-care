@@ -58,7 +58,7 @@ async function run(said: string) {
   const modelCalls = modelSteps.length;
   const modelMs = modelSteps.map((s) => (s.finishedAt ?? 0) - s.startedAt);
   const patient = patientSelectors.selectById(state, state.patients.currentPatientId ?? '')?.fullName ?? null;
-  const out = { said, ms: Date.now() - started, modelCalls, modelMs, calls, reply: state.voice.response, path: router.state.location.pathname, patient, dialog: openDialog(), pending: state.voice.pendingConfirmation?.kind ?? null };
+  const out = { said, ms: Date.now() - started, modelCalls, modelMs, plan: state.voice.plan?.map((s) => `${s.status}: ${s.text}`) ?? null, calls, reply: state.voice.response, path: router.state.location.pathname, patient, dialog: openDialog(), pending: state.voice.pendingConfirmation?.kind ?? null };
   console.log(JSON.stringify(out, null, 2));
   return out;
 }
@@ -75,7 +75,8 @@ beforeEach(async () => {
   await store.dispatch(fetchPatients()).unwrap();
   await store.dispatch(fetchProviders()).unwrap();
   store.dispatch(setCurrentPatient(null));
-  getVoiceController().reconfigure({ llm, stt: new FakeMic() });
+  // Long requests are split into steps first, as in the app (EVAL_PLAN=0 to compare without).
+  getVoiceController().reconfigure({ llm, stt: new FakeMic(), planSteps: process.env.EVAL_PLAN !== '0' });
   await renderAppAt('/dashboard');
 });
 
@@ -119,5 +120,27 @@ describe(`multi-step requests — ${MODEL}`, () => {
     const r = await run('go to patients, select james ahmed and create a recall for an annual physical in 3 months');
     expect(r.patient).toBe('James Ahmed');
     expect(r.dialog?.title).toMatch(/recall/i);
+  });
+
+  it('7: the same care-plan request, as the provider meant it (clean text)', async () => {
+    const r = await run(
+      'Go to patients, select James Ahmed and add medication metformin, panadol, gabapentin and rituximab 500 mg twice daily for 30 days, create a task for blood pressure monitoring, recall the patient after two weeks and schedule a follow-up appointment next Tuesday at 3 pm',
+    );
+    const kinds = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    console.log('care plan tabs:', kinds, '| reply:', r.reply);
+    for (const kind of ['Medication', 'Task', 'Recall', 'Appointment']) expect(kinds.some((k) => k.startsWith(kind))).toBe(true);
+  });
+
+  // Exactly what speech recognition produced for the provider's spoken request (the recall came out garbled).
+  it('6: the spoken care-plan request — medications, task, recall and appointment all survive', async () => {
+    const r = await run(
+      'Go to Patients. Select James Ahmed, Add Medications, Metformin, Panadol, Gabapentin, Rituximab, 500 mg twice daily for 30 days. Create a task.  unclear Pressure Monitoring. Recall the patient after two weeks and schedule a follow up appointment next Tuesday at 3 p.m.',
+    );
+    expect(r.patient).toBe('James Ahmed');
+    // The care plan dialog, tab by tab: every kind that was said is there.
+    const kinds = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    console.log('care plan tabs:', kinds, '| reply:', r.reply);
+    for (const kind of ['Medication', 'Task', 'Recall', 'Appointment']) expect(kinds.some((k) => k.startsWith(kind))).toBe(true);
+    expect(r.reply).not.toMatch(/do not fill it yourself/);
   });
 });

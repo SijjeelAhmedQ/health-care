@@ -311,6 +311,19 @@ export function buildTools(): Tool[] {
       run: async ({ file, target }, { runtime }) => runtime.inboxFile(file, target ?? 'this'),
     }),
     defineTool({
+      name: 'inbox_add_comment',
+      description:
+        'Add a comment (the provider\'s words, e.g. "Test is good") to Inbox records: to one record (target), or to every record of a kind (which, e.g. all abnormal records). Every Inbox record is either Abnormal or Normal. Opens the Inbox itself and adds the comment at once.',
+      parameters: z.object({
+        text: z.string().describe('The comment, exactly as the provider said it'),
+        which: z.enum(['abnormal', 'normal', 'needs_attention', 'unfiled', 'all']).optional().describe('Comment on every record of this kind; leave out for one record'),
+        category: z.enum(['all', 'lab', 'radiology', 'referral', 'discharge']).optional(),
+        target: inboxTarget.optional().describe('One record: its position in the list, or "this" for the open one'),
+      }),
+      progress: () => 'Preparing the comment…',
+      run: (args, { runtime }) => runtime.inboxAddComment(args),
+    }),
+    defineTool({
       name: 'inbox_select_item_patient',
       description: "Make the open Inbox record's patient the selected patient.",
       parameters: noArgs,
@@ -420,10 +433,19 @@ export function buildTools(): Tool[] {
       }),
       run: async () => ({ ok: false, message: 'record_note_findings is only for extracting a note. For a dictated note use take_clinical_note.' }),
     }),
+    defineTool({
+      name: 'plan_steps',
+      description: 'ONLY when the message says TASK: PLAN. Split what the provider said into the separate actions it asks for, in the order said. Never use it for a spoken command.',
+      parameters: z.object({
+        steps: z.array(z.string()).min(1).describe('One action per step, as a short instruction keeping every detail that belongs to it (names, drugs, doses, dates, times)'),
+      }),
+      run: async () => ({ ok: false, message: 'plan_steps is only for planning. Carry out the request with the other tools.' }),
+    }),
   ];
   return tools;
 }
 
 export const NOTE_FINDINGS_TOOL = 'record_note_findings';
 export const WAIT_TOOL = 'wait_for_more_speech';
+export const PLAN_TOOL = 'plan_steps';
 export const recordPlural = plural;

@@ -1,4 +1,4 @@
-import { DatePicker, Form, Input, InputNumber, Select, Switch, TimePicker, Checkbox } from 'antd';
+import { DatePicker, Form, Input, InputNumber, Radio, Select, TimePicker } from 'antd';
 import type { Rule } from 'antd/es/form';
 import { FieldRegistry } from '@/registry/fieldRegistry';
 import { useAppSelector } from '@/store';
@@ -167,20 +167,38 @@ export function NumberField({ formId, name, fc, span, label, min, max, suffix, h
   );
 }
 
+/** Yes / No as two buttons — the form's on/off control. The value stays a plain boolean. */
+function YesNo({ value, onChange, id, disabled }: { value?: boolean; onChange?: (v: boolean) => void; id?: string; disabled?: boolean }) {
+  return (
+    <Radio.Group
+      id={id}
+      className="choice-bar is-block is-solid"
+      optionType="button"
+      value={value === true}
+      disabled={disabled}
+      onChange={(e) => onChange?.(e.target.value as boolean)}
+      options={[
+        { value: true, label: 'Yes' },
+        { value: false, label: 'No' },
+      ]}
+    />
+  );
+}
+
 export function SwitchField({ formId, name, fc, span, label, help }: BaseFieldProps) {
   const def = useDef(formId, name);
   return (
-    <Form.Item name={name} label={label ?? def.label} valuePropName="checked" className={cls(span, fc, name)} extra={help}>
-      <Switch />
+    <Form.Item name={name} label={label ?? def.label} className={[cls(span, fc, name), 'form-yesno'].filter(Boolean).join(' ')} extra={help}>
+      <YesNo />
     </Form.Item>
   );
 }
 
-export function CheckboxField({ formId, name, fc, span, label, help }: BaseFieldProps) {
+export function CheckboxField({ formId, name, fc, span, label, help, disabled }: BaseFieldProps) {
   const def = useDef(formId, name);
   return (
-    <Form.Item name={name} valuePropName="checked" className={cls(span, fc, name)} style={{ alignSelf: 'end' }} extra={help}>
-      <Checkbox>{label ?? def.label}</Checkbox>
+    <Form.Item name={name} label={label ?? def.label} className={[cls(span, fc, name), 'form-yesno'].filter(Boolean).join(' ')} extra={help}>
+      <YesNo disabled={disabled} />
     </Form.Item>
   );
 }

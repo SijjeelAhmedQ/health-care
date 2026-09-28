@@ -149,6 +149,8 @@ function setup(state: Partial<RuntimeState> = {}) {
     describePatient: () => 'John Smith, 42, male. Active problems: hypertension.',
     getWorkload: () => null,
     providerNames: () => ['Dr. Sarah Ahmed', 'Dr. James Carter'],
+    inboxItems: () => [],
+    addInboxComments: vi.fn(),
     setDashboardPanel: vi.fn(),
     aiSettings: () => ({ llm: { provider: 'ollama', apiUrl: 'http://127.0.0.1:11434', model: 'qwen3.5:4b', timeoutMs: 90000, numGpu: 99, numCtx: 12288, maxSteps: 6 }, bridgeUrl: 'http://127.0.0.1:8765' }),
     listModels: vi.fn(async () => [

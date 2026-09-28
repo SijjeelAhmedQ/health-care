@@ -149,6 +149,16 @@ describe('microphone lifecycle — stays on until the user turns it off', () => 
     expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: select patient pharma volt\nALSO HEARD: Select patient Fatima Malik\.$/);
   });
 
+  it('speech too unclear to trust is not acted on: the provider is asked to say it again', async () => {
+    controller.startListening();
+    mic.current.callbacks.onSpeechStart?.();
+    mic.current.callbacks.onUnclear?.();
+    await flush(1500);
+    expect(llm.requests).toHaveLength(0);
+    expect(store.getState().voice.response).toMatch(/couldn't hear that clearly/);
+    expect(controller.isMicActive).toBe(true);
+  });
+
   it('Mic Off stops the session; Cancel aborts it', () => {
     controller.startListening();
     controller.stopListening();

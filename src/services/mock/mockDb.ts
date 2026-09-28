@@ -225,7 +225,7 @@ Object.assign(appointments[0], {
 export const appointmentTypes: AppointmentTypeDef[] = [
   { id: 'at-1', name: 'New Patient', code: 'NEW', durationMinutes: 45, color: '#2a78d6', department: 'Primary Care', requiresReferral: false, allowOnlineBooking: true, isActive: true, bufferMinutes: 5, description: 'Initial visit for a new patient including full history.' },
   { id: 'at-2', name: 'Follow-up', code: 'FUP', durationMinutes: 20, color: '#1baf7a', department: 'All', requiresReferral: false, allowOnlineBooking: true, isActive: true, bufferMinutes: 0, description: 'Review of an existing condition or treatment plan.' },
-  { id: 'at-3', name: 'Consultation', code: 'CON', durationMinutes: 30, color: '#4a3aa7', department: 'Specialty', requiresReferral: true, allowOnlineBooking: false, isActive: true, bufferMinutes: 5, description: 'Specialist consultation.' },
+  { id: 'at-3', name: 'Consultation', code: 'CON', durationMinutes: 30, color: '#0e7490', department: 'Specialty', requiresReferral: true, allowOnlineBooking: false, isActive: true, bufferMinutes: 5, description: 'Specialist consultation.' },
   { id: 'at-4', name: 'Procedure', code: 'PRC', durationMinutes: 60, color: '#eb6834', department: 'Specialty', requiresReferral: true, allowOnlineBooking: false, isActive: true, bufferMinutes: 15, description: 'Minor in-office procedure.' },
   { id: 'at-5', name: 'Telehealth', code: 'TEL', durationMinutes: 20, color: '#e87ba4', department: 'All', requiresReferral: false, allowOnlineBooking: true, isActive: true, bufferMinutes: 0, description: 'Video visit.' },
   { id: 'at-6', name: 'Annual Physical', code: 'PHY', durationMinutes: 45, color: '#008300', department: 'Primary Care', requiresReferral: false, allowOnlineBooking: true, isActive: true, bufferMinutes: 5, description: 'Yearly preventive examination.' },
@@ -394,6 +394,8 @@ export const documents: ClinicalDocument[] = Array.from({ length: 150 }, (_, i) 
     uploadedAt: TODAY.subtract(rng.int(1, 700), 'day').toISOString(),
     status: rng.weighted([['Final', 55], ['Signed', 25], ['Pending Review', 12], ['Draft', 8]]),
     tags: rng.pickMany(['urgent', 'follow-up', 'external', 'scanned', 'portal'], rng.int(0, 2)),
+    // Set without the random generator, so every other seeded value stays as it was.
+    abnormal: category === 'Discharge Summary' ? i % 4 === 0 : undefined,
   };
 });
 
@@ -407,6 +409,7 @@ export const notes: ClinicalNote[] = Array.from({ length: 140 }, (_, i) => {
     createdAt: TODAY.subtract(rng.int(0, 500), 'day').toISOString(),
     status: rng.weighted([['Signed', 70], ['Draft', 20], ['Amended', 10]]),
     body: 'Patient seen for scheduled review. Reports adherence to current regimen. Vitals stable. Plan discussed and patient agrees. Follow-up in 4 weeks.',
+    abnormal: type === 'Discharge' ? i % 4 === 3 : undefined,
   };
 });
 
@@ -517,8 +520,16 @@ export const imagingOrders: ImagingOrder[] = Array.from({ length: 80 }, (_, i) =
     scheduledFor: status !== 'Ordered' && status !== 'Cancelled' ? ordered.add(rng.int(1, 10), 'day').hour(rng.int(8, 16)).toISOString() : undefined,
     facility: rng.pick(['Riverside Imaging', 'Austin Radiology Associates', 'Lakeside Diagnostics']), contrast: modality === 'CT' || modality === 'MRI' ? rng.bool(0.5) : false,
     clinicalIndication: rng.pick(['Persistent pain', 'Rule out fracture', 'Follow-up of known lesion', 'Screening', 'Headache evaluation', 'Shortness of breath']),
+    // Set without the random generator, so every other seeded value stays as it was.
+    ...(status === 'Reported' ? imagingFindings(i) : {}),
   };
 });
+
+function imagingFindings(i: number): { abnormal: boolean; findings: string } {
+  const abnormal = i % 4 === 2;
+  const abnormalFindings = ['Small area of consolidation in the right lower lobe.', 'Mild degenerative narrowing with a posterior disc bulge.', 'Subcentimetre nodule, recommend interval follow-up.', 'Small joint effusion with a partial-thickness tear.'];
+  return { abnormal, findings: abnormal ? abnormalFindings[i % abnormalFindings.length] : 'No acute abnormality. Appearances within normal limits.' };
+}
 
 export const referrals: Referral[] = Array.from({ length: 70 }, (_, i) => {
   const patient = patients[(i * 7) % patients.length];
@@ -531,6 +542,7 @@ export const referrals: Referral[] = Array.from({ length: 70 }, (_, i) => {
     priority: rng.weighted([['Routine', 75], ['Urgent', 20], ['Emergency', 5]]),
     status: rng.weighted([['Pending', 20], ['Sent', 25], ['Accepted', 20], ['Scheduled', 15], ['Completed', 15], ['Declined', 5]]),
     createdAt: created.toISOString(), expiresAt: created.add(90, 'day').format('YYYY-MM-DD'), insuranceAuth: rng.bool(0.6) ? `AUTH-${rng.int(100000, 999999)}` : undefined,
+    abnormal: i % 4 === 1,
   };
 });
 
@@ -655,7 +667,7 @@ const rolePerms: Record<(typeof roleNames)[number], string[]> = {
   'Practice Manager': ['patients.view', 'appointments.view', 'providers.manage', 'roster.manage', 'roster.approve_leave', 'practice.manage', 'reports.view', 'reports.export', 'users.manage'],
 };
 
-const avatarColors = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948', '#0f6e8c'];
+const avatarColors = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#0e7490', '#e34948', '#0f6e8c'];
 const staffNames: Array<[string, string, (typeof roleNames)[number]]> = [
   ['Linda', 'Park', 'Practice Manager'], ['Marcus', 'Reed', 'Administrator'], ['Jessica', 'Moore', 'Nurse'], ['Daniel', 'Price', 'Nurse'], ['Chloe', 'Bennett', 'Receptionist'],
   ['Amina', 'Yusuf', 'Nurse'], ['Kevin', 'Walsh', 'Billing'], ['Nadia', 'Rahman', 'Pharmacist'], ['Tom', 'Becker', 'Lab Technician'], ['Sofia', 'Alvarez', 'Receptionist'], ['Grace', 'Liu', 'Billing'], ['Ryan', 'Patel', 'Administrator'],

@@ -1,9 +1,9 @@
 import { memo } from 'react';
-import { Checkbox } from 'antd';
 import { Archive } from 'lucide-react';
 import dayjs from 'dayjs';
 import type { InboxItem } from '@/services/inbox/inboxModel';
 import { priorityOf } from '@/services/inbox/inboxInsights';
+import { SelectToggle } from '@/components/common';
 import { CategoryMark, PriorityMark, StatusLabel, fullWhen, shortWhen, typeTag } from './inboxUi';
 
 interface Props {
@@ -32,11 +32,11 @@ export const InboxRow = memo(function InboxRow({ item, selected, isFiled, isChec
       data-id={item.id}
       className={`ibx-row ${selected ? 'is-selected' : ''} ${isFiled ? 'is-filed' : 'is-unfiled'} ${item.attention ? 'is-attention' : ''} ${critical ? 'is-critical' : ''} ${isChecked ? 'is-checked' : ''}`}
     >
-      <Checkbox
+      <SelectToggle
         className="ibx-row-check"
-        checked={isChecked}
-        onChange={(e) => onCheck([item.id], e.target.checked)}
-        aria-label={`Select ${item.subject} for ${item.patientName}`}
+        pressed={isChecked}
+        onChange={(on) => onCheck([item.id], on)}
+        label={`Select ${item.subject} for ${item.patientName}`}
       />
       <button
         type="button"

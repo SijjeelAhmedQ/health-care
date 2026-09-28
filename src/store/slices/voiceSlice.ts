@@ -1,5 +1,5 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import type { AgentStep, DebugTrace, PendingConfirmation } from '@/types/ai';
+import type { AgentStep, DebugTrace, PendingConfirmation, PlanStep } from '@/types/ai';
 
 export type VoiceStatus =
   | 'idle'
@@ -59,6 +59,8 @@ interface VoiceState {
   model: { status: 'unknown' | 'loading' | 'warming' | 'ready' | 'error'; since: number | null; error: string | null };
   /** When the request now in progress started — the panel shows how long it has taken. */
   busySince: number | null;
+  /** The steps of the latest request, when it was long enough to be carried out in steps (progress only). */
+  plan: PlanStep[] | null;
 }
 
 const initialState: VoiceState = {
@@ -85,6 +87,7 @@ const initialState: VoiceState = {
   helpOpen: false,
   model: { status: 'unknown', since: null, error: null },
   busySince: null,
+  plan: null,
 };
 
 const voiceSlice = createSlice({
@@ -113,6 +116,9 @@ const voiceSlice = createSlice({
     },
     setCurrentAction(state, action: PayloadAction<string | null>) {
       state.currentAction = action.payload;
+    },
+    setPlan(state, action: PayloadAction<PlanStep[] | null>) {
+      state.plan = action.payload;
     },
     setResponse(state, action: PayloadAction<string | null>) {
       state.response = action.payload;
@@ -175,6 +181,7 @@ const voiceSlice = createSlice({
       state.transcript = '';
       state.interimTranscript = '';
       state.currentAction = null;
+      state.plan = null;
       state.response = null;
       state.requiresConfirmation = false;
       state.pendingConfirmation = null;

@@ -72,9 +72,9 @@ export function buildResultSummary(item: InboxItem): string {
     case 'radiology':
       return sentence(`${item.subject} reported by ${item.from}. Clinical indication: ${item.preview}`);
     case 'referral':
-      return sentence(`${item.subject} to ${item.from} is ${item.status.toLowerCase()}. Reason given: ${item.preview}`);
+      return sentence(`${item.subject} to ${item.from} is ${item.sourceStatus.toLowerCase()}. Reason given: ${item.preview}`);
     case 'discharge':
-      return sentence(`${item.subject} received from ${item.from}, ${item.status.toLowerCase()}`);
+      return sentence(`${item.subject} received from ${item.from}, ${item.sourceStatus.toLowerCase()}`);
   }
 }
 
@@ -91,7 +91,7 @@ const provenance = (item: InboxItem) =>
  */
 export function buildSuggestions(item: InboxItem): InboxSuggestion[] {
   const summary = buildResultSummary(item);
-  const needsWork = item.attention || ['Pending', 'Draft', 'Pending Review', 'Sent'].includes(item.status);
+  const needsWork = item.attention || ['Pending', 'Draft', 'Pending Review', 'Sent'].includes(item.sourceStatus);
   // Only a document that states a problem in words can pre-fill a diagnosis.
   // A number on its own never becomes one.
   const statedCondition = item.category === 'radiology' || item.category === 'referral' ? item.preview : '';
@@ -173,7 +173,7 @@ export function buildSuggestions(item: InboxItem): InboxSuggestion[] {
       label: 'ADD TASK',
       actionLabel: 'Add task',
       derived: true,
-      basis: item.attentionReason ? `${item.attentionReason}.` : `Status is ${item.status.toLowerCase()}.`,
+      basis: item.attentionReason ? `${item.attentionReason}.` : `Status is ${item.sourceStatus.toLowerCase()}.`,
       fields: [
         { key: 'title', label: 'Task', type: 'text', value: `Review ${item.subject}`, required: true, primary: true },
         {

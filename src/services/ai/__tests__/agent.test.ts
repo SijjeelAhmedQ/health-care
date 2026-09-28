@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Agent } from '../agent/agent';
+import { Agent, planCovers } from '../agent/agent';
 import { AppRuntime } from '../agent/runtime';
 import { buildTools } from '../agent/tools';
 import { parseArgs, toToolSchema } from '../agent/tool';
@@ -119,7 +119,7 @@ describe('agent loop', () => {
     expect(runtime.openPage).toHaveBeenCalledWith('patients');
     expect(runtime.selectPatient).toHaveBeenCalledWith(expect.objectContaining({ patient: 'James Ahmed' }));
     expect(runtime.createRecords).toHaveBeenCalledWith('task', [{ title: 'Blood pressure monitoring' }]);
-    expect(llm.requests).toHaveLength(3);
+    expect(llm.requests).toHaveLength(4); // after the form: the model checks the request is complete
     expect(outcome.awaitingUser).toBe(true);
   });
 
@@ -176,14 +176,18 @@ describe('agent loop', () => {
     expect(llm.lastToolResults()[0].message).toMatch(/There is no tool "launch_rockets"/);
   });
 
-  it('ends the turn as soon as the app needs the user (a question or a confirmation)', async () => {
-    const llm = new ScriptedLLM().then({ calls: [call('add_medications', { medications: [{ medicationName: 'Aspirin' }] }), call('open_page', { page: 'dashboard' })] });
+  it('a question or confirmation does not drop the rest of the request — it is asked once the rest is done', async () => {
+    const llm = new ScriptedLLM().then(
+      { calls: [call('add_medications', { medications: [{ medicationName: 'Aspirin' }] })] },
+      { calls: [call('open_page', { page: 'dashboard' })] },
+      { content: 'Done.' },
+    );
     const { agent, runtime } = makeAgent(llm);
-    const outcome = await agent.run('add aspirin');
+    const outcome = await agent.run('add aspirin and open my dashboard');
+    expect(runtime.openPage).toHaveBeenCalledWith('dashboard'); // not lost because the form asked something
     expect(outcome.awaitingUser).toBe(true);
-    expect(outcome.reply).toMatch(/Review it, then confirm/);
-    expect(runtime.openPage).not.toHaveBeenCalled(); // the rest waits for the user's answer
-    expect(llm.requests).toHaveLength(1);
+    expect(outcome.reply).toMatch(/Review it, then confirm/); // the reply is what the provider must answer
+    expect(outcome.speak).toBe(true);
   });
 
   it('several tools in one turn run in order', async () => {
@@ -258,5 +262,92 @@ describe('agent loop', () => {
     expect(result.items.medication).toEqual([{ fields: { medicationName: 'Amlodipine', dosage: '5 mg', frequency: 'Once daily' }, quote: 'start amlodipine 5 mg once daily' }]);
     expect(result.items.diagnosis[0].fields.description).toBe('Hypertension');
     expect(result.questions).toEqual(['Which pharmacy?']);
+  });
+});
+
+describe('long requests are split into steps first', () => {
+  const LONG = 'Go to patients, select James Ahmed, add metformin 500 mg twice daily, create a task for blood pressure monitoring and book a follow-up next Tuesday';
+  const STEPS = ['Go to patients', 'Select James Ahmed', 'Add metformin 500 mg twice daily', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday'];
+  const planning = (llm: ScriptedLLM, overrides: Partial<Record<keyof AppRuntime, unknown>> = {}) => {
+    const { runtime } = makeAgent(llm, overrides);
+    const agent = new Agent(llm, runtime, () => context, 6, true);
+    agent.setTools(buildTools());
+    return { agent, runtime };
+  };
+  const said = (messages: { role: string; content?: string }[]) => String(messages.at(-1)?.content ?? '');
+
+  it('a short request goes straight to the tools — no planning call', async () => {
+    const llm = new ScriptedLLM().calls([call('open_page', { page: 'dashboard' })], 'Opened.');
+    const { agent } = planning(llm);
+    await agent.run('open the dashboard');
+    expect(said(llm.requests[0])).not.toContain('TASK: PLAN');
+  });
+
+  it('plans, then does each step in turn with its own CONTEXT — one turn for all of them', async () => {
+    const llm = new ScriptedLLM().then({ calls: [call('plan_steps', { steps: STEPS })] });
+    for (let i = 0; i < STEPS.length; i++) llm.calls([call('open_page', { page: 'dashboard' })], `Step ${i + 1} done.`);
+    const { agent, runtime } = planning(llm);
+    const progress: string[][] = [];
+    const outcome = await agent.run(LONG, { onPlan: (steps) => progress.push(steps.map((s) => s.status)) });
+
+    expect(said(llm.requests[0])).toContain('TASK: PLAN');
+    const stepRequests = llm.requests.filter((m) => said(m).includes('request: step'));
+    expect(stepRequests.map((m) => said(m).match(/SAID: (.*)/)?.[1])).toEqual(STEPS);
+    expect(said(stepRequests[2])).toContain('request: step 3 of 5');
+    // Earlier steps show in CONTEXT, so the model knows what is already done.
+    expect(said(stepRequests[1])).toContain('earlier: "Go to patients"');
+    expect(runtime.beginTurn).toHaveBeenCalledTimes(1);
+    expect(runtime.beginTurn).toHaveBeenCalledWith(expect.any(Number), LONG);
+    expect(progress.at(-1)).toEqual(['done', 'done', 'done', 'done', 'done']);
+    expect(progress[0]).toEqual(['running', 'pending', 'pending', 'pending', 'pending']);
+    expect(outcome.reply).toBe('Step 1 done. Step 2 done. Step 3 done. Step 4 done. Step 5 done.');
+  });
+
+  it('a plan that lost part of the request is not used — the request runs in one go', async () => {
+    const llm = new ScriptedLLM().then({ calls: [call('plan_steps', { steps: ['Go to patients', 'Select James Ahmed'] })] });
+    llm.calls([call('open_page', { page: 'dashboard' })], 'Done in one go.');
+    const { agent } = planning(llm);
+    const outcome = await agent.run(LONG);
+    expect(said(llm.requests[1])).toContain(`SAID: ${LONG}`);
+    expect(said(llm.requests[1])).not.toContain('request: step');
+    expect(outcome.reply).toBe('Done in one go.');
+  });
+
+  it('one step, or no plan at all, also runs in one go', async () => {
+    for (const first of [{ calls: [call('plan_steps', { steps: [LONG] })] }, { content: 'Sure.' }]) {
+      const llm = new ScriptedLLM().then(first);
+      llm.calls([call('open_page', { page: 'dashboard' })], 'Done in one go.');
+      const { agent } = planning(llm);
+      expect((await agent.run(LONG)).reply).toBe('Done in one go.');
+      expect(said(llm.requests[1])).toContain(`SAID: ${LONG}`);
+    }
+  });
+
+  it('a confirmation prepared by a step is the reply at the end, after the remaining steps are done', async () => {
+    const llm = new ScriptedLLM().then({ calls: [call('plan_steps', { steps: STEPS })] });
+    for (let i = 0; i < STEPS.length; i++) llm.calls([call(i === 2 ? 'add_medications' : 'open_page', i === 2 ? { medications: [{ medicationName: 'Metformin' }] } : { page: 'dashboard' })], `Step ${i + 1} done.`);
+    let confirmation = false;
+    const runtime = {
+      beginTurn: vi.fn(),
+      endTurn: vi.fn(),
+      openPage: vi.fn(async (): Promise<ToolResult> => ({ ok: true, message: 'Opened.' })),
+      createRecords: vi.fn(async (): Promise<ToolResult> => {
+        confirmation = true;
+        return { ok: true, message: 'Medication form ready. Review it, then confirm.', awaitUser: true };
+      }),
+    } as unknown as AppRuntime;
+    const planned = new Agent(llm, runtime, () => ({ ...context, pendingConfirmation: confirmation ? { kind: 'form', description: 'Save the medication' } : null }), 6, true);
+    planned.setTools(buildTools());
+    const steps: string[][] = [];
+    const outcome = await planned.run(LONG, { onPlan: (s) => steps.push(s.map((x) => x.status)) });
+    expect(runtime.openPage).toHaveBeenCalledTimes(4); // the steps after the confirmation still ran
+    expect(outcome.awaitingUser).toBe(true);
+    expect(outcome.reply).toBe('Medication form ready. Review it, then confirm.');
+    expect(steps.at(-1)).toEqual(['done', 'done', 'waiting', 'done', 'done']);
+  });
+
+  it('planCovers: nearly every word said must be in the steps', () => {
+    expect(planCovers(STEPS, LONG)).toBe(true);
+    expect(planCovers(STEPS.slice(0, 3), LONG)).toBe(false);
   });
 });

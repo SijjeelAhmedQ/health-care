@@ -9,29 +9,29 @@
    ========================================================================= */
 .ibx {
   --ibx-lab: #0e7c66;      --ibx-lab-soft: #e3f4ef;
-  --ibx-radiology: #5a4fc4; --ibx-radiology-soft: #ecebfb;
+  --ibx-radiology: #b4540a; --ibx-radiology-soft: #fcefe3;
   --ibx-referral: #1f6fc6;  --ibx-referral-soft: #e6f0fb;
   --ibx-discharge: #5c6b7c; --ibx-discharge-soft: #edf0f4;
   --ibx-all: var(--color-primary); --ibx-all-soft: var(--color-primary-soft);
   --ibx-critical: #c23b3b;  --ibx-critical-soft: #fdeeee; --ibx-critical-line: #f2c9c9;
   --ibx-high: #a86400;      --ibx-high-soft: #fff6e6;     --ibx-high-line: #f1dcb2;
-  --ibx-radius: var(--radius-lg);
+  --ibx-radius: 22px;
   --ibx-list-width: 360px;
-  display: flex; flex-direction: column; gap: 12px; min-width: 0;
+  display: flex; flex-direction: column; gap: 14px; min-width: 0; animation: riseIn 0.4s var(--ease) both;
 }
 
 /* ---- page header -------------------------------------------------------- */
 .ibx-head { display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; }
 .ibx-head-text { min-width: 0; }
 /* same scale as every other page title (.page-header-title) */
-.ibx-head-text h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; color: var(--color-text); }
+.ibx-head-text h1 { font-family: var(--font-display); font-size: 27px; font-weight: 800; letter-spacing: -0.025em; line-height: 1.15; color: var(--color-ink); }
 .ibx-head-text p { margin: 3px 0 0; font-size: 13px; color: var(--color-text-secondary); }
 .ibx-head-updated { color: var(--color-text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ibx-head-stats { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ibx-stat {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 999px;
-  border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary);
-  font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary); box-shadow: var(--shadow-sm);
+  font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
   transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
 }
 .ibx-stat b { color: var(--color-text); font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -44,7 +44,7 @@
 /* ---- the workspace surface ---------------------------------------------- */
 .ibx-shell {
   background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--ibx-radius);
-  box-shadow: var(--shadow-sm); display: flex; flex-direction: column; min-width: 0;
+  box-shadow: var(--shadow-md); display: flex; flex-direction: column; min-width: 0;
   /* clip, not hidden: a hidden overflow would become the sticky container for the bars inside it */
   overflow: clip;
 }
@@ -52,33 +52,29 @@
 
 /* ---- category switcher ---------------------------------------------------- */
 .ibx-cats { border-bottom: 1px solid var(--color-border); }
-.ibx-cats-track { display: flex; gap: 2px; padding: 0 10px; overflow-x: auto; scrollbar-width: none; }
+.ibx-cats-track { display: flex; gap: 4px; padding: 8px 10px; overflow-x: auto; scrollbar-width: none; }
 .ibx-cats-track::-webkit-scrollbar { display: none; }
 .ibx-cat {
   --c: var(--ibx-all); --c-soft: var(--ibx-all-soft);
   position: relative; display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0;
-  height: 48px; padding: 0 12px; border: none; background: none; cursor: pointer;
-  font: inherit; font-size: 13.5px; font-weight: 500; color: var(--color-text-secondary);
-  transition: color var(--duration-fast) var(--ease);
+  height: 42px; padding: 0 12px 0 8px; border: none; border-radius: 14px; background: none; cursor: pointer;
+  font: inherit; font-size: 13.5px; font-weight: 600; color: var(--color-text-secondary);
+  transition: color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
 }
-.ibx-cat::after {
-  content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0;
-  background: var(--c); transform: scaleX(0); transition: transform var(--duration-mid) var(--ease);
-}
-.ibx-cat:hover { color: var(--color-text); }
-.ibx-cat.is-active { color: var(--color-text); font-weight: 600; }
-.ibx-cat.is-active::after { transform: scaleX(1); }
+.ibx-cat:hover { color: var(--color-ink); background: var(--color-surface-muted); }
+.ibx-cat.is-active { color: var(--c); background: var(--c-soft); font-weight: 700; }
 .ibx-cat:focus-visible { outline-offset: -4px; }
 .ibx-cat.is-lab { --c: var(--ibx-lab); --c-soft: var(--ibx-lab-soft); }
 .ibx-cat.is-radiology { --c: var(--ibx-radiology); --c-soft: var(--ibx-radiology-soft); }
 .ibx-cat.is-referral { --c: var(--ibx-referral); --c-soft: var(--ibx-referral-soft); }
 .ibx-cat.is-discharge { --c: var(--ibx-discharge); --c-soft: var(--ibx-discharge-soft); }
 .ibx-cat-icon {
-  width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center;
   background: var(--color-surface-muted); color: var(--color-text-muted);
   transition: background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
 }
-.ibx-cat.is-active .ibx-cat-icon, .ibx-cat:hover .ibx-cat-icon { background: var(--c-soft); color: var(--c); }
+.ibx-cat:hover .ibx-cat-icon { background: var(--c-soft); color: var(--c); }
+.ibx-cat.is-active .ibx-cat-icon { background: var(--c); color: #fff; }
 .ibx-cat-short { display: none; }
 .ibx-cat-count {
   min-width: 22px; height: 20px; padding: 0 6px; border-radius: 999px; display: inline-grid; place-items: center;
@@ -96,14 +92,15 @@
 /* ---- toolbar -------------------------------------------------------------- */
 .ibx-toolbar { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .ibx-toolbar-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ibx-search { flex: 1 1 280px; min-width: 0; max-width: 460px; height: 36px; border-radius: 9px; }
+.ibx-search { flex: 1 1 280px; min-width: 0; max-width: 460px; height: 40px; border-radius: 13px; background: var(--color-surface-muted); border-color: transparent; }
+.ibx-search.ant-input-affix-wrapper-focused { background: var(--color-surface); border-color: var(--color-primary); }
 .ibx-search .ibx-search-icon { color: var(--color-text-muted); }
 .ibx-search kbd { opacity: 0.8; }
 .ibx-quick { display: flex; gap: 6px; flex-shrink: 0; }
 .ibx-toggle {
-  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px;
-  border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary);
-  font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px; border-radius: 999px;
+  border: 1.5px solid var(--color-border); background: var(--color-surface); color: var(--color-text-secondary);
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap;
   transition: all var(--duration-fast) var(--ease);
 }
 .ibx-toggle:hover { border-color: var(--color-border-strong); color: var(--color-text); }
@@ -112,7 +109,7 @@
 .ibx-toggle.is-attention svg { color: var(--ibx-high); }
 .ibx-toggle.is-attention.is-on { background: var(--ibx-high-soft); border-color: #e0b766; color: var(--ibx-high); }
 .ibx-toolbar-end { margin-inline-start: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.ibx-toolbar-end .ant-btn { height: 34px; border-radius: 8px; }
+.ibx-toolbar-end .ant-btn { height: 38px; border-radius: 12px; }
 .ibx-btn-active { border-color: var(--color-primary) !important; color: var(--color-primary) !important; }
 .ibx-btn-badge .ant-badge-count { background: var(--color-primary); box-shadow: none; }
 .ibx-sort-label { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
@@ -120,7 +117,7 @@
 
 .ibx-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; animation: ibx-fade var(--duration-mid) var(--ease); }
 .ibx-chip {
-  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px 0 10px; border-radius: 7px;
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px 0 11px; border-radius: 999px;
   border: 1px solid var(--color-primary-soft-strong); background: var(--color-primary-soft); color: var(--color-primary-active);
   font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; max-width: 100%;
 }
@@ -178,7 +175,7 @@
 .ibx-group ul { list-style: none; margin: 0; padding: 0; }
 .ibx-group-head {
   position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px;
-  padding: 7px 14px 6px 44px; margin: 0; background: #fafbfc;
+  padding: 8px 14px 7px 46px; margin: 0; background: var(--color-surface-subtle);
   border-bottom: 1px solid var(--color-border);
   font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-text-muted);
 }
@@ -193,11 +190,11 @@
 .ibx-row.is-attention.is-unfiled::before { background: #e3a13a; }
 .ibx-row.is-critical.is-unfiled::before { background: var(--ibx-critical); }
 .ibx-row:hover { background: var(--color-surface-subtle); }
-.ibx-row.is-checked { background: #f3f9fb; }
+.ibx-row.is-checked { background: #f2f9fe; }
 .ibx-row.is-selected { background: var(--color-primary-soft); }
 .ibx-row.is-selected:not(.is-attention)::before, .ibx-row.is-selected.is-filed::before { background: var(--color-primary); }
 .ibx-row.is-selected::after { content: ''; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px var(--color-primary-soft-strong); pointer-events: none; }
-.ibx-row-check { position: absolute; left: 14px; top: 16px; z-index: 2; opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
+.ibx-row-check { position: absolute; left: 12px; top: 17px; z-index: 2; opacity: 0; transition: opacity var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease), border-color var(--duration-fast) var(--ease); }
 .ibx-row:hover .ibx-row-check, .ibx-row:focus-within .ibx-row-check, .ibx-row.is-checked .ibx-row-check,
 .ibx-msglist.has-checked .ibx-row-check { opacity: 1; }
 .ibx-row:hover :is(.ibx-catmark, .ibx-row-unread), .ibx-row:focus-within :is(.ibx-catmark, .ibx-row-unread),
@@ -215,7 +212,7 @@
   display: grid; place-items: center; flex-shrink: 0; border-radius: 8px; transition: opacity var(--duration-fast) var(--ease);
   background: var(--ibx-all-soft); color: var(--ibx-all);
 }
-.ibx-catmark.is-md { width: 32px; height: 32px; }
+.ibx-catmark.is-md { width: 34px; height: 34px; border-radius: 11px; }
 .ibx-catmark.is-sm { width: 24px; height: 24px; border-radius: 6px; }
 .ibx-catmark.is-lab { background: var(--ibx-lab-soft); color: var(--ibx-lab); }
 .ibx-catmark.is-radiology { background: var(--ibx-radiology-soft); color: var(--ibx-radiology); }
@@ -317,7 +314,7 @@
   height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
   text-align: center; padding: 40px 28px; gap: 8px;
 }
-.ibx-noselect-icon { width: 60px; height: 60px; border-radius: 18px; display: grid; place-items: center; background: var(--color-surface); border: 1px solid var(--color-border); color: var(--color-primary); margin-bottom: 8px; box-shadow: var(--shadow-sm); }
+.ibx-noselect-icon { width: 68px; height: 68px; border-radius: 22px; display: grid; place-items: center; background: var(--color-surface); border: 1px solid var(--color-border); color: var(--color-primary); margin-bottom: 8px; box-shadow: var(--shadow-sm); }
 .ibx-noselect h2 { font-size: 16px; font-weight: 600; }
 .ibx-noselect p { max-width: 360px; font-size: 13px; line-height: 1.55; color: var(--color-text-secondary); margin: 0 0 10px; }
 .ibx-noselect .ant-btn svg { margin-inline-start: 4px; }
@@ -350,7 +347,7 @@
   .ibx-dgrid { grid-template-columns: minmax(0, 1fr) 330px; gap: 20px; padding: 20px 20px 88px; }
 }
 .ibx-doc {
-  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--ibx-radius);
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 20px; box-shadow: var(--shadow-sm);
   min-width: 0; overflow: hidden;
 }
 
@@ -374,7 +371,7 @@
 .ibx-kicker.is-referral { color: var(--ibx-referral); }
 .ibx-kicker.is-discharge { color: var(--ibx-discharge); }
 .ibx-dhead-when { font-size: 12px; color: var(--color-text-muted); }
-.ibx-dhead h2 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; color: var(--color-text); }
+.ibx-dhead h2 { font-family: var(--font-display); font-size: 21px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.3; color: var(--color-ink); }
 .ibx-dhead h2:focus { outline: none; }
 .ibx-dhead-status { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 10px; }
 .ibx-dhead-status .ibx-status { font-size: 12.5px; }
@@ -385,7 +382,7 @@
 .ibx-dhead-from b { color: var(--color-text-secondary); font-weight: 600; }
 
 .ibx-callout {
-  display: flex; gap: 10px; align-items: flex-start; margin: 0 18px 4px; padding: 10px 12px; border-radius: 9px;
+  display: flex; gap: 10px; align-items: flex-start; margin: 0 18px 4px; padding: 12px 14px; border-radius: 14px;
   border: 1px solid; font-size: 12.5px; line-height: 1.45;
 }
 .ibx-callout svg { flex-shrink: 0; margin-top: 1px; }
@@ -398,7 +395,17 @@
 .ibx-dhead + .ibx-section, .ibx-callout + .ibx-section { margin-top: 12px; }
 .ibx-section-title { font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-muted); margin-bottom: 10px; }
 
-.ibx-result { border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; }
+/* Comments on a record: a short thread, then the box to add one. */
+.ibx-comment-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ibx-comment { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--color-primary-soft); }
+.ibx-comment-icon { width: 24px; height: 24px; border-radius: 8px; display: grid; place-items: center; flex-shrink: 0; background: var(--color-surface); color: var(--color-primary); }
+.ibx-comment-body { flex: 1; min-width: 0; }
+.ibx-comment-body p { margin: 0; color: var(--color-ink); font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ibx-comment-body .muted { font-size: 12px; }
+.ibx-comment-add { display: flex; align-items: flex-end; gap: 8px; }
+.ibx-comment-add .ant-input { flex: 1; }
+
+.ibx-result { border: 1px solid var(--color-border); border-radius: 16px; overflow: hidden; }
 .ibx-result-main { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 16px; flex-wrap: wrap; }
 .ibx-result-test { font-size: 13.5px; font-weight: 600; color: var(--color-text-secondary); }
 .ibx-result-value { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--color-text); }
@@ -427,15 +434,15 @@
 .ibx-ai-idle { margin: 0; }
 .ibx-ai-gate {
   display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
-  background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 10px; padding: 10px 12px;
+  background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 16px; padding: 12px 14px;
 }
 .ibx-ai-gate p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--color-text-secondary); }
-.ibx-ai-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 10px; padding: 12px 14px; }
+.ibx-ai-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 16px; padding: 14px 16px; box-shadow: var(--shadow-sm); }
 .ibx-ai-card h3 { font-size: 12px; font-weight: 600; margin: 0 0 6px; display: flex; align-items: center; gap: 6px; color: var(--color-text); }
 .ibx-ai-card h3 span { font-weight: 400; color: var(--color-text-muted); }
 .ibx-ai-card p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--color-text-secondary); }
-.ibx-ai-card.is-result { background: linear-gradient(180deg, #f3f8fd 0%, var(--color-surface) 100%); border-color: #d6e5f6; }
-.ibx-ai-card.is-result h3 svg { color: var(--color-info); }
+.ibx-ai-card.is-result { background: linear-gradient(180deg, #eef8fe 0%, var(--color-surface) 100%); border-color: #c3e5fb; }
+.ibx-ai-card.is-result h3 svg { color: var(--color-accent); }
 .ibx-ai-card.is-patient h3 svg { color: var(--color-text-muted); }
 
 .ibx-ai-actions-head { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
@@ -447,11 +454,11 @@
 
 .ibx-cards { display: flex; flex-direction: column; gap: 6px; }
 .ibx-card {
-  border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface); overflow: hidden;
+  border: 1px solid var(--color-border); border-radius: 16px; background: var(--color-surface); overflow: hidden;
   transition: border-color var(--duration-fast) var(--ease), box-shadow var(--duration-fast) var(--ease);
 }
 .ibx-card:hover { border-color: var(--color-border-strong); }
-.ibx-card.is-open { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(15, 110, 140, 0.08); }
+.ibx-card.is-open { border-color: var(--color-primary); box-shadow: 0 0 0 4px rgba(7, 128, 216, 0.08); }
 .ibx-card-row { display: flex; align-items: center; gap: 6px; padding: 8px 10px 8px 0; }
 .ibx-card-head {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; cursor: pointer;
@@ -469,7 +476,7 @@
 .ibx-card-add .ant-btn-icon { margin-inline-end: 3px !important; }
 /* "ready to add" vs "needs your input": the icon gains the kind's colour, the hint says which. */
 .ibx-card.is-blank .ibx-card-hint { font-style: italic; }
-.ibx-card.is-medication.is-ready .ibx-card-icon { background: #eaf2fd; color: #1c5fae; }
+.ibx-card.is-medication.is-ready .ibx-card-icon { background: var(--color-primary-soft); color: var(--color-primary); }
 .ibx-card.is-diagnosis.is-ready .ibx-card-icon { background: var(--ibx-radiology-soft); color: var(--ibx-radiology); }
 .ibx-card.is-recall.is-ready .ibx-card-icon { background: #fdf1dd; color: #9a6400; }
 .ibx-card.is-task.is-ready .ibx-card-icon { background: var(--ibx-lab-soft); color: var(--ibx-lab); }

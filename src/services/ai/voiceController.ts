@@ -14,6 +14,7 @@ import { navigationActions } from '@/store/slices/navigationSlice';
 import { uiActions } from '@/store/slices/uiSlice';
 import { deletePatient, setCurrentPatient, setLastSearch, patientSelectors } from '@/store/slices/patientSlice';
 import { providerSelectors } from '@/store/slices/providerSlice';
+import { inboxActions } from '@/store/slices/inboxSlice';
 import { recordSlices } from '@/store/slices/recordSlices';
 import { selectCurrentProvider } from '@/hooks/useProviderData';
 import type { AgentStep, AIContext, DebugTrace, ExtractionResult, PendingConfirmation, ToolResult } from '@/types/ai';
@@ -48,6 +49,12 @@ function patientRecords(state: RootState, kind: RecordKind): AnyRecord[] {
   if (!patientId) return [];
   return recordSlices[kind].selectors.selectAll(state).filter((r) => r.patientId === patientId) as AnyRecord[];
 }
+
+/** Providers swapped in (tests). `planSteps`: split long requests into steps — off for a scripted model unless asked for. */
+type ProviderOverrides = { stt?: MicrophoneRecognizer; llm?: ChatLLM; planSteps?: boolean };
+
+/** A scripted model answers only what its script says, so it plans only when a test asks for it. */
+const planning = (config: AIConfig, overrides?: ProviderOverrides) => overrides?.planSteps ?? (overrides?.llm ? false : config.llm.planSteps !== false);
 
 export class VoiceController {
   private llm: ChatLLM;
@@ -92,13 +99,13 @@ export class VoiceController {
   /** A clinical note being dictated to the assistant, collected until the user pauses. */
   private note: string[] | null = null;
 
-  constructor(private readonly store: AppStore, overrides?: { stt?: MicrophoneRecognizer; llm?: ChatLLM }) {
+  constructor(private readonly store: AppStore, overrides?: ProviderOverrides) {
     const config = effectiveConfig();
     this.llm = overrides?.llm ?? createChatLLM(config.llm);
     this.stt = overrides?.stt ?? createSTT(config);
     this.deps = this.buildDeps();
     this.runtime = new AppRuntime(this.deps);
-    this.agent = new Agent(this.llm, this.runtime, () => this.buildContext(), config.llm.maxSteps);
+    this.agent = new Agent(this.llm, this.runtime, () => this.buildContext(), config.llm.maxSteps, planning(config, overrides));
     this.agent.setTools(buildTools());
     this.publishProviders();
 
@@ -153,13 +160,13 @@ export class VoiceController {
    * Re-create the providers after the configuration changed (or swap them in, e.g. in tests).
    * A running microphone is turned off first: it belongs to the old speech connection.
    */
-  reconfigure(overrides?: { stt?: MicrophoneRecognizer; llm?: ChatLLM }) {
+  reconfigure(overrides?: ProviderOverrides) {
     const config = effectiveConfig();
     if (this.micActive) this.stopListening();
     this.llm.dispose?.();
     this.llm = overrides?.llm ?? createChatLLM(config.llm);
     this.stt = overrides?.stt ?? createSTT(config);
-    this.agent = new Agent(this.llm, this.runtime, () => this.buildContext(), config.llm.maxSteps);
+    this.agent = new Agent(this.llm, this.runtime, () => this.buildContext(), config.llm.maxSteps, planning(config, overrides));
     this.agent.setTools(buildTools());
     this.publishProviders();
   }
@@ -245,6 +252,15 @@ export class VoiceController {
         this.micActive = false;
         this.releaseSession();
         dispatch(voiceActions.setMicActive(false));
+      },
+      onUnclear: () => {
+        if (!live() || !this.micActive || this.echo) return;
+        // Better to ask again than to act on a guess.
+        const message = "I couldn't hear that clearly — please say it again, a little closer to the microphone.";
+        dispatch(voiceActions.setInterimTranscript(''));
+        dispatch(voiceActions.setResponse(message));
+        this.diagnose({ kind: 'unclear' });
+        speak(message);
       },
       onReady: ({ recording }) => {
         if (live()) this.recording = recording;
@@ -565,6 +581,7 @@ export class VoiceController {
     dispatch(voiceActions.setTranscript(said));
     dispatch(voiceActions.setStatus('processing'));
     dispatch(voiceActions.setResponse(null));
+    dispatch(voiceActions.setPlan(null));
     dispatch(voiceActions.setTrace(trace));
 
     let outcome: AgentOutcome;
@@ -577,6 +594,7 @@ export class VoiceController {
             if (step.type === 'tool' && !step.finishedAt) dispatch(voiceActions.setStatus('executing'));
           },
           onProgress: (text) => dispatch(voiceActions.setCurrentAction(text)),
+          onPlan: (steps) => dispatch(voiceActions.setPlan(steps)),
         },
         this.abort.signal,
         alsoHeard,
@@ -842,6 +860,9 @@ export class VoiceController {
         });
       },
       providerNames: () => providerSelectors.selectAll(getState()).map((p) => p.fullName),
+      inboxItems: () => getState().inbox.items,
+      addInboxComments: (itemIds: string[], text: string) =>
+        dispatch(inboxActions.addComments({ itemIds, text, author: selectCurrentProvider(getState())?.fullName ?? 'You' })),
       stopListening: () => this.stopListening(),
       aiSettings: () => {
         const config = effectiveConfig();

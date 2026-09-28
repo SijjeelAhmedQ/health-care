@@ -8,14 +8,18 @@
  * when the model replies without calling a tool, when a tool leaves the app
  * waiting for the user (a question or a confirmation), or after `maxSteps`
  * model calls.
+ *
+ * A long request ("go to patients, select James, add metformin … a task … a recall … an appointment")
+ * is first split into its actions (plan_steps), then carried out one step at a time through the same
+ * loop — a small model doing it all in one go tends to stop part-way.
  */
-import type { AgentStep, AIContext, ExtractionResult, FieldValues, ToolCall, ToolResult } from '@/types/ai';
+import type { AgentStep, AIContext, ExtractionResult, FieldValues, PlanStep, ToolCall, ToolResult } from '@/types/ai';
 import { RECORD_KINDS } from '@/types/records';
 import { FieldRegistry, type FieldScalar } from '@/registry/fieldRegistry';
 import type { ChatLLM, ChatMessage, ToolSchema } from '../providers/llm';
 import { parseArgs, toToolSchema, type Tool } from './tool';
-import { buildExtractionMessage, buildSessionMessage, buildUserMessage, SESSION_ACK, SYSTEM_PROMPT, type Exchange } from './prompt';
-import { NOTE_FINDINGS_TOOL, recordPlural, WAIT_TOOL } from './tools';
+import { buildExtractionMessage, buildPlanMessage, buildSessionMessage, buildUserMessage, SESSION_ACK, SYSTEM_PROMPT, type Exchange } from './prompt';
+import { NOTE_FINDINGS_TOOL, PLAN_TOOL, recordPlural, WAIT_TOOL } from './tools';
 import type { AppRuntime } from './runtime';
 
 export interface AgentOutcome {
@@ -32,7 +36,24 @@ export interface AgentOutcome {
 export interface AgentHooks {
   onStep?(step: AgentStep): void;
   onProgress?(text: string | null): void;
+  /** A long request is being carried out in steps: each step and how far it got. */
+  onPlan?(steps: PlanStep[]): void;
 }
+
+/**
+ * Whether the planned steps still hold what was said: nearly every content word of the request must
+ * appear in them. A plan that dropped a drug or a date is not used — the request runs in one go instead.
+ */
+export function planCovers(steps: string[], said: string): boolean {
+  const words = (s: string) => s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const planned = new Set(words(steps.join(' ')));
+  const content = [...new Set(words(said))].filter((w) => w.length >= 4 && !PLAN_FILLER.has(w));
+  if (!content.length) return true;
+  const kept = content.filter((w) => planned.has(w) || [...planned].some((p) => p.length >= 4 && (p.startsWith(w) || w.startsWith(p))));
+  return kept.length / content.length >= 0.75;
+}
+
+const PLAN_FILLER = new Set(['then', 'also', 'with', 'that', 'this', 'please', 'after', 'into', 'from', 'have', 'them', 'they', 'their', 'there', 'and', 'what', 'will', 'would', 'could', 'should', 'just', 'okay', 'well', 'unclear']);
 
 let stepCounter = 0;
 const stepId = () => `step-${Date.now().toString(36)}-${(stepCounter++).toString(36)}`;
@@ -58,6 +79,8 @@ export class Agent {
     private readonly runtime: AppRuntime,
     private readonly buildContext: () => AIContext,
     private readonly maxSteps: number,
+    /** Split long requests into steps before carrying them out. */
+    private readonly planSteps = false,
   ) {}
 
   get modelName() {
@@ -111,80 +134,19 @@ export class Agent {
   async run(said: string, hooks: AgentHooks = {}, signal?: AbortSignal, alsoHeard?: string): Promise<AgentOutcome> {
     const turn = ++this.turnCounter;
     const ctx = this.buildContext();
-    const userMessage: ChatMessage = { role: 'user', content: this.contextBlock(said, ctx, alsoHeard) };
-    const messages: ChatMessage[] = [...this.prefix(ctx), userMessage];
     // A new day (or another provider) changed the SESSION block: re-prime the cache after this turn.
     const reprime = this.primedSession !== null && buildSessionMessage(ctx) !== this.primedSession;
     const outcome: AgentOutcome = { reply: '', speak: false, awaitingUser: false, deferred: false, fieldsModified: [] };
-    let lastToolMessage = '';
-    let calledTools = false;
-    const seen = new Set<string>();
-    let stalls = 0;
 
-    this.runtime.beginTurn(turn);
+    // One turn for the whole utterance, even when it is carried out in steps: what one step prepares
+    // (a confirmation, a question) is not the next step's to confirm or answer — only the provider's.
+    this.runtime.beginTurn(turn, [said, alsoHeard].filter(Boolean).join(' '));
     try {
-      for (let step = 0; step < this.maxSteps; step++) {
-        const modelStep: AgentStep = { id: stepId(), type: 'model', startedAt: Date.now() };
-        hooks.onStep?.(modelStep);
-        hooks.onProgress?.(step === 0 ? 'Understanding…' : 'Thinking…');
-        let content = '';
-        let calls: ToolCall[] = [];
-        try {
-          const answer = await this.llm.chat(messages, this.schemas, { signal });
-          content = answer.content.trim();
-          calls = answer.toolCalls;
-          hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), content, toolCalls: calls });
-        } catch (e) {
-          hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), error: (e as Error).message });
-          throw e;
-        }
-
-        if (!calls.length) {
-          outcome.reply = content || lastToolMessage || 'Done.';
-          if (!calledTools) outcome.speak = true;
-          break;
-        }
-        calledTools = true;
-        messages.push({ role: 'assistant', content, tool_calls: calls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) });
-
-        // Every result goes back to the model: only the model knows whether the request has
-        // more parts ("go to patients, select James and add a task") or is done.
-        for (const call of calls) {
-          if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
-          if (call.name === WAIT_TOOL && calls.length === 1) {
-            outcome.deferred = true;
-            hooks.onStep?.({ id: stepId(), type: 'tool', startedAt: Date.now(), finishedAt: Date.now(), call, result: { ok: true, message: 'Waiting for the rest of the sentence.' } });
-            return outcome;
-          }
-          const result = await this.execute(call, hooks);
-          // The same call giving the same result again is a loop, not progress ("next page" twice is
-          // progress: its result changes). Tell the model once; the second time, end the turn.
-          const signature = `${call.name} ${JSON.stringify(call.arguments)} → ${result.message}`;
-          const stalled = seen.has(signature);
-          seen.add(signature);
-          if (stalled && ++stalls >= 2) {
-            outcome.reply = result.message;
-            outcome.speak = true;
-            return outcome;
-          }
-          const note = stalled ? { ...result, message: `${result.message} (Same call, same result as before — do not repeat it: try something different or answer the provider.)` } : result;
-          messages.push({ role: 'tool', tool_name: call.name, content: toolMessage(note) });
-          lastToolMessage = result.message;
-          if (result.fieldsModified) outcome.fieldsModified.push(...result.fieldsModified);
-          if (result.speak) outcome.speak = true;
-          if (result.awaitUser) {
-            // The app needs the user now; the rest of the plan waits for their answer.
-            outcome.reply = result.message;
-            outcome.awaitingUser = true;
-            return outcome;
-          }
-          if (result.final) {
-            // Nothing can follow (the model is being replaced, or the provider signed out).
-            outcome.reply = result.message;
-            return outcome;
-          }
-        }
-        if (step === this.maxSteps - 1) outcome.reply = lastToolMessage;
+      const steps = this.planSteps && Agent.worthPlanning(said) ? await this.plan(said, ctx, alsoHeard, hooks, signal) : null;
+      if (!steps) {
+        await this.act([...this.prefix(ctx), { role: 'user', content: this.contextBlock(said, ctx, alsoHeard) }], hooks, signal, outcome, false);
+      } else {
+        await this.actInSteps(steps, hooks, signal, outcome);
       }
       return outcome;
     } finally {
@@ -196,6 +158,160 @@ export class Agent {
       }
       if (reprime) void this.warmUp();
     }
+  }
+
+  /** Long enough to hold several actions. Shorter requests go straight to the tools, as always. */
+  static worthPlanning(said: string) {
+    return said.trim().split(/\s+/).length >= Agent.PLAN_MIN_WORDS;
+  }
+  static readonly PLAN_MIN_WORDS = 14;
+  static readonly PLAN_MAX_STEPS = 10;
+
+  /**
+   * Ask the model to split the request into its actions. Null — carry it out in one go, as always —
+   * when it is one action, when the model does not plan, or when the plan lost part of what was said.
+   */
+  private async plan(said: string, ctx: AIContext, alsoHeard: string | undefined, hooks: AgentHooks, signal?: AbortSignal): Promise<string[] | null> {
+    const modelStep: AgentStep = { id: stepId(), type: 'model', startedAt: Date.now() };
+    hooks.onStep?.(modelStep);
+    hooks.onProgress?.('Working out the steps…');
+    let steps: string[] | null = null;
+    try {
+      const messages: ChatMessage[] = [...this.prefix(ctx), { role: 'user', content: buildPlanMessage(said, ctx, this.earlier, alsoHeard) }];
+      const answer = await this.llm.chat(messages, this.schemas, { signal });
+      hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), content: answer.content, toolCalls: answer.toolCalls });
+      const call = answer.toolCalls.find((c) => c.name === PLAN_TOOL);
+      const tool = this.byName.get(PLAN_TOOL);
+      const parsed = call && tool ? parseArgs(tool, call.arguments) : null;
+      if (parsed?.ok) steps = ((parsed.args as { steps: string[] }).steps ?? []).map((s) => s.trim()).filter(Boolean);
+    } catch (e) {
+      if (signal?.aborted || (e as Error).name === 'AbortError') throw e;
+      hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), error: (e as Error).message });
+      return null; // the request itself is still carried out — in one go
+    }
+    if (!steps || steps.length < 2 || steps.length > Agent.PLAN_MAX_STEPS) return null;
+    return planCovers(steps, [said, alsoHeard].filter(Boolean).join(' ')) ? steps : null;
+  }
+
+  /** Carry out the planned steps one after another, each with fresh CONTEXT: what the steps before it did is on screen. */
+  private async actInSteps(texts: string[], hooks: AgentHooks, signal: AbortSignal | undefined, outcome: AgentOutcome) {
+    const steps: PlanStep[] = texts.map((text) => ({ text, status: 'pending' }));
+    const show = () => hooks.onPlan?.(steps.map((s) => ({ ...s })));
+    const done: Exchange[] = [];
+    const replies: string[] = [];
+    let awaiting: string | null = null;
+    for (let i = 0; i < steps.length; i++) {
+      if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
+      steps[i].status = 'running';
+      show();
+      const ctx = this.buildContext();
+      const earlier = [...this.earlier, ...done].slice(-Agent.EARLIER_EXCHANGES);
+      const content = buildUserMessage(steps[i].text, ctx, earlier, undefined, { index: i + 1, total: steps.length });
+      const part: AgentOutcome = { reply: '', speak: false, awaitingUser: false, deferred: false, fieldsModified: [] };
+      const end = await this.act([...this.prefix(ctx), { role: 'user', content }], hooks, signal, part, true);
+      steps[i].status = part.awaitingUser ? 'waiting' : 'done';
+      show();
+      outcome.fieldsModified.push(...part.fieldsModified);
+      if (part.speak) outcome.speak = true;
+      if (part.awaitingUser) awaiting = part.reply;
+      else if (part.reply && !replies.includes(part.reply)) replies.push(part.reply);
+      done.push({ said: steps[i].text, reply: part.reply });
+      if (end === 'final') {
+        outcome.reply = part.reply;
+        return;
+      }
+    }
+    // One question or confirmation for the provider at the end — the latest, if it is still open.
+    const now = this.buildContext();
+    if (awaiting && (now.pendingConfirmation || now.pendingQuestion)) {
+      outcome.awaitingUser = true;
+      outcome.speak = true;
+      outcome.reply = awaiting;
+    } else {
+      outcome.reply = replies.join(' ') || 'Done.';
+    }
+  }
+
+  /**
+   * The model–tools loop for one request (or one planned step), writing into `outcome`.
+   * `inPlan`: a step of a planned request — an "unfinished sentence" there just ends the step.
+   */
+  private async act(messages: ChatMessage[], hooks: AgentHooks, signal: AbortSignal | undefined, outcome: AgentOutcome, inPlan: boolean): Promise<'done' | 'final'> {
+    let lastToolMessage = '';
+    let calledTools = false;
+    const seen = new Set<string>();
+    let stalls = 0;
+    /** What the app is waiting on the provider for (the latest question or confirmation), if anything. */
+    let awaiting: string | null = null;
+
+    for (let step = 0; step < this.maxSteps; step++) {
+      const modelStep: AgentStep = { id: stepId(), type: 'model', startedAt: Date.now() };
+      hooks.onStep?.(modelStep);
+      hooks.onProgress?.(step === 0 ? 'Understanding…' : 'Thinking…');
+      let content = '';
+      let calls: ToolCall[] = [];
+      try {
+        const answer = await this.llm.chat(messages, this.schemas, { signal });
+        content = answer.content.trim();
+        calls = answer.toolCalls;
+        hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), content, toolCalls: calls });
+      } catch (e) {
+        hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), error: (e as Error).message });
+        throw e;
+      }
+
+      if (!calls.length) {
+        outcome.reply = awaiting ?? (content || lastToolMessage || 'Done.');
+        if (awaiting) outcome.speak = true;
+        if (!calledTools) outcome.speak = true;
+        break;
+      }
+      calledTools = true;
+      messages.push({ role: 'assistant', content, tool_calls: calls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) });
+
+      // Every result goes back to the model: only the model knows whether the request has
+      // more parts ("go to patients, select James and add a task") or is done.
+      for (const call of calls) {
+        if (signal?.aborted) throw new DOMException('cancelled', 'AbortError');
+        if (call.name === WAIT_TOOL && calls.length === 1) {
+          // A planned step is part of a finished request: there is nothing more to wait for.
+          if (!inPlan) outcome.deferred = true;
+          hooks.onStep?.({ id: stepId(), type: 'tool', startedAt: Date.now(), finishedAt: Date.now(), call, result: { ok: true, message: 'Waiting for the rest of the sentence.' } });
+          return 'done';
+        }
+        const result = await this.execute(call, hooks);
+        // The same call giving the same result again is a loop, not progress ("next page" twice is
+        // progress: its result changes). Tell the model once; the second time, end the turn.
+        const signature = `${call.name} ${JSON.stringify(call.arguments)} → ${result.message}`;
+        const stalled = seen.has(signature);
+        seen.add(signature);
+        if (stalled && ++stalls >= 2) {
+          outcome.reply = awaiting ?? result.message; // what the provider must answer, not the looping call
+          outcome.speak = true;
+          return 'done';
+        }
+        const note = stalled ? { ...result, message: `${result.message} (Same call, same result as before — do not repeat it: try something different or answer the provider.)` } : result;
+        messages.push({ role: 'tool', tool_name: call.name, content: toolMessage(note) });
+        lastToolMessage = result.message;
+        if (result.fieldsModified) outcome.fieldsModified.push(...result.fieldsModified);
+        if (result.speak) outcome.speak = true;
+        if (result.awaitUser) {
+          // The app needs the provider (a missing value, a confirmation) — but the rest of what they
+          // asked for still gets done first: "…metformin, a task for BP monitoring and a follow-up next
+          // Tuesday" must not lose the task and the appointment because the medication form asked a
+          // question. The model continues; the question is the reply at the end.
+          outcome.awaitingUser = true;
+          awaiting = result.message;
+        }
+        if (result.final) {
+          // Nothing can follow (the model is being replaced, or the provider signed out).
+          outcome.reply = result.message;
+          return 'final';
+        }
+      }
+      if (step === this.maxSteps - 1) outcome.reply = awaiting ?? lastToolMessage;
+    }
+    return 'done';
   }
 
   private async execute(call: ToolCall, hooks: AgentHooks): Promise<ToolResult> {

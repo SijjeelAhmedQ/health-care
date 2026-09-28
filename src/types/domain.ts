@@ -179,6 +179,8 @@ export interface ClinicalDocument {
   uploadedAt: string;
   status: 'Final' | 'Draft' | 'Pending Review' | 'Signed';
   tags: string[];
+  /** A discharge summary reporting an abnormal finding. */
+  abnormal?: boolean;
 }
 
 export interface ClinicalNote {
@@ -191,6 +193,8 @@ export interface ClinicalNote {
   createdAt: string;
   status: 'Draft' | 'Signed' | 'Amended';
   body: string;
+  /** A discharge note reporting an abnormal finding. */
+  abnormal?: boolean;
 }
 
 export interface InsurancePolicy {
@@ -427,6 +431,9 @@ export interface ImagingOrder {
   facility: string;
   contrast: boolean;
   clinicalIndication: string;
+  /** Once reported: whether the study found something abnormal, and the radiologist's findings. */
+  abnormal?: boolean;
+  findings?: string;
 }
 
 export interface Referral {
@@ -443,6 +450,8 @@ export interface Referral {
   createdAt: string;
   expiresAt: string;
   insuranceAuth?: string;
+  /** The referral is for an abnormal finding. */
+  abnormal?: boolean;
 }
 
 export type ShiftType = 'Morning' | 'Afternoon' | 'Evening' | 'Night' | 'On Call';

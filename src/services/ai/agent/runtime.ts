@@ -73,6 +73,10 @@ export interface RuntimeDeps {
   getWorkload(): ProviderWorkload | null;
   /** Full names of the practice's providers (for provider fields). */
   providerNames(): string[];
+  /** Every Inbox record (all patients, filed or not), once the Inbox has loaded. */
+  inboxItems(): InboxItem[];
+  /** Add the same comment, signed by the provider, to each of these Inbox records. */
+  addInboxComments(itemIds: string[], text: string): void;
   stopListening(): void;
   /** Hand a dictated clinical note to the AI Summary for extraction (or start dictating one). */
   takeNote(text?: string): void;
@@ -106,6 +110,10 @@ async function waitFor<T>(probe: () => T | undefined | null | false, timeoutMs =
   return undefined;
 }
 
+/** Refusal for the model: it tried to open or change a saved record while new ones wait on the provider. */
+const WAITING_ON_PROVIDER =
+  'What was just prepared is waiting for the provider — do not open, change or delete saved records now (that would close it). Add only what they asked for that is still missing, or stop.';
+
 const ok = (message: string, extra: Partial<ToolResult> = {}): ToolResult => ({ ok: true, message, ...extra });
 const fail = (message: string, extra: Partial<ToolResult> = {}): ToolResult => ({ ok: false, message, ...extra });
 /** The application now needs the user: a question, or a confirmation. */
@@ -137,19 +145,54 @@ export class AppRuntime {
   /** The agent turn in progress; a confirmation staged in this turn cannot be confirmed in it. */
   private turn: number | null = null;
   private pendingTurn: number | null = null;
+  /** The question that was waiting when this turn began: one asked during the turn is not the model's to answer. */
+  private slotAtTurnStart = 'null';
+  /** What the provider said this turn (lower-cased). */
+  private said = '';
   /** Where the last record opened in the Inbox sat in the list — "next" after it was filed out of view. */
   private lastInboxIndex = -1;
 
   constructor(private readonly deps: RuntimeDeps) {}
 
-  beginTurn(turn: number) {
+  /** `said`: the provider's words this turn — a value found in them was said, not guessed. */
+  beginTurn(turn: number, said = '') {
     this.turn = turn;
     this.origin = 'assistant';
+    this.slotAtTurnStart = JSON.stringify(this.state().pendingSlot ?? null);
+    this.said = said.toLowerCase().replace(/\s+/g, ' ');
   }
 
   endTurn() {
     this.turn = null;
     this.origin = 'ui';
+  }
+
+  /**
+   * For the model only, on every form or care-plan step it causes: a small model tends to stop part-way
+   * through a long request ("…a task, a recall after two weeks and a follow-up next Tuesday" came back
+   * without the recall and the visit), or to start editing what it just prepared.
+   */
+  private remind(result: ToolResult): ToolResult {
+    if (this.origin !== 'assistant' || !result.ok) return result;
+    return {
+      ...result,
+      data: {
+        ...(result.data as Record<string, unknown> | undefined),
+        check:
+          'Compare with SAID: every medication, diagnosis, task, recall and appointment the provider mentioned must be open now. If one is missing, add only the missing ones (add_care_plan — records added while a form is open join one care plan). Do not change, clear or re-add what is there, and do not open saved records.',
+      },
+    };
+  }
+
+  /**
+   * The assistant is acting, and what is waiting on the provider (a question or a confirmation) was
+   * prepared in this very turn — so they have not seen it, let alone asked to change it.
+   */
+  private preparedThisTurn(): boolean {
+    if (this.origin !== 'assistant' || this.turn === null) return false;
+    const pending = this.state().pendingConfirmation;
+    const slot = this.state().pendingSlot;
+    return (!!pending && this.pendingTurn === this.turn) || (!!slot && JSON.stringify(slot) !== this.slotAtTurnStart);
   }
 
   private stage(p: PendingConfirmation) {
@@ -394,6 +437,18 @@ export class AppRuntime {
       const blocked = this.requirePatient(`add a ${recordLabels[kind].singular}`);
       if (blocked) return blocked;
     }
+    // A medication given a dose but no drug (a diagnosis with details but no condition) is not a record:
+    // the details belong to a named one. An empty item — "add a medication" — still opens the blank form.
+    const nameField = kind === 'patient' ? undefined : FieldRegistry.getForm(kind)!.fields.find((f) => f.knownFrom === kind);
+    if (nameField) {
+      const unnamed = (v: FieldValues) => Object.keys(v).length > 0 && (v[nameField.name] === undefined || v[nameField.name] === '');
+      const named = items.filter((v) => !unnamed(v));
+      if (!named.length && items.length) {
+        const label = recordLabels[kind as RecordKind].singular;
+        return fail(`A ${label} needs its ${nameField.label.toLowerCase()} — nothing was opened. A dose or frequency belongs to the named ${label} it was said with: call again with each ${label} named (and use add_care_plan when the provider also asked for other kinds of records).`);
+      }
+      items = named;
+    }
     // While the care plan is open a record added to "the open form" joins it, like more records of
     // an open form's own kind do, rather than closing it and losing what it holds.
     if (kind !== 'patient' && CarePlanRegistry.isOpen()) return this.addCarePlan({ items: { [kind]: items } });
@@ -401,6 +456,15 @@ export class AppRuntime {
     const open = FormRegistry.active();
     if (open && open.formId === kind && open.isOpen() && open.entries && !this.state().pendingConfirmation?.recordId) {
       return this.fill(kind, open, items, 'append');
+    }
+    // A record of another kind while a record form holds unsaved ones ("…metformin, and a task for BP
+    // monitoring"): they belong together in one care plan — never close the open form and lose them.
+    if (kind !== 'patient' && open?.isOpen() && open.formId !== kind && (RECORD_KINDS as readonly string[]).includes(open.formId) && !this.state().pendingConfirmation?.recordId) {
+      const def = FieldRegistry.getForm(open.formId)!;
+      const held = (open.entries?.getAll() ?? [open.getValues()])
+        .map((v) => Object.fromEntries(Object.entries(v).filter(([, x]) => x !== undefined && x !== null && x !== '')) as FieldValues)
+        .filter((v) => !isBlank(def, v));
+      if (held.length) return this.addCarePlan({ items: { [open.formId]: held, [kind]: items } as CarePlanItems });
     }
     const controller = await this.ensureModule(kind);
     if ('ok' in controller) return controller;
@@ -435,6 +499,7 @@ export class AppRuntime {
   async updateRecord(kind: RecordKind, record: string, changes: FieldValues): Promise<ToolResult> {
     const blocked = this.requirePatient(`change a ${recordLabels[kind].singular}`);
     if (blocked) return blocked;
+    if (this.preparedThisTurn()) return fail(WAITING_ON_PROVIDER);
     const found = this.resolveRecord(kind, record);
     if ('ok' in found) return found;
     const controller = await this.ensureModule(kind);
@@ -460,6 +525,7 @@ export class AppRuntime {
   async deleteRecord(kind: RecordKind, record: string): Promise<ToolResult> {
     const blocked = this.requirePatient(`delete a ${recordLabels[kind].singular}`);
     if (blocked) return blocked;
+    if (this.preparedThisTurn()) return fail(WAITING_ON_PROVIDER);
     const found = this.resolveRecord(kind, record);
     if ('ok' in found) return found;
     const label = recordLabel(kind, found.row);
@@ -517,8 +583,8 @@ export class AppRuntime {
     const notes = [...errors];
     if (skipped) notes.push(`this form holds one record at a time; ${skipped} more were not added`);
     // A record tab of the care plan is saved with the whole plan, never on its own.
-    if (controller.instanceKey?.startsWith(CARE_PLAN_INSTANCE)) return this.carePlanNextStep(modified, notes);
-    return this.nextStep(def, controller, modified, notes);
+    if (controller.instanceKey?.startsWith(CARE_PLAN_INSTANCE)) return this.remind(this.carePlanNextStep(modified, notes));
+    return this.remind(this.nextStep(def, controller, modified, notes));
   }
 
   /**
@@ -594,9 +660,28 @@ export class AppRuntime {
       const checked = given.map((item) => this.coerceItem(def, item, errors, modified)).filter((v) => Object.keys(v).length);
       if (checked.length) items[kind] = checked;
     }
-    if (errors.length) return fail(`Nothing was opened. Not applied: ${errors.join('; ')}. Call add_care_plan again with corrected values.`);
-    const total = RECORD_KINDS.reduce((n, k) => n + (items[k]?.length ?? 0), 0);
-    if (!total) return fail('The care plan needs at least one medication, diagnosis, task, recall or appointment.');
+    // A value that does not fit (a drug name given as its dose, a date in the wrong form) is left out —
+    // never the whole plan: everything else the provider said is kept, and a required value that is now
+    // missing is asked for.
+    // A medication without a drug (a diagnosis without its condition) is not a record: "500 mg twice
+    // daily for 30 days" given as an item of its own belongs to a named drug. It is left out, and the
+    // model is told why, rather than becoming an unnamed tab the provider is asked to name.
+    for (const kind of RECORD_KINDS) {
+      const name = FieldRegistry.getForm(kind)!.fields.find((f) => f.knownFrom === kind);
+      if (!name || !items[kind]) continue;
+      const named = items[kind]!.filter((v) => v[name.name] !== undefined && v[name.name] !== '');
+      const dropped = items[kind]!.length - named.length;
+      if (dropped) errors.push(`${dropped} ${dropped === 1 ? recordLabels[kind].singular : recordLabels[kind].plural} without a ${name.label.toLowerCase()} not added — a dose or frequency belongs to the named ${recordLabels[kind].singular} it was said with`);
+      if (named.length) items[kind] = named;
+      else delete items[kind];
+    }
+    let total = RECORD_KINDS.reduce((n, k) => n + (items[k]?.length ?? 0), 0);
+    if (!total)
+      return fail(
+        errors.length
+          ? `Nothing was added: ${errors.join('; ')}. Call add_care_plan again with every drug named — and the tasks, recalls and appointments the provider asked for.`
+          : 'The care plan needs at least one medication, diagnosis, task, recall or appointment.',
+      );
 
     if (PageRegistry.get(this.state().currentPageId ?? '')?.module !== 'summary' || !CarePlanRegistry.get()) {
       const nav = await this.goTo(PageRegistry.get('summary')!);
@@ -609,6 +694,19 @@ export class AppRuntime {
       existing.close();
       await waitFor(() => !existing.isOpen(), 1500);
     }
+    // A record the open plan already holds (every value given matches one of its tabs) is not added
+    // twice — the model sometimes sends the whole plan again.
+    if (plan.isOpen()) {
+      const held = plan.entries();
+      const same = (a: FieldValues, b: Record<string, unknown>) => Object.entries(a).every(([k, v]) => String(b[k] ?? '').toLowerCase() === String(v).toLowerCase());
+      for (const kind of RECORD_KINDS) {
+        const fresh = (items[kind] ?? []).filter((item) => !held.some((e) => e.kind === kind && same(item, e.values)));
+        if (fresh.length) items[kind] = fresh;
+        else delete items[kind];
+      }
+      total = RECORD_KINDS.reduce((n, k) => n + (items[k]?.length ?? 0), 0);
+      if (!total) return fail('All of these are already in the care plan (see its tabs). Add only what the provider asked for that is not there yet — or stop.');
+    }
     const before = plan.isOpen() ? plan.entries().length : 0;
     if (plan.isOpen()) plan.add(items);
     else plan.open(items);
@@ -617,7 +715,9 @@ export class AppRuntime {
     this.deps.setOpenForm(CARE_PLAN_FORM_ID);
     this.deps.setPendingConfirmation(null);
     this.deps.setPendingSlot(null);
-    return this.carePlanNextStep(modified, []);
+    const next = this.remind(this.carePlanNextStep(modified, []));
+    if (errors.length) next.data = { ...(next.data as Record<string, unknown> | undefined), not_taken: errors.map((e) => `${e} — left empty (the provider is asked if it is required); do not guess it`) };
+    return next;
   }
 
   /** What the care plan needs next: the first missing required value, or the one confirmation for all of it. */
@@ -705,12 +805,29 @@ export class AppRuntime {
   async fillOpenForm(fields: FieldValues): Promise<ToolResult> {
     const controller = FormRegistry.active();
     if (!controller) return fail('No form is open. Use a create_* or update_* tool to open one.');
+    // A question the app asked during this very turn has not been answered by the provider yet:
+    // the model filling it would be a guess (e.g. a dose nobody said).
+    const slot = this.state().pendingSlot;
+    if (this.origin === 'assistant' && slot && JSON.stringify(slot) !== this.slotAtTurnStart) {
+      const answered = Object.keys(fields).find((name) => FieldRegistry.resolveField(slot.formId, name)?.name === slot.field);
+      // A value the provider actually said ("Metformin") is theirs, not a guess — only unsaid ones are refused.
+      const spoken = answered !== undefined && String(fields[answered]).trim().length > 1 && this.said.includes(String(fields[answered]).toLowerCase().trim());
+      if (answered && !spoken) {
+        const rest = { ...fields };
+        delete rest[answered];
+        // Refused for the model only: the provider is still asked the original question.
+        if (!Object.keys(rest).length) return fail(`${slot.label} was not filled: the provider has not answered "${slot.question}" yet — never fill it yourself. If the provider asked for something that is not in the care plan yet, add only that (add_care_plan); otherwise stop.`);
+        fields = rest;
+      }
+    }
     return this.fill(controller.formId, controller, [fields], 'active');
   }
 
   clearFormField(field: string): ToolResult {
     const controller = FormRegistry.active();
     if (!controller) return fail('No form is open.');
+    // What this very turn put in the form, the provider has not asked to take out.
+    if (this.preparedThisTurn()) return fail('The provider did not ask to clear anything — leave what was just filled in. Add whatever else they asked for, or stop.');
     const def = FieldRegistry.resolveField(controller.formId, field);
     if (!def) return fail(`"${field}" is not a field of the open form.`);
     controller.clearField(def.name);
@@ -784,12 +901,16 @@ export class AppRuntime {
 
   cancel(): ToolResult {
     const pending = this.state().pendingConfirmation;
+    // What this very turn prepared was not cancelled by the provider — they have not even seen it yet.
+    // (Their "no" / "cancel" arrives in a later turn, like their "yes".)
+    if (this.preparedThisTurn()) {
+      return fail('The provider did not ask to cancel — what was just prepared stays open for them. Add whatever else they asked for, or stop.');
+    }
     this.pendingTurn = null;
     this.deps.setPendingConfirmation(null);
     this.deps.setPendingSlot(null);
     if (pending?.kind === 'delete') return ok('Cancelled — nothing was deleted.');
-    if (pending?.kind === 'inbox_file') return ok(`Cancelled — the record was not ${pending.inboxFile ? 'filed' : 'moved back to unfiled'}.`);
-    const active = FormRegistry.active();
+    if (pending?.kind === 'inbox_file') return ok(`Cancelled — the record was not ${pending.inboxFile ? 'filed' : 'moved back to unfiled'}.`);    const active = FormRegistry.active();
     if (active) {
       active.close();
       this.deps.setOpenForm(null);
@@ -951,6 +1072,55 @@ export class AppRuntime {
     }
     controller.file([item.id], file);
     return ok(file ? `Filed "${item.subject}".` : `Moved "${item.subject}" back to unfiled.`);
+  }
+
+  /**
+   * Comment on one Inbox record (the open one, or one by position) or on every record of a kind —
+   * "Test is good on all abnormal records". Added at once, without a confirmation (the provider's choice:
+   * a comment changes no clinical data, and each one can be deleted from the record).
+   * "All" follows the Inbox's patient scope: the selected patient's records, or every patient's.
+   */
+  async inboxAddComment(args: { text: string; target?: number | 'this' | 'next' | 'previous' | 'last'; which?: 'abnormal' | 'normal' | 'needs_attention' | 'unfiled' | 'all'; category?: InboxView }): Promise<ToolResult> {
+    const text = String(args.text ?? '').trim().replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
+    if (!text) return fail('What should the comment say? Nothing was added.');
+    const controller = await this.ensureInbox(args.category ?? 'all');
+    if ('ok' in controller) return controller;
+    if (args.category && controller.snapshot().view !== args.category) {
+      controller.setView(args.category);
+      await waitFor(() => controller.snapshot().view === args.category, 2500);
+    }
+    const snap = controller.snapshot();
+
+    let items: InboxItem[];
+    let what: string;
+    if (args.which) {
+      const matches: Record<NonNullable<typeof args.which>, (i: InboxItem) => boolean> = {
+        abnormal: (i) => i.status === 'Abnormal',
+        normal: (i) => i.status === 'Normal',
+        needs_attention: (i) => i.attention,
+        unfiled: (i) => !snap.isFiled(i.id),
+        all: () => true,
+      };
+      items = this.deps
+        .inboxItems()
+        .filter((i) => (!snap.scopePatientId || i.patientId === snap.scopePatientId) && (!args.category || args.category === 'all' || i.category === args.category) && matches[args.which!](i));
+      const noun = inboxNoun[args.category ?? 'all'];
+      const kind = { abnormal: 'abnormal ', normal: 'normal ', needs_attention: 'needing-attention ', unfiled: 'unfiled ', all: '' }[args.which];
+      const scope = snap.scopePatientId ? ` for ${this.state().currentPatientName ?? 'the selected patient'}` : '';
+      if (!items.length) return fail(`There are no ${kind}${noun.many} in the Inbox${scope}. Nothing was added.`);
+      what = `${items.length} ${kind}${items.length === 1 ? noun.one : noun.many}${scope}`;
+    } else {
+      const found = this.resolveInboxTarget(controller, args.target ?? 'this');
+      if ('ok' in found) return found;
+      items = [found.item];
+      what = `"${found.item.subject}" for ${found.item.patientName}`;
+    }
+
+    this.deps.addInboxComments(
+      items.map((i) => i.id),
+      text,
+    );
+    return ok(`Comment "${text}" added to ${what}.`, { speak: true });
   }
 
   inboxSelectPatient(): ToolResult {
@@ -1179,6 +1349,7 @@ export class AppRuntime {
   takeNote(text?: string): ToolResult {
     this.deps.takeNote(text);
     if (text) return ok(`Opened the AI Summary and extracting the note${this.state().currentPatientId ? '' : ' — select a patient before saving the items'}.`);
-    return ask('Dictation is on — say the note; pause when you are done.');
+    // Everything said next is the note, not a command: nothing else may run in this turn.
+    return ask('Dictation is on — say the note; pause when you are done.', { final: true });
   }
 }

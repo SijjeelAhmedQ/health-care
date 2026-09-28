@@ -196,6 +196,42 @@ describe('the Inbox through the assistant', () => {
     expect(patientIds().size).toBeGreaterThan(1);
   }, TIMEOUT);
 
+  it('every Inbox record is Abnormal or Normal — nothing else', async () => {
+    const items = store.getState().inbox.items;
+    expect(new Set(items.map((i) => i.status))).toEqual(new Set(['Abnormal', 'Normal']));
+    // Every kind of record can be abnormal, not only lab results.
+    expect(new Set(items.filter((i) => i.status === 'Abnormal').map((i) => i.category))).toEqual(new Set(['lab', 'radiology', 'referral', 'discharge']));
+  });
+
+  it('"Add comment hello world to all abnormal records": added at once, no confirmation, and the reply says how many', async () => {
+    store.dispatch(setCurrentPatient(null));
+    await renderAppAt('/dashboard', () => pageText().length > 0);
+    const count = (id: string, text: string) => (store.getState().inbox.comments[id] ?? []).filter((c) => c.text === text).length;
+    for (const which of ['abnormal', 'normal'] as const) {
+      const text = `hello world ${which}`;
+      const matching = store.getState().inbox.items.filter((i) => i.status === (which === 'abnormal' ? 'Abnormal' : 'Normal'));
+      expect(matching.length).toBeGreaterThan(1);
+
+      model.calls([call('inbox_add_comment', { text, which })], `Added to ${matching.length} records.`);
+      await say(`Add comment ${text} to all ${which} records`);
+      await waitUntil(() => matching.every((i) => count(i.id, text) === 1));
+      expect(store.getState().voice.pendingConfirmation).toBeNull();
+      expect(model.lastToolResults()[0].message).toBe(`Comment "${text}" added to ${matching.length} ${which} records.`);
+      // Nothing else was commented on.
+      const others = store.getState().inbox.items.filter((i) => !matching.includes(i));
+      expect(others.every((i) => count(i.id, text) === 0)).toBe(true);
+    }
+    const abnormal = store.getState().inbox.items.filter((i) => i.status === 'Abnormal');
+    expect(store.getState().inbox.comments[abnormal[0].id].at(-1)?.author).not.toBe('You'); // signed by the provider
+
+    // The comment shows on the record (every record now has one of the two).
+    model.calls([call('inbox_open_item', { target: 1 })], 'Opened.');
+    await say('open the first record');
+    await waitUntil(() => !!openItemId());
+    const opened = openItemId()!;
+    await waitUntil(() => pageText().includes(abnormal.some((i) => i.id === opened) ? 'hello world abnormal' : 'hello world normal'));
+  }, TIMEOUT);
+
   it('keeps mouse filing exactly as it was', async () => {
     store.dispatch(setCurrentPatient(john().id));
     await renderAppAt('/inbox/all', () => !!document.querySelector('.ibx-msg'));

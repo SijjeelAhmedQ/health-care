@@ -176,6 +176,60 @@ describe('Configuration', () => {
     expect(requests.some((r) => r.url.endsWith('/ollama/api/chat'))).toBe(true);
   }, TIMEOUT);
 
+  it('on the Kaggle GPU the provider picks qwen3.5:4b or qwen3.5:9b — and switches between them there; back home, the local model returns', async () => {
+    let compute: Record<string, unknown> = { mode: 'local', remote_url: '', has_key: false, remote: null, stt: sttConfig().engine };
+    const remoteStatus = (url: string) => ({ mode: 'remote', remote_url: url, has_key: true, remote_engine: 'whisper', remote: { ok: true, model: 'whisper large-v3-turbo', device: 'cuda', gpu: 'Tesla T4', ollama: { ok: true, models: ['qwen3.5:4b', 'qwen3.5:9b'] } }, stt: { engine: 'remote', ready: true } });
+    const base = globalThis.fetch;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/config/compute')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body)) as { mode: string; remote_url: string };
+          compute = body.mode === 'remote' ? remoteStatus(body.remote_url) : { mode: 'local', remote_url: body.remote_url, has_key: true, remote: null, stt: sttConfig().engine };
+        }
+        return json(compute);
+      }
+      return base(input, init);
+    });
+    const radio = (value: string) => (Array.from(document.querySelectorAll('input[type="radio"]')).find((r) => (r as HTMLInputElement).value === value) as HTMLInputElement).click();
+    const lastChat = () => requests.filter((r) => r.url.endsWith('/api/chat')).at(-1)!;
+
+    await renderAppAt('/configuration', () => pageText().includes('Where the AI runs'));
+    radio('remote');
+    await waitUntil(() => !!document.querySelector('#compute-url'));
+    const el = document.querySelector('#compute-url') as HTMLInputElement;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, 'https://gpu.trycloudflare.com');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(pageText()).toContain('Language model on the server');
+    radio('qwen3.5:9b');
+    await wait(50);
+    button('Switch to the Kaggle GPU').click();
+    await waitUntil(() => pageText().includes('Tesla T4') && getAIOverride().llm?.model === 'qwen3.5:9b');
+    expect(getAIOverride().llm?.apiUrl).toMatch(/\/ollama$/);
+    await waitUntil(() => lastChat().url.endsWith('/ollama/api/chat'));
+    expect((lastChat().body as { model: string }).model).toBe('qwen3.5:9b');
+
+    // Still on Kaggle: only the language model changes — the speech server is not switched again.
+    const puts = () => requests.filter((r) => r.url.endsWith('/api/config/compute') && r.method === 'PUT').length;
+    await waitUntil(() => pageText().includes('in use'));
+    radio('qwen3.5:4b');
+    await wait(50);
+    const before = puts();
+    button('Switch to qwen3.5:4b').click();
+    await waitUntil(() => getAIOverride().llm?.model === 'qwen3.5:4b');
+    await waitUntil(() => (lastChat().body as { model: string }).model === 'qwen3.5:4b');
+    expect(puts()).toBe(before);
+    // The 9B was unloaded first (through the proxy), so the T4 holds one language model.
+    expect(requests.some((r) => r.url.endsWith('/ollama/api/generate') && (r.body as { model: string; keep_alive: number }).model === 'qwen3.5:9b' && (r.body as { keep_alive: number }).keep_alive === 0)).toBe(true);
+
+    // Back to this computer: the local address and the model it ran before.
+    radio('local');
+    await wait(50);
+    button('Switch to this computer').click();
+    await waitUntil(() => !getAIOverride().llm?.apiUrl?.endsWith('/ollama'));
+    expect(getAIOverride().llm?.model).toBe('qwen3.5:4b');
+    expect(getAIOverride().llm?.apiUrl).toBe('http://127.0.0.1:11434');
+  }, TIMEOUT);
+
   it('says so when the bridge is not running', async () => {
     vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/api/tags')) return json({ models: installed });

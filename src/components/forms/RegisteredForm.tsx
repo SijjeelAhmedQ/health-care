@@ -119,7 +119,7 @@ export function RegisteredFormModal<T extends object>({ formId, title, descripti
     if (!saving && form.isFieldsTouched()) {
       Modal.confirm({
         title: 'Discard this entry?',
-        icon: <AlertTriangle size={20} color="#d98800" style={{ marginRight: 12, flexShrink: 0 }} />,
+        icon: <AlertTriangle size={20} color="#d97706" style={{ marginRight: 12, flexShrink: 0 }} />,
         content: 'Nothing has been saved yet. Closing now discards what you entered.',
         okText: 'Discard',
         okButtonProps: { danger: true },
@@ -196,7 +196,7 @@ export function RegisteredFormCard<T extends object>({ formId, title, onSubmit, 
     if (!form.isFieldsTouched()) { onCancel?.(); return; }
     Modal.confirm({
       title: 'Clear this form?',
-      icon: <AlertTriangle size={20} color="#d98800" style={{ marginRight: 12, flexShrink: 0 }} />,
+      icon: <AlertTriangle size={20} color="#d97706" style={{ marginRight: 12, flexShrink: 0 }} />,
       content: 'Everything you have entered will be removed.',
       okText: 'Clear form',
       okButtonProps: { danger: true },

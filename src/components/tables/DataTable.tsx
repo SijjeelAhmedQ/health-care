@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from 'react';
-import { Badge, Button, Card, Checkbox, Dropdown, Input, Pagination, Select, Table, Tooltip, type TableProps } from 'antd';
+import { Badge, Button, Card, Dropdown, Input, Pagination, Select, Table, Tooltip, type TableProps } from 'antd';
 import type { ColumnsType, ColumnType } from 'antd/es/table';
 import { Columns3, Download, Filter, Search, X } from 'lucide-react';
-import { EmptyState } from '@/components/common';
+import { EmptyState, ToggleChip } from '@/components/common';
 import { useDebouncedValue, useResponsive } from '@/hooks';
 import { scrollMainToTop } from '@/utils/scroll';
 import { ListRegistry } from '@/registry/listRegistry';
@@ -343,26 +343,26 @@ export function DataTable<T extends object>({
         <Dropdown
           trigger={['click']}
           dropdownRender={() => (
-            <div style={{ background: '#fff', borderRadius: 10, boxShadow: 'var(--shadow-lg)', padding: 10, minWidth: 220 }}>
-              <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, padding: '0 6px 6px' }}>
-                Show columns
-              </div>
-              {columns.map((c) => (
-                <div key={c.key} style={{ padding: '4px 6px' }}>
-                  <Checkbox
-                    checked={!hidden.has(c.key)}
+            <div className="column-chooser">
+              <div className="column-chooser-title">Show columns</div>
+              <div className="column-chooser-chips" role="group" aria-label="Show columns">
+                {columns.map((c) => (
+                  <ToggleChip
+                    key={c.key}
+                    pressed={!hidden.has(c.key)}
                     disabled={c.hideable === false}
-                    onChange={(e) => {
+                    title={c.hideable === false ? 'Always shown' : undefined}
+                    onChange={(show) => {
                       const next = new Set(hidden);
-                      if (e.target.checked) next.delete(c.key);
+                      if (show) next.delete(c.key);
                       else next.add(c.key);
                       setHidden(next);
                     }}
                   >
                     {typeof c.title === 'string' && c.title ? c.title : c.key}
-                  </Checkbox>
-                </div>
-              ))}
+                  </ToggleChip>
+                ))}
+              </div>
             </div>
           )}
         >

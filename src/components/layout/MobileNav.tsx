@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Modal, Tag } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Activity, ClipboardList, Inbox, LayoutDashboard, LogOut, Menu as MenuIcon, Settings, UserRound, UserRoundCog, Users, X } from 'lucide-react';
+import { Activity, LogOut, Menu as MenuIcon, UserRound, UserRoundCog, X } from 'lucide-react';
 import { PageRegistry, moduleLabels, type PageModule } from '@/registry/pageRegistry';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { uiActions } from '@/store/slices/uiSlice';
@@ -9,14 +9,7 @@ import { logout } from '@/store/slices/authSlice';
 import { selectCurrentPatient } from '@/store/slices/patientSlice';
 import { Avatar } from '@/components/common';
 import { PatientPicker } from '@/components/patient/PatientPicker';
-
-export const moduleIcons: Record<PageModule, JSX.Element> = {
-  dashboard: <LayoutDashboard size={18} />,
-  patient: <Users size={18} />,
-  inbox: <Inbox size={18} />,
-  summary: <ClipboardList size={18} />,
-  configuration: <Settings size={18} />,
-};
+import { moduleIcons } from './moduleIcons';
 
 /** The patient-work modules in the bottom bar; the rest (Configuration) is in the full menu. */
 const primary: Array<{ label: string; path: string; module: PageModule }> = PageRegistry.sidebarPages()
@@ -94,12 +87,12 @@ function MobileMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
         closable={false}
         width="100vw"
         className="mobile-menu-modal"
-        styles={{ mask: { background: 'rgba(16,24,40,0.45)' } }}
+        styles={{ mask: { background: 'rgba(11,16,32,0.45)' } }}
         destroyOnHidden
       >
         <div className="mobile-menu-head">
           <div className="app-sider-brand-mark">
-            <Activity size={16} color="#fff" />
+            <Activity size={17} color="#fff" strokeWidth={2.4} />
           </div>
           <span className="mobile-menu-title">All modules</span>
           <Button type="text" icon={<X size={20} />} onClick={onClose} aria-label="Close menu" />
@@ -132,7 +125,7 @@ function MobileMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
 
         <div className="mobile-menu-body">
           <div className="mobile-menu-group mobile-menu-flat">
-            <div className="mobile-menu-links" style={{ borderTop: 'none' }}>
+            <div className="mobile-menu-links">
               {PageRegistry.sidebarPages().map((p) => {
                 const locked = p.requiresPatient && !patient;
                 return (

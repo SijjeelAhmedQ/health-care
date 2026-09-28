@@ -1,9 +1,9 @@
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { chartSeries } from '@/theme/tokens';
 
-const axisStyle = { fontSize: 12, fill: '#8a97a4' };
-const gridStroke = '#eef1f4';
-const tooltipStyle = { borderRadius: 8, border: '1px solid #e3e8ee', boxShadow: '0 8px 24px rgba(16,24,40,0.12)', fontSize: 13 };
+const axisStyle = { fontSize: 12, fill: '#8c93a6', fontWeight: 500 };
+const gridStroke = '#eef0f5';
+const tooltipStyle = { borderRadius: 14, border: '1px solid #e8eaf1', boxShadow: '0 8px 20px rgba(11,16,32,0.07), 0 28px 56px rgba(11,16,32,0.12)', fontSize: 13, padding: '8px 12px' };
 
 export interface SeriesDef {
   key: string;
@@ -29,7 +29,7 @@ export function TrendChart({ data, xKey, series, height = 260, formatValue }: XY
         <CartesianGrid vertical={false} stroke={gridStroke} />
         <XAxis dataKey={xKey} tick={axisStyle} axisLine={false} tickLine={false} />
         <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={formatValue} width={56} />
-        <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => (formatValue ? formatValue(v) : v)} cursor={{ stroke: '#cbd4dd' }} />
+        <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => (formatValue ? formatValue(v) : v)} cursor={{ stroke: '#d3d7e3' }} />
         {!single && <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />}
         {series.map((s, i) =>
           single ? (
@@ -60,10 +60,10 @@ export function BarsChart({ data, xKey, series, height = 260, stacked, formatVal
             <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={formatValue} width={56} />
           </>
         )}
-        <Tooltip contentStyle={tooltipStyle} cursor={{ fill: '#f2f7fa' }} formatter={(v: number) => (formatValue ? formatValue(v) : v)} />
+        <Tooltip contentStyle={tooltipStyle} cursor={{ fill: '#f1f2fb' }} formatter={(v: number) => (formatValue ? formatValue(v) : v)} />
         {series.length > 1 && <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />}
         {series.map((s, i) => (
-          <Bar key={s.key} dataKey={s.key} name={s.label} fill={chartSeries[i]} stackId={stacked ? 'stack' : undefined} radius={stacked && i < series.length - 1 ? 0 : horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]} maxBarSize={28} stroke="#fff" strokeWidth={stacked ? 2 : 0} />
+          <Bar key={s.key} dataKey={s.key} name={s.label} fill={chartSeries[i]} stackId={stacked ? 'stack' : undefined} radius={stacked && i < series.length - 1 ? 0 : horizontal ? [0, 8, 8, 0] : [8, 8, 2, 2]} maxBarSize={30} stroke="#fff" strokeWidth={stacked ? 2 : 0} />
         ))}
       </BarChart>
     </ResponsiveContainer>
@@ -78,7 +78,7 @@ export function DonutChart({ data, height = 240, nameKey = 'name', valueKey = 'v
       <div style={{ width: height, height, position: 'relative', flexShrink: 0 }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
-            <Pie data={data} dataKey={valueKey} nameKey={nameKey} innerRadius="66%" outerRadius="92%" paddingAngle={2} stroke="#fff" strokeWidth={2}>
+            <Pie data={data} dataKey={valueKey} nameKey={nameKey} innerRadius="68%" outerRadius="94%" paddingAngle={3} cornerRadius={6} stroke="#fff" strokeWidth={2}>
               {data.map((_, i) => (
                 <Cell key={i} fill={chartSeries[i % chartSeries.length]} />
               ))}
@@ -88,15 +88,15 @@ export function DonutChart({ data, height = 240, nameKey = 'name', valueKey = 'v
         </ResponsiveContainer>
         <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{total}</div>
-            <div className="muted" style={{ fontSize: 11 }}>Total</div>
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--color-ink)' }}>{total}</div>
+            <div className="muted" style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Total</div>
           </div>
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 150, flex: 1 }}>
         {data.map((d, i) => (
-          <div key={d.name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 4, background: chartSeries[i % chartSeries.length] }} />
+          <div key={d.name} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '5px 10px', borderRadius: 10, background: 'var(--color-surface-subtle)' }}>
+            <span style={{ width: 10, height: 10, borderRadius: 4, background: chartSeries[i % chartSeries.length], flexShrink: 0 }} />
             <span style={{ flex: 1 }}>{d.name}</span>
             <strong>{d.value}</strong>
             <span className="muted" style={{ width: 40, textAlign: 'right' }}>{total ? Math.round((d.value / total) * 100) : 0}%</span>

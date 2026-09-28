@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
-import { Skeleton, Tooltip } from 'antd';
-import { ArrowDownRight, ArrowUpRight, ChevronRight, Minus } from 'lucide-react';
+import type { CSSProperties, ReactNode } from 'react';
+import { Skeleton } from 'antd';
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Minus } from 'lucide-react';
 
 export interface MetricProps {
   label: string;
@@ -10,23 +10,24 @@ export interface MetricProps {
   delta?: { value: string; direction: 'up' | 'down' | 'flat'; label?: string };
   loading?: boolean;
   onClick?: () => void;
-  /** Explains what the number counts — shown on hover/focus of the label. */
+  /** Explains what the number counts — shown under the value. */
   hint?: string;
 }
 
-const tones: Record<NonNullable<MetricProps['tone']>, { bg: string; fg: string }> = {
-  primary: { bg: '#e6f3f7', fg: '#0f6e8c' },
-  success: { bg: '#e6f6ee', fg: '#0f9d58' },
-  warning: { bg: '#fff5e0', fg: '#b86e00' },
-  error: { bg: '#fdecec', fg: '#d64545' },
-  info: { bg: '#e9f1fb', fg: '#2a78d6' },
-  neutral: { bg: '#f1f4f7', fg: '#5b6b7a' },
+const tones: Record<NonNullable<MetricProps['tone']>, { bg: string; fg: string; tint: string }> = {
+  primary: { bg: '#e8f4fd', fg: '#0780d8', tint: '#e8f4fd' },
+  success: { bg: '#e5f7ee', fg: '#0f9d63', tint: '#e5f7ee' },
+  warning: { bg: '#fff4e0', fg: '#c26a00', tint: '#fff4e0' },
+  error: { bg: '#fdeced', fg: '#e5484d', tint: '#fdeced' },
+  info: { bg: '#e6f4fb', fg: '#0284c7', tint: '#e6f4fb' },
+  neutral: { bg: '#f1f3f8', fg: '#5d6478', tint: '#f4f5fa' },
 };
 
 const directionLabel = { up: 'up', down: 'down', flat: 'no change' };
 
 export function MetricCard({ label, value, icon, tone = 'primary', delta, loading, onClick, hint }: MetricProps) {
   const t = tones[tone];
+  const style = { '--metric-tint': t.tint } as CSSProperties;
   const content = (
     <>
       {icon && (
@@ -37,10 +38,11 @@ export function MetricCard({ label, value, icon, tone = 'primary', delta, loadin
       <div className="metric-card-body">
         <div className="metric-card-label">{label}</div>
         {loading ? (
-          <Skeleton.Input active size="small" style={{ width: 90, marginTop: 6, height: 26 }} />
+          <Skeleton.Input active size="small" style={{ width: 90, marginTop: 6, height: 28 }} />
         ) : (
           <div className="metric-card-value">{value}</div>
         )}
+        {hint && !loading && <div className="metric-card-hint">{hint}</div>}
         {delta && !loading && (
           <div className={`metric-card-delta ${delta.direction}`}>
             {delta.direction === 'up' ? <ArrowUpRight size={14} aria-hidden /> : delta.direction === 'down' ? <ArrowDownRight size={14} aria-hidden /> : <Minus size={14} aria-hidden />}
@@ -50,19 +52,19 @@ export function MetricCard({ label, value, icon, tone = 'primary', delta, loadin
           </div>
         )}
       </div>
-      {onClick && <ChevronRight size={16} className="metric-card-arrow" aria-hidden />}
+      {onClick && <ArrowRight size={16} className="metric-card-arrow" aria-hidden />}
     </>
   );
 
-  const card = onClick ? (
-    <button type="button" className="metric-card is-clickable" onClick={onClick} aria-label={`${label}: ${typeof value === 'string' || typeof value === 'number' ? value : ''}. Open details.`}>
+  return onClick ? (
+    <button type="button" className="metric-card is-clickable" style={style} title={hint} onClick={onClick} aria-label={`${label}: ${typeof value === 'string' || typeof value === 'number' ? value : ''}. Open details.`}>
       {content}
     </button>
   ) : (
-    <div className="metric-card">{content}</div>
+    <div className="metric-card" style={style} title={hint}>
+      {content}
+    </div>
   );
-
-  return hint ? <Tooltip title={hint}>{card}</Tooltip> : card;
 }
 
 export function MetricGrid({ children }: { children: ReactNode }) {

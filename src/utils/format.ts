@@ -31,7 +31,7 @@ export const titleCase = (s: string) => s.replace(/(^|\s|-)([a-z])/g, (m) => m.t
 
 /** Stable color for an arbitrary string (avatars). */
 export const hashColor = (input: string) => {
-  const palette = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#0f6e8c'];
+  const palette = ['#0780d8', '#ea580c', '#0d9488', '#ca8a04', '#e11d48', '#16a34a', '#0e7490', '#475569'];
   let h = 0;
   for (let i = 0; i < input.length; i++) h = (h * 31 + input.charCodeAt(i)) >>> 0;
   return palette[h % palette.length];

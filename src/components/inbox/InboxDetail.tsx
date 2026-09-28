@@ -16,6 +16,7 @@ import { AppModal } from '@/components/common/AppModal';
 import { RecordFormModal, type RecordKind } from '@/components/forms/RecordForms';
 import { hashColor, initials } from '@/utils/format';
 import { InboxAiPanel } from './InboxAiPanel';
+import { InboxComments } from './InboxComments';
 import { CategoryIcon, PriorityMark, StatusLabel, fullWhen, relativeWhen } from './inboxUi';
 
 export type ItemFlags = { portal: boolean; confidential: boolean; inactive: boolean };
@@ -351,6 +352,8 @@ export function InboxDetail({
                 ))}
               </dl>
             </section>
+
+            <InboxComments itemId={item.id} />
           </div>
 
           {/* ---- what to do about it ---- */}

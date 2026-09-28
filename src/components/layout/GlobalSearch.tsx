@@ -73,7 +73,7 @@ export function GlobalSearch({ autoFocus, onSelect }: { autoFocus?: boolean; onS
 
   const options = groups.map((g) => ({
     label: (
-      <span className="flex items-center gap-2" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#8a97a4' }}>
+      <span className="flex items-center gap-2" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#8c93a6' }}>
         {g.icon} {g.title}
       </span>
     ),

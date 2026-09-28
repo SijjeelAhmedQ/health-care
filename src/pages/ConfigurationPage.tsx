@@ -7,7 +7,7 @@ import { aiConfig, bridgeHttpUrl, clearAIOverride, effectiveConfig, getAIOverrid
 import { listModels, testModel, unloadOllamaModel, type ModelInfo, type ModelTestResult } from '@/services/ai/modelCatalog';
 import { getSttConfig, saveSttConfig, type SttConfig, type SttSettings } from '@/services/ai/sttConfig';
 import { getVoiceController } from '@/services/ai/voiceController';
-import { getCompute, switchCompute, type ComputeMode, type ComputeStatus, type RemoteSpeech } from '@/services/ai/compute';
+import { getCompute, REMOTE_LLMS, switchCompute, switchRemoteModel, type ComputeMode, type ComputeStatus, type RemoteSpeech } from '@/services/ai/compute';
 
 const RUNTIMES: Array<{ value: LLMProviderKind; label: string; hint: string; defaultUrl: string }> = [
   { value: 'ollama', label: 'Ollama', hint: 'Models you pull with `ollama pull …` appear here.', defaultUrl: 'http://127.0.0.1:11434' },
@@ -51,6 +51,9 @@ function ComputeSection() {
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
   const [speech, setSpeech] = useState<RemoteSpeech>('whisper');
+  // The language model on the server: the one in use while remote, qwen3.5:4b otherwise.
+  const remoteModelNow = () => (effectiveConfig().llm.apiUrl.endsWith('/ollama') ? effectiveConfig().llm.model : REMOTE_LLMS[0].name);
+  const [model, setModel] = useState<string>(remoteModelNow);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const revision = useAppSelector((s) => s.ui.aiConfigRevision);
@@ -62,6 +65,7 @@ function ComputeSection() {
       setMode(s.mode);
       setUrl((u) => u || s.remote_url);
       if (s.remote_engine) setSpeech(s.remote_engine);
+      if (s.mode === 'remote') setModel(remoteModelNow());
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -72,11 +76,22 @@ function ComputeSection() {
     void load();
   }, [load, revision]);
 
+  const sameServer = status?.mode === 'remote' && mode === 'remote' && url === status.remote_url && !key && speech === (status.remote_engine ?? 'whisper');
+  const modelInUse = status?.mode === 'remote' ? effectiveConfig().llm.model : null;
+
   const apply = async () => {
     setBusy(true);
     setError(null);
     try {
-      const { status: next, problem } = await switchCompute(mode, mode === 'remote' ? { url, key, speech } : undefined);
+      if (sameServer) {
+        // Already on the Kaggle GPU: change only the language model there.
+        const problem = await switchRemoteModel(model);
+        if (problem) setError(`${model} could not be loaded on the server: ${problem}`);
+        else message.success(`The assistant now runs on ${model} (Kaggle GPU)`);
+        await load();
+        return;
+      }
+      const { status: next, problem } = await switchCompute(mode, mode === 'remote' ? { url, key, speech, model } : undefined);
       setStatus(next);
       setKey('');
       if (problem) setError(`Switched, but the language model is not ready: ${problem}`);
@@ -95,7 +110,7 @@ function ComputeSection() {
       icon={<Server size={16} />}
       description="Both models move together: speech recognition (Omi Med STT) and the language model (Qwen). The microphone, voice detection and the app itself stay on this computer."
     >
-      <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)} style={{ marginBottom: 12 }}>
+      <Radio.Group className="choice-cards" value={mode} onChange={(e) => setMode(e.target.value)} style={{ marginBottom: 14 }}>
         <Space direction="vertical">
           <Radio value="local">
             <strong>This computer</strong> <span className="muted">Omi Med STT on the CPU, Qwen on this GPU (Ollama)</span>
@@ -115,7 +130,7 @@ function ComputeSection() {
           </label>
           <Input.Password id="compute-key" value={key} onChange={(e) => setKey(e.target.value)} placeholder={status?.has_key ? 'saved — leave empty to keep it' : ''} />
           <label style={{ marginTop: 8 }}>Speech model on the server</label>
-          <Radio.Group value={speech} onChange={(e) => setSpeech(e.target.value)}>
+          <Radio.Group className="choice-cards" value={speech} onChange={(e) => setSpeech(e.target.value)}>
             <Space direction="vertical">
               <Radio value="whisper">
                 <strong>Whisper large-v3-turbo</strong> <span className="muted">best with non-US accents; knows the app's patients, drugs and diagnoses</span>
@@ -123,6 +138,25 @@ function ComputeSection() {
               <Radio value="omi">
                 <strong>Omi Med STT v1</strong> <span className="muted">medical, trained mostly on US English</span>
               </Radio>
+            </Space>
+          </Radio.Group>
+          <label style={{ marginTop: 8 }}>Language model on the server</label>
+          <Radio.Group className="choice-cards" value={model} onChange={(e) => setModel(e.target.value)}>
+            <Space direction="vertical">
+              {REMOTE_LLMS.map((m) => {
+                const installed = remote?.ollama?.models;
+                const missing = !!installed?.length && !installed.includes(m.name);
+                return (
+                  <Radio key={m.name} value={m.name} disabled={missing}>
+                    <strong>{m.name}</strong> <span className="muted">{missing ? 'not on the server yet — run the updated careflow_kaggle.ipynb' : m.hint}</span>
+                    {modelInUse === m.name && (
+                      <Tag color="blue" style={{ marginLeft: 8 }}>
+                        in use
+                      </Tag>
+                    )}
+                  </Radio>
+                );
+              })}
             </Space>
           </Radio.Group>
           <div className="config-hint">
@@ -133,7 +167,7 @@ function ComputeSection() {
 
       {status && (
         <div className="config-status">
-          {status.mode === 'remote' && remote?.ok !== false ? <CheckCircle2 size={15} color="#0f9d58" /> : status.mode === 'remote' ? <CircleAlert size={15} color="#d64545" /> : <CheckCircle2 size={15} color="#0f9d58" />}
+          {status.mode === 'remote' && remote?.ok !== false ? <CheckCircle2 size={15} color="#0f9d63" /> : status.mode === 'remote' ? <CircleAlert size={15} color="#e5484d" /> : <CheckCircle2 size={15} color="#0f9d63" />}
           <span>Now:</span>
           <Tag color={status.mode === 'remote' ? 'blue' : 'green'}>{status.mode === 'remote' ? 'Kaggle GPU' : 'This computer'}</Tag>
           {status.mode === 'remote' && remote && (
@@ -145,11 +179,11 @@ function ComputeSection() {
       )}
 
       {error && <Alert type="error" showIcon message={error} style={{ marginTop: 12 }} />}
-      {busy && <Alert type="info" showIcon icon={<Loader2 size={16} className="spin" />} message="Switching both models — checking the server, loading speech recognition and the language model…" style={{ marginTop: 12 }} />}
+      {busy && <Alert type="info" showIcon icon={<Loader2 size={16} className="spin" />} message={sameServer ? `Loading ${model} on the Kaggle GPU — the first time takes a minute…` : 'Switching both models — checking the server, loading speech recognition and the language model…'} style={{ marginTop: 12 }} />}
 
       <Space wrap className="config-actions">
-        <Button type="primary" icon={<Save size={15} />} onClick={() => void apply()} loading={busy} disabled={mode === status?.mode && (mode === 'local' || (url === status.remote_url && !key && speech === (status.remote_engine ?? 'whisper')))}>
-          {mode === 'remote' ? 'Switch to the Kaggle GPU' : 'Switch to this computer'}
+        <Button type="primary" icon={<Save size={15} />} onClick={() => void apply()} loading={busy} disabled={mode === status?.mode && (mode === 'local' || (sameServer && model === modelInUse))}>
+          {sameServer ? `Switch to ${model}` : mode === 'remote' ? 'Switch to the Kaggle GPU' : 'Switch to this computer'}
         </Button>
       </Space>
     </SectionCard>
@@ -272,6 +306,7 @@ function LanguageModelSection() {
       <div className="config-field">
         <label>Runtime</label>
         <Radio.Group
+          className="choice-bar"
           value={draft.provider}
           onChange={(e) => {
             const next = RUNTIMES.find((r) => r.value === e.target.value)!;
@@ -311,6 +346,16 @@ function LanguageModelSection() {
         )}
         {selected?.tools === null && <div className="config-hint">This runtime does not say whether the model can call tools — use Test to find out.</div>}
         {models && <div className="config-hint">{models.length} model{models.length === 1 ? '' : 's'} installed · the list refreshes by itself, so a newly pulled model appears here.</div>}
+      </div>
+
+      <div className="config-field">
+        <label htmlFor="llm-plan">Break long requests into steps</label>
+        <Space align="start">
+          <Switch id="llm-plan" checked={draft.planSteps !== false} onChange={(on) => set('planSteps', on)} />
+          <span className="config-hint" style={{ marginTop: 0 }}>
+            A long request (“go to patients, select James, add metformin, a task, a recall and an appointment”) is first split into its actions, which are then done one by one — the assistant panel shows the steps. Short requests are not affected. Takes one extra model call.
+          </span>
+        </Space>
       </div>
 
       <Collapse
@@ -455,7 +500,7 @@ function SpeechModelSection() {
       {config && draft && (
         <>
           <div className="config-status">
-            {config.engine.ready ? <CheckCircle2 size={15} color="#0f9d58" /> : <CircleAlert size={15} color="#d64545" />}
+            {config.engine.ready ? <CheckCircle2 size={15} color="#0f9d63" /> : <CircleAlert size={15} color="#e5484d" />}
             <span>{config.engine.ready ? 'Running:' : 'Not running:'}</span> <Tag color={config.engine.ready ? 'green' : 'red'}>{config.engine.engine}</Tag>
             {config.engine.error && <span className="muted">{config.engine.error}</span>}
           </div>
@@ -519,14 +564,14 @@ function SpeechModelSection() {
             <div className="config-field">
               <label>Device and precision</label>
               <Space direction="vertical" style={{ width: '100%' }}>
-                <Radio.Group value={draft.backend} onChange={(e) => set('backend', e.target.value)}>
+                <Radio.Group className="choice-cards is-row" value={draft.backend} onChange={(e) => set('backend', e.target.value)}>
                   {(config.onnx_backends ?? []).map((b) => (
                     <Radio key={b.id} value={b.id} disabled={!b.available}>
                       <strong>{b.id === 'cuda' ? 'GPU (CUDA)' : 'CPU'}</strong> {!b.available && <span className="muted">{b.reason}</span>}
                     </Radio>
                   ))}
                 </Radio.Group>
-                <Radio.Group value={draft.precision ?? 'int8'} onChange={(e) => set('precision', e.target.value)}>
+                <Radio.Group className="choice-cards is-row" value={draft.precision ?? 'int8'} onChange={(e) => set('precision', e.target.value)}>
                   <Radio value="int8">
                     <strong>int8</strong> <span className="muted">~630 MB · fastest on the CPU</span>
                   </Radio>
@@ -548,7 +593,7 @@ function SpeechModelSection() {
           {draft.engine === 'gguf' && (
             <div className="config-field">
               <label>Backend</label>
-              <Radio.Group value={draft.backend} onChange={(e) => set('backend', e.target.value)}>
+              <Radio.Group className="choice-cards" value={draft.backend} onChange={(e) => set('backend', e.target.value)}>
                 <Space direction="vertical">
                   {config.backends.map((b) => (
                     <Radio key={b.id} value={b.id} disabled={!b.available}>
@@ -566,7 +611,7 @@ function SpeechModelSection() {
           {config.refiners && (
             <div className="config-field">
               <label>Second recogniser for names and drugs</label>
-              <Radio.Group value={draft.refine ?? ''} onChange={(e) => set('refine', e.target.value)}>
+              <Radio.Group className="choice-cards" value={draft.refine ?? ''} onChange={(e) => set('refine', e.target.value)}>
                 <Space direction="vertical">
                   {config.refiners.map((r) => (
                     <Radio key={r.id || 'off'} value={r.id}>
@@ -597,10 +642,18 @@ function SpeechModelSection() {
               <div className="config-hint">How often the words on screen update while you speak.</div>
             </div>
             <div className="config-field">
-              <label>
-                <Switch size="small" checked={draft.record} onChange={(v) => set('record', v)} style={{ marginRight: 8 }} />
-                Record voice commands for troubleshooting
-              </label>
+              <label>Record voice commands for troubleshooting</label>
+              <Radio.Group
+                aria-label="Record voice commands for troubleshooting"
+                className="choice-bar is-sm"
+                optionType="button"
+                value={!!draft.record}
+                onChange={(e) => set('record', e.target.value as boolean)}
+                options={[
+                  { value: false, label: 'Off' },
+                  { value: true, label: 'On' },
+                ]}
+              />
               <div className="config-hint">
                 Keeps each spoken command's audio, what was heard and what the assistant did, in python/recordings on this computer. Takes effect the next time the microphone is turned on. Leave it off normally.
               </div>

@@ -7,7 +7,7 @@ Configuration → "Where the AI runs" → Kaggle GPU switches the whole assistan
     app's names as a prompt) and Omi Med STT v1; CAREFLOW_STT lists what to load (whisper,omi,parakeet). The bridge on the provider's
     computer keeps the microphone stream, voice detection and live text; it sends each piece of speech here.
         POST /transcribe?engine=whisper&prompt=...   body: 16 kHz mono 16-bit PCM  →  {"text": "...", "ms": 123}
-  * the language model — Ollama with qwen3.5:4b on the same GPU, reached through
+  * the language model — Ollama with qwen3.5:4b or qwen3.5:9b on the same GPU, reached through
         /ollama/<Ollama API path>     e.g. POST /ollama/api/chat
   * GET /health  →  the speech model, the GPU, and the models Ollama has
 
@@ -17,7 +17,7 @@ Kaggle notebook (Settings → Accelerator: GPU T4, Internet: on), one cell each:
 
     !curl -fsSL https://ollama.com/install.sh | sh
     !nohup ollama serve > ollama.log 2>&1 &
-    !sleep 5; ollama pull qwen3.5:4b
+    !sleep 5; ollama pull qwen3.5:4b; ollama pull qwen3.5:9b
     !pip install -q omi-med-stt faster-whisper fastapi uvicorn httpx
     # Omi Med STT on the GPU: builds parakeet.cpp for CUDA (Kaggle has CMake and the CUDA Toolkit; a few minutes)
     !omi-med-stt install-cpp --cpp-backend cuda
@@ -43,6 +43,8 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 STT = [e.strip() for e in os.getenv("CAREFLOW_STT", "whisper,omi").lower().split(",") if e.strip()]
 KEY = os.getenv("CAREFLOW_KEY", "")
 OLLAMA = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
+#: Whisper's mean log-probability below which a transcript is not trusted (see /transcribe).
+UNCLEAR_BELOW = float(os.getenv("CAREFLOW_UNCLEAR_BELOW", "-0.65"))
 SAMPLE_RATE = 16000
 
 
@@ -59,12 +61,12 @@ def load_omi():
             print(f"Omi Med STT on {backend} failed: {exc}", flush=True)
             continue
 
-        def recognize(pcm: np.ndarray, prompt: str | None = None) -> str:
+        def recognize(pcm: np.ndarray, prompt: str | None = None) -> tuple[str, float | None]:
             try:
-                return rt._render_unknown_tokens(capi.transcribe_pcm(np.ascontiguousarray(pcm, dtype=np.float32))).strip()
+                return rt._render_unknown_tokens(capi.transcribe_pcm(np.ascontiguousarray(pcm, dtype=np.float32))).strip(), None
             except RuntimeError as exc:
                 if "empty transcript" in str(exc).lower():  # silence or noise
-                    return ""
+                    return "", None
                 raise
 
         return f"omi-med-stt-v1 (gguf q8_0)", backend, recognize
@@ -85,7 +87,7 @@ def load_parakeet():
     device = "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device == "cuda" else ["CPUExecutionProvider"]
     model = onnx_asr.load_model(name, os.getenv("CAREFLOW_MODEL_PATH") or None, quantization=os.getenv("CAREFLOW_QUANT") or None, providers=providers)
-    return name, device, lambda pcm, prompt=None: str(model.recognize(pcm, sample_rate=SAMPLE_RATE)).strip()
+    return name, device, lambda pcm, prompt=None: (str(model.recognize(pcm, sample_rate=SAMPLE_RATE)).strip(), None)
 
 
 def load_whisper():
@@ -104,13 +106,18 @@ def load_whisper():
         print(f"Whisper on cuda failed: {exc}", flush=True)
         model, device = WhisperModel(size, device="cpu", compute_type="int8"), "cpu"
 
-    def recognize(pcm: np.ndarray, prompt: str | None = None) -> str:
-        segments, _ = model.transcribe(pcm, language="en", beam_size=5, initial_prompt=prompt or None, condition_on_previous_text=False, vad_filter=False, without_timestamps=True)
+    def recognize(pcm: np.ndarray, prompt: str | None = None) -> tuple[str, float | None]:
+        """The text and how sure Whisper is of it (mean log-probability per token, 0 = certain)."""
+        segments = list(model.transcribe(pcm, language="en", beam_size=5, initial_prompt=prompt or None, condition_on_previous_text=False, vad_filter=False, without_timestamps=True)[0])
         text = " ".join(s.text.strip() for s in segments).strip()
         # On near-silence Whisper can read its prompt back ("Patients: ..."): that is not speech.
-        if prompt and len(text) > 20 and text.rstrip(".") in prompt:
-            return ""
-        return text
+        if not segments or (prompt and len(text) > 20 and text.rstrip(".") in prompt):
+            return "", None
+        confidence = min(s.avg_logprob for s in segments)
+        # Words repeated over and over ("Thank you. Thank you. Thank you.") are Whisper filling noise.
+        if max(s.compression_ratio for s in segments) > 2.0:
+            confidence = min(confidence, UNCLEAR_BELOW - 1)
+        return text, confidence
 
     return f"whisper-{size}", device, recognize
 
@@ -183,8 +190,11 @@ async def transcribe(request: Request, engine: str = "", prompt: str = "", x_car
     if len(pcm) < SAMPLE_RATE // 10:
         return {"text": "", "ms": 0}
     started = time.perf_counter()
-    text = recognize(pcm, prompt or None)
-    return {"text": text, "ms": round((time.perf_counter() - started) * 1000)}
+    text, confidence = recognize(pcm, prompt or None)
+    # Too unsure to act on (measured on the provider's recordings: clear commands scored −0.16…−0.45,
+    # noise and mumbling turned into words scored −0.72…−1.08): say so instead of guessing.
+    unclear = bool(text) and confidence is not None and confidence < UNCLEAR_BELOW
+    return {"text": "" if unclear else text, "unclear": unclear, "heard": text if unclear else None, "confidence": confidence, "ms": round((time.perf_counter() - started) * 1000)}
 
 
 if __name__ == "__main__":

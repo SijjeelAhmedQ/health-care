@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Tag, Tooltip, message } from 'antd';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { ClipboardList, Pencil, Trash2, UserPlus, UserRoundCheck } from 'lucide-react';
+import { ClipboardList, FolderHeart, HeartPulse, Pencil, Trash2, UserPlus, UserRoundCheck, Users } from 'lucide-react';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { deletePatient, patientSelectors, setCurrentPatient } from '@/store/slices/patientSlice';
 import { usePatientOverview } from '@/hooks/usePatientData';
@@ -193,10 +193,10 @@ export default function PatientModulePage() {
       )}
 
       <MetricGrid>
-        <MetricCard label="Patients" value={patients.length} tone="primary" hint="Everyone registered at this practice" />
-        <MetricCard label="Selected patient" value={selected ? selected.fullName : 'None selected'} tone={selected ? 'success' : 'warning'} hint={selected ? `MRN ${selected.mrn}` : 'Pick a patient to unlock the other modules'} />
-        <MetricCard label="Their records" value={selected ? overview.counts.medication + overview.counts.diagnosis + overview.counts.task + overview.counts.recall + overview.counts.appointment : '—'} tone="info" hint="Medications, diagnoses, tasks, recalls and appointments" />
-        <MetricCard label="Active patients" value={patients.filter((p) => p.status === 'Active').length} tone="neutral" />
+        <MetricCard label="Patients" value={patients.length} icon={<Users size={19} />} tone="primary" hint="Everyone registered at this practice" />
+        <MetricCard label="Selected patient" value={selected ? selected.fullName : 'None selected'} icon={<UserRoundCheck size={19} />} tone={selected ? 'success' : 'warning'} hint={selected ? `MRN ${selected.mrn}` : 'Pick a patient to unlock the other modules'} />
+        <MetricCard label="Their records" value={selected ? overview.counts.medication + overview.counts.diagnosis + overview.counts.task + overview.counts.recall + overview.counts.appointment : '—'} icon={<FolderHeart size={19} />} tone="info" hint="Medications, diagnoses, tasks, recalls and appointments" />
+        <MetricCard label="Active patients" value={patients.filter((p) => p.status === 'Active').length} icon={<HeartPulse size={19} />} tone="neutral" />
       </MetricGrid>
 
       <DataTable<Patient>

@@ -11,7 +11,11 @@ import { getVoiceController } from '@/services/ai/voiceController';
 type IconName = keyof typeof icons;
 function Icon({ name }: { name?: string }) {
   const Cmp = (name && (icons[name as IconName] as icons.LucideIcon)) || icons.ChevronRight;
-  return <Cmp size={16} className="muted" />;
+  return (
+    <span className="command-palette-item-icon">
+      <Cmp size={16} className="muted" />
+    </span>
+  );
 }
 
 export function CommandPalette() {
@@ -95,7 +99,9 @@ export function CommandPalette() {
               void getVoiceController().handleTranscript(query);
             }}
           >
-            <icons.Sparkles size={16} className="muted" />
+            <span className="command-palette-item-icon">
+              <icons.Sparkles size={16} color="var(--color-accent)" />
+            </span>
             <div>
               <div className="command-palette-item-title">Ask the assistant: “{query}”</div>
               <div className="command-palette-item-sub">Send it to the assistant as a request in your own words</div>

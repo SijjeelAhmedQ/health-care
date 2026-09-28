@@ -96,7 +96,7 @@ export function FormModal<T extends object>({ open, title, description, icon, si
     if (form.isFieldsTouched()) {
       Modal.confirm({
         title: 'Discard unsaved changes?',
-        icon: <AlertTriangle size={20} color="#d98800" style={{ marginRight: 12, flexShrink: 0 }} />,
+        icon: <AlertTriangle size={20} color="#d97706" style={{ marginRight: 12, flexShrink: 0 }} />,
         content: 'The information you entered has not been saved.',
         okText: 'Discard',
         okButtonProps: { danger: true },
@@ -160,7 +160,7 @@ export function confirmAction({ title, content, okText = 'Confirm', danger, onOk
     cancelText: 'Cancel',
     okButtonProps: { danger },
     centered: true,
-    icon: <AlertTriangle size={20} color={danger ? '#d64545' : '#d98800'} style={{ marginRight: 12, flexShrink: 0 }} />,
+    icon: <AlertTriangle size={20} color={danger ? '#e5484d' : '#d97706'} style={{ marginRight: 12, flexShrink: 0 }} />,
     onOk: () => { void onOk(); },
   });
 }

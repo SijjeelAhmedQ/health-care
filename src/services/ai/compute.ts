@@ -14,6 +14,12 @@ import { unloadOllamaModel } from './modelCatalog';
 export type ComputeMode = 'local' | 'remote';
 export type RemoteSpeech = 'whisper' | 'omi';
 
+/** The language models the Kaggle notebook installs — the provider picks one while the AI runs there. */
+export const REMOTE_LLMS = [
+  { name: 'qwen3.5:4b', hint: 'faster replies' },
+  { name: 'qwen3.5:9b', hint: 'better at long, many-part requests; slower' },
+] as const;
+
 export interface ComputeStatus {
   mode: ComputeMode;
   remote_url: string;
@@ -25,6 +31,23 @@ export interface ComputeStatus {
 }
 
 const LOCAL_LLM_URL_KEY = 'careflow.compute.localLlmUrl';
+/** The model this computer ran before switching to remote — it comes back with "This computer". */
+const LOCAL_LLM_MODEL_KEY = 'careflow.compute.localLlmModel';
+
+const remember = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode: the defaults are used on the way back */
+  }
+};
+const recall = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
 const trimSlash = (u: string) => u.replace(/\/$/, '');
 
 async function call(url: string, init?: RequestInit): Promise<ComputeStatus> {
@@ -48,11 +71,7 @@ export const getCompute = () => call(`${bridge()}/api/config/compute`);
 /** The app's language model address for a mode: the bridge's proxy while remote, the local Ollama otherwise. */
 export function llmUrlFor(mode: ComputeMode): string {
   if (mode === 'remote') return `${bridge()}/ollama`;
-  try {
-    return localStorage.getItem(LOCAL_LLM_URL_KEY) || aiConfig.llm.apiUrl;
-  } catch {
-    return aiConfig.llm.apiUrl;
-  }
+  return recall(LOCAL_LLM_URL_KEY) || aiConfig.llm.apiUrl;
 }
 
 /**
@@ -60,29 +79,46 @@ export function llmUrlFor(mode: ComputeMode): string {
  * switches; then the language model is pointed at the new place, loaded and its cache primed.
  * Resolves with the new status and, when the language model could not be loaded, why.
  */
-export async function switchCompute(mode: ComputeMode, remote?: { url: string; key: string; speech?: RemoteSpeech }): Promise<{ status: ComputeStatus; problem: string | null }> {
+export async function switchCompute(
+  mode: ComputeMode,
+  remote?: { url: string; key: string; speech?: RemoteSpeech; model?: string },
+): Promise<{ status: ComputeStatus; problem: string | null }> {
   const status = await call(`${bridge()}/api/config/compute`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode, remote_url: remote?.url ?? '', remote_key: remote?.key ?? '', remote_engine: remote?.speech ?? 'whisper' }),
   });
   const llm = effectiveConfig().llm;
-  if (mode === 'remote' && !llm.apiUrl.endsWith('/ollama')) {
-    try {
-      localStorage.setItem(LOCAL_LLM_URL_KEY, llm.apiUrl);
-    } catch {
-      /* private mode: the default local address is used on the way back */
-    }
+  const wasRemote = llm.apiUrl.endsWith('/ollama');
+  if (mode === 'remote' && !wasRemote) {
+    remember(LOCAL_LLM_URL_KEY, llm.apiUrl);
+    remember(LOCAL_LLM_MODEL_KEY, llm.model);
     // The local GPU is not needed any more: free it.
     if (llm.provider === 'ollama') await unloadOllamaModel(llm.apiUrl, llm.model).catch(() => undefined);
   }
+  // Remote: the model the provider picked there. Back home: the model this computer ran before.
+  const model = mode === 'remote' ? (remote?.model ?? llm.model) : wasRemote ? (recall(LOCAL_LLM_MODEL_KEY) ?? aiConfig.llm.model) : llm.model;
   const models = status.remote?.ollama?.models ?? [];
-  if (mode === 'remote' && models.length && !models.includes(llm.model)) {
-    return { status, problem: `The remote server does not have ${llm.model} (it has ${models.join(', ')}). Run "ollama pull ${llm.model}" there.` };
+  if (mode === 'remote' && models.length && !models.includes(model)) {
+    return { status, problem: `The remote server does not have ${model} (it has ${models.join(', ')}). Run the updated careflow_kaggle.ipynb, or "ollama pull ${model}" there.` };
   }
-  setAIOverride({ ...getAIOverride(), llm: { ...llm, provider: 'ollama', apiUrl: llmUrlFor(mode) } });
+  setAIOverride({ ...getAIOverride(), llm: { ...llm, provider: 'ollama', apiUrl: llmUrlFor(mode), model } });
   const controller = getVoiceController();
   controller.reconfigure();
   const problem = await controller.warmUp();
   return { status, problem };
+}
+
+/**
+ * While the AI runs remotely: change only the language model there (qwen3.5:4b ↔ qwen3.5:9b). Speech
+ * recognition is untouched; the old model is unloaded so the GPU holds one language model at a time.
+ */
+export async function switchRemoteModel(model: string): Promise<string | null> {
+  const llm = effectiveConfig().llm;
+  if (llm.model === model) return null;
+  await unloadOllamaModel(llm.apiUrl, llm.model).catch(() => undefined);
+  setAIOverride({ ...getAIOverride(), llm: { ...llm, model } });
+  const controller = getVoiceController();
+  controller.reconfigure();
+  return controller.warmUp();
 }

@@ -23,7 +23,7 @@ export const statusColor: Record<string, string> = {
   Scheduled: 'blue',
   Confirmed: 'cyan',
   'Checked In': 'geekblue',
-  'In Progress': 'purple',
+  'In Progress': 'cyan',
   'No Show': 'red',
   Rescheduled: 'orange',
   Routine: 'default',
@@ -33,7 +33,7 @@ export const statusColor: Record<string, string> = {
   // clinical
   Discontinued: 'red',
   'On Hold': 'gold',
-  Chronic: 'purple',
+  Chronic: 'geekblue',
   Resolved: 'green',
   Mild: 'green',
   Moderate: 'gold',

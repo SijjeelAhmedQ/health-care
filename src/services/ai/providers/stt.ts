@@ -46,6 +46,8 @@ export interface ListeningCallbacks {
   onTranscribing?(): void;
   /** Called once when the session has fully ended (after stop/cancel or a fatal error). */
   onEnd?(): void;
+  /** Speech was heard but the recogniser is too unsure of the words to act on them (noise, mumbling). */
+  onUnclear?(): void;
   /** The recogniser is connected; `recording` = it keeps each utterance for voice diagnostics. */
   onReady?(info: { recording: boolean }): void;
 }
@@ -103,7 +105,7 @@ type ServerEvent =
   | { type: 'speech_start' }
   | { type: 'partial'; text: string }
   | { type: 'speech_end' }
-  | { type: 'final'; text: string; alt?: string }
+  | { type: 'final'; text: string; alt?: string; unclear?: boolean }
   | { type: 'flushed' }
   | { type: 'error'; message: string; fatal?: boolean };
 
@@ -180,6 +182,7 @@ export class OmiStreamingSTT implements MicrophoneRecognizer {
           case 'final':
             callbacks.onInterim?.('');
             if (event.text.trim()) callbacks.onFinal(event.text.trim(), event.alt?.trim() || undefined);
+            else if (event.unclear) callbacks.onUnclear?.();
             break;
           case 'flushed':
             if (stopping) end();

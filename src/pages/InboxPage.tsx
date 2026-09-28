@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Button, Switch, Tooltip, message, type InputRef } from 'antd';
+import { Button, Radio, Tooltip, message, type InputRef } from 'antd';
 import { ArrowRight, CircleAlert, Inbox as InboxIcon, Mic, MousePointerClick, RefreshCw, TriangleAlert, UserRoundCheck, Users } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -394,10 +394,21 @@ export default function InboxPage() {
             </button>
           </Tooltip>
           <Tooltip title={confirmFiling ? 'Voice asks “File this record?” before filing or unfiling' : 'Voice files straight away — Undo stays available'}>
-            <label className="ibx-voice-setting">
-              <Switch size="small" checked={confirmFiling} onChange={setConfirmFiling} aria-label="Ask before filing by voice" />
-              <span>Confirm voice filing</span>
-            </label>
+            <div className="ibx-voice-setting">
+              <span>Voice filing</span>
+              <Radio.Group
+                className="choice-bar is-sm"
+                optionType="button"
+                size="small"
+                value={confirmFiling}
+                onChange={(e) => setConfirmFiling(e.target.value as boolean)}
+                aria-label="Ask before filing by voice"
+                options={[
+                  { value: true, label: 'Ask first' },
+                  { value: false, label: 'File at once' },
+                ]}
+              />
+            </div>
           </Tooltip>
           <Tooltip title="What the assistant can do">
             <Button size="small" icon={<Mic size={14} />} onClick={() => dispatch(voiceActions.setHelpOpen(true))} className="ibx-voice-help-btn" aria-label="What the assistant can do">

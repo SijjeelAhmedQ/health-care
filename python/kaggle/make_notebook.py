@@ -4,7 +4,7 @@ Builds careflow_kaggle.ipynb — the notebook to import into Kaggle (File → Im
     python python/kaggle/make_notebook.py
 
 Cell 1 writes careflow_gpu_server.py (this folder's copy, so the two never drift apart); cell 2 installs
-Ollama + qwen3.5:4b and Omi Med STT (CUDA), starts the server and prints the address and key to put in
+Ollama + qwen3.5:4b and qwen3.5:9b, Whisper and Omi Med STT, starts the server and prints the address and key to put in
 CareFlow → Configuration → Where the AI runs → Kaggle GPU.
 """
 import json
@@ -13,7 +13,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 server = (HERE / "careflow_gpu_server.py").read_text(encoding="utf-8")
 
-launcher = r'''# CareFlow on this GPU: Qwen (Ollama) + Omi Med STT v1, behind one public address.
+launcher = r'''# CareFlow on this GPU: Qwen 3.5 4B and 9B (Ollama) + Whisper / Omi Med STT v1, behind one public address.
 # Notebook settings: Accelerator = GPU T4, Internet = On. Then Run All.
 import os, subprocess, time
 
@@ -24,12 +24,16 @@ def sh(cmd, check=True):
     print("$", cmd, flush=True)
     return subprocess.run(cmd, shell=True, check=check)
 
-# 1. The language model: Ollama with qwen3.5:4b on the GPU (its installer needs zstd, which Kaggle's image lacks)
+# 1. The language models: Ollama with qwen3.5:4b and qwen3.5:9b on the GPU (its installer needs zstd, which
+#    Kaggle's image lacks). Pick one in CareFlow → Configuration → Where the AI runs → Language model on the server.
+#    One language model is in GPU memory at a time, so Whisper always has room next to it.
 sh("apt-get update -qq && apt-get install -y -qq zstd")
 sh("curl -fsSL https://ollama.com/install.sh | sh")
-subprocess.Popen(["ollama", "serve"], stdout=open("/kaggle/working/ollama.log", "w"), stderr=subprocess.STDOUT)
+subprocess.Popen(["ollama", "serve"], stdout=open("/kaggle/working/ollama.log", "w"), stderr=subprocess.STDOUT,
+                 env={**os.environ, "OLLAMA_MAX_LOADED_MODELS": "1"})
 time.sleep(8)
 sh("ollama pull qwen3.5:4b")
+sh("ollama pull qwen3.5:9b")  # ~6.6 GB — a few more minutes on the first run
 
 # 2. Speech recognition: Whisper large-v3-turbo on the GPU (best with non-US accents) and Omi Med STT v1.
 #    The server builds parakeet.cpp for CUDA for Omi the first time it starts (5–15 minutes; CPU build if that fails).

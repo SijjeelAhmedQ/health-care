@@ -28,6 +28,8 @@ export interface AIConfig {
     numCtx: number;
     /** Most model calls one utterance may take (tool call → result → next tool …). */
     maxSteps: number;
+    /** Split a long request into its actions first, then carry them out one by one (on unless turned off). */
+    planSteps?: boolean;
   };
   enableVoice: boolean;
   enableDebugPanel: boolean;
@@ -51,6 +53,7 @@ export const aiConfig: AIConfig = {
     numGpu: num(env.VITE_LLM_NUM_GPU, 99),
     numCtx: num(env.VITE_LLM_NUM_CTX, 12288),
     maxSteps: num(env.VITE_AGENT_MAX_STEPS, 8),
+    planSteps: bool(env.VITE_AGENT_PLAN_STEPS, true),
   },
   enableVoice: bool(env.VITE_ENABLE_VOICE, true),
   enableDebugPanel: bool(env.VITE_ENABLE_DEBUG_PANEL, true),

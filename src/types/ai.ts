@@ -89,6 +89,16 @@ export interface PendingConfirmation {
   inboxFile?: boolean;
 }
 
+/**
+ * One action of a long request that was split into steps ("go to patients, select James, add … a task … a
+ * recall … an appointment"), carried out one after another. Shown to the provider as progress only.
+ */
+export interface PlanStep {
+  text: string;
+  /** 'waiting' = done, and it left a question or a confirmation for the provider. */
+  status: 'pending' | 'running' | 'done' | 'waiting';
+}
+
 /** One step of an agent turn, for the trace and the debug panel. */
 export type AgentStep =
   | { id: string; type: 'model'; startedAt: number; finishedAt?: number; content?: string; toolCalls?: ToolCall[]; error?: string }

@@ -18,7 +18,9 @@ The SESSION message gives today's date, the next days, dates further ahead and t
 
 How to work:
 - Work out what the provider wants from SAID and CONTEXT, then call the tool or tools that do it — several, in order, when the request has several parts.
-- Use only what the provider said. Never invent drugs, doses, dates, names or ids. Leave out whatever was not said: the app asks for missing required values itself.
+- Use only what the provider said. Never invent drugs, doses, dates, names or ids. Leave out every field that was not said — including ones that seem obvious (route, status, priority, category, a reason, who diagnosed): the app fills defaults and asks for missing required values itself.
+- A dose, frequency or duration said once for a list of drugs belongs to the drug it was said with, unless the provider said it applies to all.
+- When a tool asks the provider something or waits for their confirmation, still do the other parts of the request; never answer that question yourself.
 - Put values in the tools' formats: dates YYYY-MM-DD, resolving "today", "tomorrow", "next Friday", "in two weeks", "after 3 months" from the SESSION date, next days and in-dates; times as 24-hour HH:mm; a select field takes exactly one of its listed options ("twice a day" and "BID" are both "Twice daily"); a dose keeps its unit ("500 milligrams" is "500 mg").
 - When one request adds records of more than one kind (medications, diagnoses, tasks, recalls, appointments), call add_care_plan once with all of them — naming the patient in it when the provider names one — instead of several add_* tools.
 - Records and patients are best identified by the id from an earlier tool result; otherwise by the name the provider used.
@@ -61,7 +63,7 @@ const sameWords = (a: string, b: string) => {
   return words(a) === words(b);
 };
 
-export function buildUserMessage(said: string, ctx: AIContext, earlier: Exchange[] = [], alsoHeard?: string): string {
+export function buildUserMessage(said: string, ctx: AIContext, earlier: Exchange[] = [], alsoHeard?: string, step?: { index: number; total: number }): string {
   const lines = [
     `time: ${ctx.now}`,
     `page: ${ctx.currentPageId ? `${ctx.currentPageId} (${ctx.currentPageTitle})` : 'none'}`,
@@ -85,8 +87,19 @@ export function buildUserMessage(said: string, ctx: AIContext, earlier: Exchange
   if (ctx.carePlan) lines.push(`care plan open (the open form is its record tab on screen): ${ctx.carePlan}`);
   if (ctx.extracted) lines.push(`AI Summary items waiting to be added: ${ctx.extracted}`);
   for (const e of earlier) lines.push(`earlier: "${clip(e.said, 120)}" → ${clip(e.reply, 120)}`);
+  if (step) lines.push(`request: step ${step.index} of ${step.total} of a longer request — do only this step (the earlier lines show the steps before it; the rest follow)`);
   const second = alsoHeard && !sameWords(alsoHeard, said) ? `\nALSO HEARD: ${alsoHeard}` : '';
   return `CONTEXT\n${lines.join('\n')}\n\nSAID: ${said}${second}`;
+}
+
+/**
+ * The user message that asks for a long request to be split into its actions before any is carried out:
+ * a small model doing "…metformin, a task, a recall and an appointment" in one go tends to stop part-way.
+ */
+export function buildPlanMessage(said: string, ctx: AIContext, earlier: Exchange[] = [], alsoHeard?: string): string {
+  return `${buildUserMessage(said, ctx, earlier, alsoHeard)}
+
+TASK: PLAN. Do not act yet. Call plan_steps with the separate actions SAID asks for, in the order said — each a short instruction that keeps every detail belonging to it (names, drugs, doses, dates, times). Never add, drop or change a detail; keep dates and times in the provider's words ("next Tuesday at 3 pm") — do not work them out. Records of one kind said together (a list of medications) are one step; each other kind of record is its own step. If SAID is a single action, a question, an answer to a pending question or confirmation, or a clinical note being dictated, call plan_steps with SAID as the only step.`;
 }
 
 /** The user message that asks for a clinical note to be extracted into structured items. */
