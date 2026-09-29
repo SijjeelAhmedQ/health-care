@@ -30,9 +30,17 @@ export interface ToolSchema {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 
+/**
+ * How much one answer may say. A tool call for several patients' records runs long (4 patients × 3 drugs
+ * came to ~500 tokens); at 512 it was cut off, and a cut-off tool call is dropped by the runtime.
+ */
+export const DEFAULT_MAX_TOKENS = 1536;
+
 export interface ChatTurn {
   content: string;
   toolCalls: ToolCall[];
+  /** The answer hit the output limit before it was finished (a tool call in it may have been lost). */
+  truncated?: boolean;
   /** Prompt tokens the runtime reused from its cache / had to process — for the trace. */
   usage?: { promptTokens?: number; cachedTokens?: number; outputTokens?: number; ms?: number };
 }
@@ -128,18 +136,44 @@ export class OllamaChat implements ChatLLM {
       stream: false,
       think: false,
       keep_alive: OllamaChat.KEEP_ALIVE,
-      options: { temperature: 0, num_predict: maxTokens, num_ctx: this.cfg.numCtx, num_gpu: this.cfg.numGpu },
+      options: { temperature: 0, num_predict: maxTokens, num_ctx: this.contextFor(messages, tools), num_gpu: this.cfg.numGpu },
     };
   }
 
+  private sizedFor: { tools: ToolSchema[]; system: string; ctx: number } | null = null;
+
+  /**
+   * The context window, never smaller than what the request's fixed part needs. A prompt longer than the
+   * window is cut from the START by the runtime — the system prompt and today's date go first, and the
+   * model is left guessing (it answered "today (2025-06-14)" and called no tool). So the window grows with
+   * the tool list: the system prompt and tool schemas (fixed for the session), plus room for the
+   * conversation, the tool results and the answer. It changes only when the tools do — a different window
+   * on every request would reload the model each time.
+   */
+  private contextFor(messages: ChatMessage[], tools: ToolSchema[]): number {
+    const system = messages[0]?.role === 'system' ? messages[0].content : '';
+    if (this.sizedFor?.tools !== tools || this.sizedFor.system !== system) {
+      const fixedChars = JSON.stringify(tools).length + system.length;
+      const needed = Math.ceil(fixedChars / OllamaChat.CHARS_PER_TOKEN) + OllamaChat.ROOM_TOKENS;
+      this.sizedFor = { tools, system, ctx: Math.max(this.cfg.numCtx, Math.ceil(needed / 1024) * 1024) };
+    }
+    return this.sizedFor.ctx;
+  }
+
+  /** Measured on Qwen 3.5 with this app's schemas: ~3.6 characters a token; 3.3 leaves a margin. */
+  static readonly CHARS_PER_TOKEN = 3.3;
+  /** CONTEXT, the utterance, a few tool results and the answer. */
+  static readonly ROOM_TOKENS = 5120;
+
   async chat(messages: ChatMessage[], tools: ToolSchema[], options?: ChatOptions): Promise<ChatTurn> {
     const started = Date.now();
-    const res = await post(`${trimSlash(this.cfg.apiUrl)}/api/chat`, this.body(messages, tools, options?.maxTokens ?? 512), this.cfg.timeoutMs, options?.signal);
+    const res = await post(`${trimSlash(this.cfg.apiUrl)}/api/chat`, this.body(messages, tools, options?.maxTokens ?? DEFAULT_MAX_TOKENS), this.cfg.timeoutMs, options?.signal);
     const data = (await res.json()) as {
       message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> };
       prompt_eval_count?: number;
       prompt_eval_cached_count?: number;
       eval_count?: number;
+      done_reason?: string;
     };
     const toolCalls = (data.message?.tool_calls ?? [])
       .filter((c) => c.function?.name)
@@ -147,6 +181,7 @@ export class OllamaChat implements ChatLLM {
     return {
       content: data.message?.content ?? '',
       toolCalls,
+      truncated: data.done_reason === 'length',
       usage: { promptTokens: data.prompt_eval_count, cachedTokens: data.prompt_eval_cached_count, outputTokens: data.eval_count, ms: Date.now() - started },
     };
   }
@@ -208,25 +243,31 @@ function toOpenAI(messages: ChatMessage[]) {
 export class OpenAICompatibleChat implements ChatLLM {
   readonly name: string;
   constructor(private readonly cfg: AIConfig['llm']) {
-    this.name = `openai-compatible:${cfg.model}`;
+    // Through the bridge's OpenRouter proxy it is an OpenRouter model (e.g. openrouter:openai/gpt-6-sol).
+    this.name = `${trimSlash(cfg.apiUrl).endsWith('/openrouter/api') ? 'openrouter' : 'openai-compatible'}:${cfg.model}`;
   }
   async chat(messages: ChatMessage[], tools: ToolSchema[], options?: ChatOptions): Promise<ChatTurn> {
     const started = Date.now();
     const res = await post(
       `${trimSlash(this.cfg.apiUrl)}/v1/chat/completions`,
-      { model: this.cfg.model, messages: toOpenAI(messages), tools, temperature: 0, max_tokens: options?.maxTokens ?? 512 },
+      { model: this.cfg.model, messages: toOpenAI(messages), tools, temperature: 0, max_tokens: options?.maxTokens ?? DEFAULT_MAX_TOKENS },
       this.cfg.timeoutMs,
       options?.signal,
     );
     const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      choices?: Array<{ finish_reason?: string; message?: { content?: string | null; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+      /** OpenRouter reports some failures (no credit, provider down) in a 200 answer. */
+      error?: { message?: string; code?: number | string };
     };
-    const msg = data.choices?.[0]?.message;
+    if (data.error) throw new ModelUnavailableError(`${this.name} failed: ${data.error.message ?? data.error.code ?? 'unknown error'}`);
+    const choice = data.choices?.[0];
+    const msg = choice?.message;
     return {
       content: msg?.content ?? '',
       toolCalls: (msg?.tool_calls ?? []).filter((c) => c.function?.name).map((c) => ({ name: c.function!.name!, arguments: parseArguments(c.function!.arguments) })),
-      usage: { promptTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens, ms: Date.now() - started },
+      truncated: choice?.finish_reason === 'length',
+      usage: { promptTokens: data.usage?.prompt_tokens, cachedTokens: data.usage?.prompt_tokens_details?.cached_tokens, outputTokens: data.usage?.completion_tokens, ms: Date.now() - started },
     };
   }
   async healthCheck() {
@@ -248,7 +289,7 @@ export class BridgeChat implements ChatLLM {
     const started = Date.now();
     const res = await post(
       `${trimSlash(this.cfg.apiUrl)}/api/chat`,
-      { model: this.cfg.model, messages, tools, options: { temperature: 0, num_predict: options?.maxTokens ?? 512, num_ctx: this.cfg.numCtx, num_gpu: this.cfg.numGpu } },
+      { model: this.cfg.model, messages, tools, options: { temperature: 0, num_predict: options?.maxTokens ?? DEFAULT_MAX_TOKENS, num_ctx: this.cfg.numCtx, num_gpu: this.cfg.numGpu } },
       this.cfg.timeoutMs,
       options?.signal,
     );

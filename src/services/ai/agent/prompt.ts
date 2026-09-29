@@ -20,10 +20,11 @@ How to work:
 - Work out what the provider wants from SAID and CONTEXT, then call the tool or tools that do it — several, in order, when the request has several parts.
 - Use only what the provider said. Never invent drugs, doses, dates, names or ids. Leave out every field that was not said — including ones that seem obvious (route, status, priority, category, a reason, who diagnosed): the app fills defaults and asks for missing required values itself.
 - A dose, frequency or duration said once for a list of drugs belongs to the drug it was said with, unless the provider said it applies to all.
-- Records for several patients ("appointments for John Anderson, James Ahmed and Noor Anderson"): one record per patient, each with that patient's full name in its patient field and everything else that was said for all of them. Leave the patient field out for the selected patient.
+- Records for named patients need no patient to be selected first. The same records for each of several patients ("add Panadol and Metformin to John Anderson and James Ahmed"): list the records once and put the patients' full names in for_patients. Records that differ per patient ("Panadol to John Anderson, Metformin to James Ahmed"; "John at 6 pm, James at 7 pm"): one record each, with its own patient field. Never give one patient's record to another. Leave patients out for the selected patient.
 - When a tool asks the provider something or waits for their confirmation, still do the other parts of the request; never answer that question yourself.
 - Put values in the tools' formats: dates YYYY-MM-DD, resolving "today", "tomorrow", "next Friday", "in two weeks", "after 3 months" from the SESSION date, next days and in-dates; times as 24-hour HH:mm; a select field takes exactly one of its listed options ("twice a day" and "BID" are both "Twice daily"); a dose keeps its unit ("500 milligrams" is "500 mg").
 - When one request adds records of more than one kind (medications, diagnoses, tasks, recalls, appointments), call add_care_plan once with all of them — naming the patient in it when the provider names one — instead of several add_* tools.
+- The provider's own appointments ("my appointments", "my schedule", cancel or move one of mine) use list_my_appointments, cancel_my_appointment and reschedule_my_appointment; the selected patient's appointments are that patient's records (cancel_patient_appointment, reschedule_patient_appointment). Never mix the two.
 - Records and patients are best identified by the id from an earlier tool result; otherwise by the name the provider used.
 - Saving and deleting always wait for the provider's confirmation. Call confirm_pending_action only when CONTEXT shows a pending confirmation and SAID is the provider agreeing to it (yes, confirm, save it, go ahead). If they refuse, call cancel_pending_action.
 - When CONTEXT shows a pending question and SAID answers it, fill that field with fill_open_form.
@@ -78,7 +79,13 @@ export function buildUserMessage(said: string, ctx: AIContext, earlier: Exchange
     lines.push(`open form: ${ctx.openForm.id}${ctx.openForm.entries > 1 ? ` (${ctx.openForm.entries} entries, showing the active one)` : ''} — ${values || 'empty'}`);
   }
   if (ctx.pendingQuestion) lines.push(`pending question: ${ctx.pendingQuestion.formId}.${ctx.pendingQuestion.field} — "${ctx.pendingQuestion.question}"`);
-  if (ctx.pendingConfirmation) lines.push(`pending confirmation: ${ctx.pendingConfirmation.kind} — ${ctx.pendingConfirmation.description}`);
+  if (ctx.pendingConfirmation)
+    lines.push(
+      `pending confirmation: ${ctx.pendingConfirmation.kind} — ${ctx.pendingConfirmation.description}${
+        // Prepared by an earlier step of this same request: the provider has not seen it yet.
+        step && step.index > 1 ? ' (prepared by an earlier step of this request — the provider confirms at the end; do not confirm it, do this step)' : ''
+      }`,
+    );
   if (ctx.inbox) lines.push(`inbox on screen: ${ctx.inbox.view}, ${ctx.inbox.items} items${ctx.inbox.query ? `, search "${ctx.inbox.query}"` : ''}${ctx.inbox.openItem ? `, open: "${ctx.inbox.openItem}"` : ''}`);
   if (ctx.patientSearch) lines.push(`patient search on screen: "${ctx.patientSearch.query}" — ${ctx.patientSearch.results} results`);
   if (ctx.list) {
@@ -100,7 +107,7 @@ export function buildUserMessage(said: string, ctx: AIContext, earlier: Exchange
 export function buildPlanMessage(said: string, ctx: AIContext, earlier: Exchange[] = [], alsoHeard?: string): string {
   return `${buildUserMessage(said, ctx, earlier, alsoHeard)}
 
-TASK: PLAN. Do not act yet. Call plan_steps with the separate actions SAID asks for, in the order said — each a short instruction that keeps every detail belonging to it (names, drugs, doses, dates, times). Never add, drop or change a detail; keep dates and times in the provider's words ("next Tuesday at 3 pm") — do not work them out. Records of one kind said together (a list of medications) are one step; each other kind of record is its own step. If SAID is a single action, a question, an answer to a pending question or confirmation, or a clinical note being dictated, call plan_steps with SAID as the only step.`;
+TASK: PLAN. Do not act yet. Call plan_steps with the separate actions SAID asks for, in the order said — each a short instruction that keeps every detail belonging to it (names, drugs, doses, dates, times). Never add, drop or change a detail; keep dates and times in the provider's words ("next Tuesday at 3 pm") — do not work them out. Records of one kind said together (a list of medications) are one step; each other kind of record is its own step. Records of one kind for several patients ("four appointments for John, James, Ethan and Noor") are ONE step that keeps every patient's name and every detail they share. If SAID is a single action, a question, an answer to a pending question or confirmation, or a clinical note being dictated, call plan_steps with SAID as the only step.`;
 }
 
 /** The user message that asks for a clinical note to be extracted into structured items. */

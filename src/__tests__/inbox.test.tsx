@@ -124,6 +124,8 @@ describe('inbox module', () => {
     await renderAppAt('/inbox', () => !!firstRow());
 
     expect(router.state.location.pathname).toBe('/inbox/all');
+    // The redirect to /inbox/all marks the current category a render after the first rows appear.
+    await waitUntil(() => !!document.querySelector('.ibx-cat[aria-current="page"]'));
     expect(document.querySelector('.ibx-cat[aria-current="page"]')?.textContent).toContain('All');
     const tabs = Array.from(document.querySelectorAll('.ibx-cat')).map((t) => t.getAttribute('aria-label') ?? '');
     for (const label of ['All', 'Lab', 'Radiology', 'Referrals', 'Discharge Summary']) {

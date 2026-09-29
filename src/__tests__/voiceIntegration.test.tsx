@@ -16,9 +16,11 @@ import { fetchProviders } from '@/store/slices/providerSlice';
 import dayjs from 'dayjs';
 import { appointmentsSlice, diagnosesSlice, recordSlices } from '@/store/slices/recordSlices';
 import { RECORD_KINDS } from '@/types/records';
-import { appointmentService, diagnosisService } from '@/services/api';
+import { appointmentService, diagnosisService, medicationService } from '@/services/api';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { RecordRegistry } from '@/registry/recordRegistry';
+import { FormRegistry } from '@/registry/formRegistry';
+import { getVoiceController } from '@/services/ai/voiceController';
 import { router } from '@/app/router';
 import { call, type ScriptedLLM } from '@/services/ai/__tests__/fakes';
 import { installBrowserStubs, pageText, renderAppAt, say, unmountApp, useScriptedModel, waitUntil } from './harness';
@@ -343,7 +345,7 @@ describe('the assistant against the real application', () => {
     expect(store.getState().voice.pendingSlot ?? store.getState().voice.pendingConfirmation).not.toBeNull();
   }, TIMEOUT);
 
-  it('"create four appointments … John Anderson, James Ahmed, Ethan Anderson, Noor Anderson": one per patient, each saved for its own patient', async () => {
+  it('"create four appointments … John Anderson, James Ahmed, Ethan Anderson, Noor Anderson" at the SAME time with one provider: never booked — no double booking', async () => {
     store.dispatch(setCurrentPatient(null)); // said from anywhere, with nobody selected
     await renderAppAt('/dashboard');
     const today = dayjs().format('YYYY-MM-DD');
@@ -357,24 +359,211 @@ describe('the assistant against the real application', () => {
     });
     await say('crate four appointments against Dr Sarah Ahmed appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm John Anderson, James Ahmed, Ethan Anderson, Noor Anderson');
     await waitUntil(() => pageText().includes('Add Appointment (4)'));
-    // One tab per patient, saying whose it is; one confirmation for all four.
-    const tabs = [...document.querySelectorAll('.app-modal-entries .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
-    names.forEach((n, i) => expect(tabs[i]).toContain(n));
-    expect(pageText()).toContain('4 appointments will be saved for 4 patients');
-    expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
-    expect((await bookedToday()).length).toBe(before); // nothing saved yet
+    // One numbered tab per patient, each holding its patient…
+    const tabs = [...document.querySelectorAll('.entry-patient-tabs .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    expect(tabs).toEqual(['Tab 1', 'Tab 2', 'Tab 3', 'Tab 4']);
+    expect(FormRegistry.get('appointment')!.entries!.getAll().map((v) => String(v.patient).replace(/\s*\(.*\)$/, ''))).toEqual(names);
+    // …but one provider cannot see four patients at 18:00: nothing is offered for saving, and the model is told why.
+    expect(store.getState().voice.pendingConfirmation).toBeNull();
+    expect(model.lastToolResults()[0].message).toMatch(/^Not bookable: .*Dr\. Sarah Ahmed is already booked/);
 
-    model.calls([call('confirm_pending_action')], 'Booked.');
+    // A "yes" now saves nothing; and the Save button refuses too.
+    model.calls([call('confirm_pending_action')], 'Nothing to confirm.');
     await say('yes');
-    await pollUntil(async () => (await bookedToday()).length === before + 4);
-    const booked = (await bookedToday()).slice(0, 4);
-    const byName = Object.fromEntries(patientSelectors.selectAll(store.getState()).map((p) => [p.fullName, p.id]));
-    expect(new Set(booked.map((a) => a.patientId))).toEqual(new Set(names.map((n) => byName[n])));
-    for (const a of booked) {
-      expect(a.patientName).toBe(patientSelectors.selectById(store.getState(), a.patientId)!.fullName);
-      expect(a.providerName).toBe('Dr. Sarah Ahmed');
-    }
+    [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Book Appointment')!.click();
+    await new Promise((r) => setTimeout(r, 500));
+    expect((await bookedToday()).length).toBe(before);
   }, TIMEOUT);
+
+  describe('several patients in one request — no patient selected first', () => {
+    const FOUR = ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'];
+    /** The numbered main tabs (Tab 1, Tab 2…), one patient each. */
+    const patientTabs = () => [...document.querySelectorAll('.entry-patient-tabs .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    const tabsFor = (n: number) => Array.from({ length: n }, (_, i) => `Tab ${i + 1}`);
+    /** The record tabs inside the main tab that is open (none when it holds a single record). */
+    const recordTabs = () => [...document.querySelectorAll('.entry-record-tabs .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    const openTab = async (n: number) => {
+      const tab = [...document.querySelectorAll('.entry-patient-tabs .ant-tabs-tab')].find((t) => t.textContent?.trim() === `Tab ${n}`)!;
+      (tab.querySelector('.ant-tabs-tab-btn') as HTMLElement).click();
+      await waitUntil(() => document.querySelector('.entry-patient-tabs .ant-tabs-tab-active')?.textContent?.trim() === `Tab ${n}`);
+    };
+    /** The patient of the tab on screen, and the chart shown for them. */
+    const tabPatient = (kind: string) => String(FormRegistry.get(kind)!.getValues().patient ?? '').replace(/\s*\(.*\)$/, '');
+    const glance = () => document.querySelector('.patient-glance')?.textContent ?? '';
+    /** Every entry of the open form, as the store behind the tabs holds it. */
+    const entriesOf = (kind: string) => FormRegistry.get(kind)!.entries!.getAll();
+    const whose = (v: Record<string, unknown>) => String(v.patient ?? '').replace(/\s*\(.*\)$/, '');
+
+    beforeEach(() => {
+      store.dispatch(setCurrentPatient(null));
+    });
+
+    it('Example 1: the same three medications for each of four patients — a tab per patient, the three inside each, nothing saved', async () => {
+      await renderAppAt('/dashboard');
+      model.then({
+        calls: [
+          call('add_medications', {
+            for_patients: FOUR,
+            medications: [{ medicationName: 'Panadol' }, { medicationName: 'Paracetamol' }, { medicationName: 'Gabapentin', dosage: '500 mg', frequency: 'Twice daily', duration: '50 days' }],
+          }),
+        ],
+      });
+      await say('Add the following medications to each of the four patients John Anderson, James Ahmed, Ethan Anderson and Noor Anderson: Panadol, Paracetamol, Gabapentin 500 mg twice daily for 50 days');
+      await waitUntil(() => pageText().includes('Add Medication (12)'));
+      expect(patientTabs()).toEqual(tabsFor(4));
+      for (let n = 1; n <= 4; n++) {
+        await openTab(n);
+        expect(tabPatient('medication')).toBe(FOUR[n - 1]);
+        expect(recordTabs()).toEqual(['Panadol', 'Paracetamol', 'Gabapentin']);
+        expect(glance()).toContain(`${FOUR[n - 1]}'s records`); // that patient's chart, nobody else's
+      }
+      const all = entriesOf('medication');
+      for (const name of FOUR) {
+        const mine = all.filter((v) => whose(v) === name);
+        expect(mine.map((v) => v.medicationName)).toEqual(['Panadol', 'Paracetamol', 'Gabapentin']);
+        expect(mine[2]).toMatchObject({ dosage: '500 mg', frequency: 'Twice daily', duration: '50 days' });
+        expect(mine[0].dosage ?? '').toBe(''); // Gabapentin's dose stays with Gabapentin
+      }
+      expect(pageText()).toContain('12 medications will be saved for 4 patients');
+      // Not saved: Panadol has no dose yet, so the provider is asked — the save waits for them.
+      expect(store.getState().voice.pendingSlot?.question).toMatch(/Panadol for John Anderson/);
+    }, TIMEOUT);
+
+    it('Example 2: a different time for each patient — each appointment stays with its patient, and is saved for them after "yes"', async () => {
+      await renderAppAt('/dashboard');
+      const today = dayjs().format('YYYY-MM-DD');
+      const times = ['18:00', '19:00', '20:00', '21:00'];
+      const reason = 'Blood pressure monitoring (per patient)';
+      model.then({
+        calls: [call('add_appointments', { appointments: FOUR.map((patient, i) => ({ patient, providerName: 'Dr. Sarah Ahmed', date: today, startTime: times[i], reason })) })],
+      });
+      await say('Create four appointments with Dr. Sarah Ahmed for today for blood pressure monitoring: John Anderson 6 pm, James Ahmed 7 pm, Ethan Anderson 8 pm, Noor Anderson 9 pm');
+      await waitUntil(() => pageText().includes('Add Appointment (4)'));
+      expect(patientTabs()).toEqual(tabsFor(4));
+      await openTab(3);
+      expect(tabPatient('appointment')).toBe('Ethan Anderson');
+      expect(recordTabs()).toEqual([]); // one appointment in this tab
+      expect(FormRegistry.get('appointment')!.getValues()).toMatchObject({ startTime: expect.anything() });
+      const all = entriesOf('appointment');
+      const hhmm = (v: unknown) => (dayjs.isDayjs(v) ? v.format('HH:mm') : String(v));
+      FOUR.forEach((name, i) => expect(hhmm(all.find((v) => whose(v) === name)?.startTime)).toBe(times[i]));
+      expect(store.getState().voice.pendingConfirmation?.kind).toBe('form');
+
+      model.calls([call('confirm_pending_action')], 'Booked.');
+      await say('yes');
+      await pollUntil(async () => (await appointmentService.byDate(today)).filter((a) => a.reason === reason).length === 4);
+      const saved = (await appointmentService.byDate(today)).filter((a) => a.reason === reason);
+      FOUR.forEach((name, i) => expect(saved.find((a) => a.patientName === name)?.startTime).toBe(times[i]));
+    }, TIMEOUT);
+
+    it('Example 4: three diagnoses for each of four patients', async () => {
+      await renderAppAt('/dashboard');
+      model.then({ calls: [call('add_diagnoses', { for_patients: FOUR, diagnoses: [{ description: 'Hypertension' }, { description: 'Type 2 Diabetes' }, { description: 'Migraine' }] })] });
+      await say('Add hypertension, type 2 diabetes and migraine to each of John Anderson, James Ahmed, Ethan Anderson and Noor Anderson');
+      await waitUntil(() => pageText().includes('Add Diagnosis (12)'));
+      expect(patientTabs()).toEqual(tabsFor(4));
+      await openTab(4);
+      expect(tabPatient('diagnosis')).toBe('Noor Anderson');
+      expect(recordTabs()).toEqual(['Hypertension', 'Type 2 Diabetes', 'Migraine']);
+      expect(store.getState().voice.pendingConfirmation?.kind).toBe('form'); // saved only after the provider's yes
+    }, TIMEOUT);
+
+    /** Pick patients in an antd multi-select by typing each name and clicking its option. */
+    const pickPatients = async (selectClass: string, names: string[]) => {
+      for (const name of names) {
+        const box = document.querySelector(`.${selectClass} .ant-select-selector`) as HTMLElement;
+        box.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        const input = document.querySelector(`.${selectClass} input`) as HTMLInputElement;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, name);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await waitUntil(() => [...document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')].some((o) => o.textContent?.startsWith(name)));
+        const option = [...document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')].find((o) => o.textContent?.startsWith(name)) as HTMLElement;
+        option.click();
+        await waitUntil(() => document.querySelector(`.${selectClass}`)!.textContent!.includes(name));
+      }
+    };
+    const button = (text: string) => [...document.querySelectorAll('button')].find((b) => b.textContent?.trim().startsWith(text)) as HTMLButtonElement;
+
+    it('by mouse, with no patient selected: "Records for several patients" opens the form with a tab per patient', async () => {
+      await renderAppAt('/patients', () => pageText().includes('Records for several patients'));
+      button('Records for several patients').click();
+      await waitUntil(() => !!document.querySelector('.multi-patient-select'));
+      (document.querySelector('.multi-patient-launcher input[type="radio"][value="task"]') as HTMLInputElement).click();
+      await pickPatients('multi-patient-select', ['John Anderson', 'Noor Anderson']);
+      button('Open form').click();
+      await waitUntil(() => pageText().includes('Add Task (2)'));
+      await waitUntil(() => patientTabs().length === 2);
+      expect(patientTabs()).toEqual(tabsFor(2));
+      expect(entriesOf('task').map(whose)).toEqual(['John Anderson', 'Noor Anderson']);
+      expect(store.getState().voice.pendingConfirmation).toBeNull(); // nothing to confirm until the provider fills it in
+    }, TIMEOUT);
+
+    it('by mouse: + opens an empty tab — no patient, nothing inherited — and nothing is saved until it has one', async () => {
+      const james = patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'James Ahmed')!;
+      store.dispatch(setCurrentPatient(james.id));
+      await renderAppAt('/summary/medication');
+      await getVoiceController().runAction((r) => r.createRecords('medication', [{ medicationName: 'Panadol', dosage: '500 mg', frequency: 'Twice daily' }]));
+      await waitUntil(() => pageText().includes('Add Medication'));
+      // Tab 1 is the selected patient's, with their chart.
+      expect(patientTabs()).toEqual(tabsFor(1));
+      expect(tabPatient('medication')).toBe('James Ahmed');
+      expect(glance()).toContain("James Ahmed's records");
+
+      (document.querySelector('.entry-patient-tabs .ant-tabs-nav-add') as HTMLElement).click();
+      await waitUntil(() => patientTabs().length === 2);
+      expect(document.querySelector('.entry-patient-tabs .ant-tabs-tab-active')?.textContent?.trim()).toBe('Tab 2');
+      expect(tabPatient('medication')).toBe(''); // empty — not James
+      expect(glance()).toContain("Choose this tab's patient");
+      expect(pageText()).toContain('Choose the patient for Tab 2');
+
+      const before = (await medicationService.byPatient(james.id)).length;
+      button('Save Medication').click();
+      await new Promise((r) => setTimeout(r, 400));
+      expect((await medicationService.byPatient(james.id)).length).toBe(before); // nothing saved, not even Tab 1's
+      await openTab(1);
+      expect(tabPatient('medication')).toBe('James Ahmed');
+    }, TIMEOUT);
+
+    it('the call qwen3.5:9b actually made — add_care_plan with "name" for the drug and for_patients — opens all twelve, each with its patient', async () => {
+      // From the provider's trace: the model named the drug in "name" (not medicationName) and cut one
+      // patient's name short ("Noor Anders"). Nothing was added then; now the alias is understood.
+      store.dispatch(setCurrentPatient(patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'James Ahmed')!.id));
+      await renderAppAt('/summary/medication');
+      const med = (name: string) => ({ dosage: '500 mg', duration: '50 days', frequency: 'Twice daily', name });
+      model.then({
+        calls: [call('add_care_plan', { medications: [med('Panadol'), med('Paracetamol'), med('Gabapentin')], for_patients: ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anders'] })],
+      });
+      await say('Add the following medications to each of the four patients: John Anderson, James Ahmed, Ethan Anderson, and Noor Anderson. Panadol 500 mg twice daily for 50 days, Paracetamol 500 mg twice daily for 50 days, Gabapentin 500 mg twice daily for 50 days');
+      await waitUntil(() => pageText().includes('Care plan (12)'));
+      const tabs = [...document.querySelectorAll('.care-plan-modal .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+      for (const who of FOUR) for (const drug of ['Panadol', 'Paracetamol', 'Gabapentin']) expect(tabs.some((t) => t.includes(drug) && t.includes(who))).toBe(true);
+    }, TIMEOUT);
+
+    it('Example 5: different medications for different patients are never mixed', async () => {
+      await renderAppAt('/dashboard');
+      model.then({
+        calls: [
+          call('add_medications', {
+            medications: [
+              { patient: 'John Anderson', medicationName: 'Panadol' },
+              { patient: 'James Ahmed', medicationName: 'Metformin' },
+              { patient: 'Ethan Anderson', medicationName: 'Gabapentin', dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' },
+            ],
+          }),
+        ],
+      });
+      await say('Add Panadol to John Anderson, Metformin to James Ahmed, and Gabapentin 500 mg twice daily for 30 days to Ethan Anderson');
+      await waitUntil(() => pageText().includes('Add Medication (3)'));
+      expect(patientTabs()).toEqual(tabsFor(3));
+      const all = entriesOf('medication');
+      expect(all.map((v) => [whose(v), v.medicationName])).toEqual([
+        ['John Anderson', 'Panadol'],
+        ['James Ahmed', 'Metformin'],
+        ['Ethan Anderson', 'Gabapentin'],
+      ]);
+      expect(all[2]).toMatchObject({ dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' });
+    }, TIMEOUT);
+  });
 
   it('a patient name that matches nobody for certain opens nothing — no record falls back to another patient', async () => {
     await renderAppAt('/summary/task');

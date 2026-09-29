@@ -24,14 +24,27 @@ def sh(cmd, check=True):
     print("$", cmd, flush=True)
     return subprocess.run(cmd, shell=True, check=check)
 
+def answers(url, headers=None):
+    import urllib.request
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=5)
+        return True
+    except Exception:
+        return False
+
+# 0. Run All again in the same session: the last run's server and tunnel still hold port 8000 — stop them first.
+#    ([c] keeps pkill from matching — and killing — the very shell that runs this line.)
+sh("pkill -f '[c]areflow_gpu_server.py'; pkill -x cloudflared; sleep 3", check=False)
+
 # 1. The language models: Ollama with qwen3.5:4b and qwen3.5:9b on the GPU (its installer needs zstd, which
 #    Kaggle's image lacks). Pick one in CareFlow → Configuration → Where the AI runs → Language model on the server.
 #    One language model is in GPU memory at a time, so Whisper always has room next to it.
 sh("apt-get update -qq && apt-get install -y -qq zstd")
 sh("curl -fsSL https://ollama.com/install.sh | sh")
-subprocess.Popen(["ollama", "serve"], stdout=open("/kaggle/working/ollama.log", "w"), stderr=subprocess.STDOUT,
-                 env={**os.environ, "OLLAMA_MAX_LOADED_MODELS": "1"})
-time.sleep(8)
+if not answers("http://127.0.0.1:11434/api/version"):  # already serving from the last run: keep it
+    subprocess.Popen(["ollama", "serve"], stdout=open("/kaggle/working/ollama.log", "w"), stderr=subprocess.STDOUT,
+                     env={**os.environ, "OLLAMA_MAX_LOADED_MODELS": "1"})
+    time.sleep(8)
 sh("ollama pull qwen3.5:4b")
 sh("ollama pull qwen3.5:9b")  # ~6.6 GB — a few more minutes on the first run
 
@@ -42,16 +55,9 @@ sh("pip install -q omi-med-stt faster-whisper fastapi uvicorn httpx cmake")
 # 3. The CareFlow server (port 8000)
 server = subprocess.Popen(["python", "/kaggle/working/careflow_gpu_server.py"], env={**os.environ, "CAREFLOW_KEY": KEY},
                           stdout=open("/kaggle/working/server.log", "w"), stderr=subprocess.STDOUT)
-import urllib.request
-def answering():
-    try:
-        urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8000/health", headers={"X-CareFlow-Key": KEY}), timeout=5)
-        return True
-    except Exception:
-        return False
 for _ in range(360):  # up to 30 minutes: the first start downloads Whisper and builds parakeet.cpp for CUDA
     time.sleep(5)
-    if answering() or server.poll() is not None:
+    if answers("http://127.0.0.1:8000/health", {"X-CareFlow-Key": KEY}) or server.poll() is not None:
         break
 log = open("/kaggle/working/server.log").read()
 print(log[-2000:])
@@ -59,7 +65,8 @@ if server.poll() is not None:
     raise SystemExit("The server stopped — the log above says why.")
 
 # 4. The public address: a Cloudflare quick tunnel (free, no account; steadier than localtunnel for long requests)
-sh("wget -q -O /kaggle/working/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /kaggle/working/cloudflared")
+if not os.access("/kaggle/working/cloudflared", os.X_OK):  # downloaded by the last run already: reuse it
+    sh("wget -q -O /kaggle/working/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /kaggle/working/cloudflared")
 tunnel = subprocess.Popen(["/kaggle/working/cloudflared", "tunnel", "--no-autoupdate", "--url", "http://localhost:8000"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 import re
 for line in tunnel.stdout:

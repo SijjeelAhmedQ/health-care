@@ -11,9 +11,9 @@ import { Avatar } from '@/components/common';
 import { PatientPicker } from '@/components/patient/PatientPicker';
 import { moduleIcons } from './moduleIcons';
 
-/** The patient-work modules in the bottom bar; the rest (Configuration) is in the full menu. */
+/** The patient-work modules in the bottom bar (five slots at most); the rest (My Appointments, Configuration) are in the full menu. */
 const primary: Array<{ label: string; path: string; module: PageModule }> = PageRegistry.sidebarPages()
-  .filter((p) => p.module !== 'configuration')
+  .filter((p) => p.module !== 'configuration' && p.module !== 'schedule')
   .map((p) => ({ label: moduleLabels[p.module], path: p.path, module: p.module }));
 
 /**

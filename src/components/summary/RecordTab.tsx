@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from 'antd';
 import dayjs from 'dayjs';
 import { AlarmClock, CalendarCheck, CalendarDays, CheckCircle2, CircleDashed, ClipboardList, ListChecks, Pill, Plus, Repeat, Stethoscope, TriangleAlert } from 'lucide-react';
@@ -9,6 +9,8 @@ import { MetricCard, MetricGrid, PrimaryCell, StatusTag, type MetricProps } from
 import { DataTable, type DataColumn, type FilterDef } from '@/components/tables/DataTable';
 import { useRecordModule, type RecordOf } from '@/components/records/useRecordModule';
 import { formatDate, formatTime } from '@/utils/format';
+import { AppointmentChangeFlags, AppointmentChangeNotes, CancelAppointmentDialog, RescheduleAppointmentDialog, isChangeable } from '@/components/appointments/AppointmentChanges';
+import { PatientAppointmentsRegistry } from '@/registry/scheduleRegistry';
 
 const today = () => dayjs().startOf('day');
 const isOverdue = (date: string) => dayjs(date).isBefore(today());
@@ -186,9 +188,27 @@ const appointment: TabConfig<'appointment'> = {
     { key: 'reason', title: 'Reason', dataIndex: 'reason', mobile: 'full' },
     { key: 'locationName', title: 'Location', dataIndex: 'locationName', defaultHidden: true },
     { key: 'priority', title: 'Priority', dataIndex: 'priority', defaultHidden: true, render: (v: string) => <StatusTag status={v} /> },
-    { key: 'status', title: 'Status', dataIndex: 'status', render: (v: string) => <StatusTag status={v} /> },
+    {
+      key: 'status',
+      title: 'Status',
+      dataIndex: 'status',
+      // Cancelled / Rescheduled flags beside the status, so a changed appointment is seen at once.
+      render: (v: string, row: Appointment) => (
+        <span className="appt-status">
+          {v !== 'Cancelled' && <StatusTag status={v} />}
+          <AppointmentChangeFlags a={row} />
+        </span>
+      ),
+    },
+    {
+      key: 'changes',
+      title: 'Change notes',
+      mobile: 'full',
+      // Why it was cancelled or moved, and what the patient was told.
+      render: (_: unknown, row: Appointment) => <AppointmentChangeNotes a={row} compact />,
+    },
   ],
-  searchKeys: ['date', 'type', 'providerName', 'reason', 'status', 'locationName'],
+  searchKeys: ['date', 'type', 'providerName', 'reason', 'status', 'locationName', 'cancellationNote'],
   filters: filterOn('appointment', 'status', 'type'),
   metrics: (rows) => {
     const upcoming = upcomingOf(rows);
@@ -218,14 +238,49 @@ export function RecordTab<K extends RecordKind>({ kind }: { kind: K }) {
     </Button>
   );
 
+  // Appointments are moved or cancelled with a reason (and the patient told), never just edited.
+  const isAppointments = kind === 'appointment';
+  const [cancelling, setCancelling] = useState<Appointment | null>(null);
+  const [moving, setMoving] = useState<Appointment | null>(null);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const openCancel = useCallback((id: string) => {
+    const a = (rowsRef.current as Appointment[]).find((r) => r.id === id);
+    if (!a || !isChangeable(a)) return false;
+    setMoving(null);
+    setCancelling(a);
+    return true;
+  }, []);
+  const openReschedule = useCallback((id: string) => {
+    const a = (rowsRef.current as Appointment[]).find((r) => r.id === id);
+    if (!a || !isChangeable(a)) return false;
+    setCancelling(null);
+    setMoving(a);
+    return true;
+  }, []);
+  useEffect(() => (isAppointments ? PatientAppointmentsRegistry.register({ openCancel, openReschedule }) : undefined), [isAppointments, openCancel, openReschedule]);
+
   const actionsColumn: DataColumn<RecordOf<K>> = {
     key: 'actions',
     title: '',
-    width: 96,
+    width: isAppointments ? 250 : 96,
     align: 'right',
     hideable: false,
     mobile: 'actions',
-    render: (_: unknown, row: RecordOf<K>) => actions(row),
+    render: (_: unknown, row: RecordOf<K>) =>
+      isAppointments ? (
+        <div className="row-actions appt-row-actions" onClick={(e) => e.stopPropagation()}>
+          <Button size="small" disabled={!isChangeable(row as Appointment)} onClick={() => openReschedule((row as Appointment).id)}>
+            Reschedule
+          </Button>
+          <Button size="small" danger disabled={!isChangeable(row as Appointment)} onClick={() => openCancel((row as Appointment).id)}>
+            Cancel
+          </Button>
+          {actions(row)}
+        </div>
+      ) : (
+        actions(row)
+      ),
   };
 
   return (
@@ -247,16 +302,26 @@ export function RecordTab<K extends RecordKind>({ kind }: { kind: K }) {
         onSearchChange={setSearch}
         filters={config.filters}
         onRowClick={(row) => openEdit(row)}
-        title={`${rows.length} ${rows.length === 1 ? config.noun.one : config.noun.many} for ${who}`}
+        title={patient ? `${rows.length} ${rows.length === 1 ? config.noun.one : config.noun.many} for ${who}` : 'No patient selected'}
         listName={config.noun.many}
         toolbarExtra={addButton}
-        emptyTitle={`No ${config.noun.many} recorded`}
-        emptyDescription={`Nothing here yet for ${who}. Add one, or ask the assistant.`}
+        emptyTitle={patient ? `No ${config.noun.many} recorded` : 'No patient selected'}
+        emptyDescription={
+          patient
+            ? `Nothing here yet for ${who}. Add one, or ask the assistant.`
+            : `Select a patient to see their ${config.noun.many} — or add ${config.noun.many} and choose each patient in the form.`
+        }
         emptyAction={addButton}
         exportable
         pageSize={10}
       />
       {formModal}
+      {isAppointments && (
+        <>
+          <CancelAppointmentDialog appointment={cancelling} onClose={() => setCancelling(null)} />
+          <RescheduleAppointmentDialog appointment={moving} onClose={() => setMoving(null)} />
+        </>
+      )}
     </div>
   );
 }

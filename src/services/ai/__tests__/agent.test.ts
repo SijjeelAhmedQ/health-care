@@ -118,7 +118,7 @@ describe('agent loop', () => {
     const outcome = await agent.run('go to patients and select james ahmed and create a task for blood pressure monitoring');
     expect(runtime.openPage).toHaveBeenCalledWith('patients');
     expect(runtime.selectPatient).toHaveBeenCalledWith(expect.objectContaining({ patient: 'James Ahmed' }));
-    expect(runtime.createRecords).toHaveBeenCalledWith('task', [{ title: 'Blood pressure monitoring' }]);
+    expect(runtime.createRecords).toHaveBeenCalledWith('task', [{ title: 'Blood pressure monitoring' }], undefined); // no for_patients: the selected patient
     expect(llm.requests).toHaveLength(4); // after the form: the model checks the request is complete
     expect(outcome.awaitingUser).toBe(true);
   });
@@ -349,5 +349,58 @@ describe('long requests are split into steps first', () => {
   it('planCovers: nearly every word said must be in the steps', () => {
     expect(planCovers(STEPS, LONG)).toBe(true);
     expect(planCovers(STEPS.slice(0, 3), LONG)).toBe(false);
+  });
+});
+
+describe('the model stalls — cut off, empty, or only announcing — and is told once to carry it out', () => {
+  const said = (m: { content?: string }[]) => String(m.at(-1)?.content ?? '');
+
+  it('an answer cut off at the output limit (its tool call lost) is asked for again, shorter', async () => {
+    const llm = new ScriptedLLM();
+    const chat = llm.chat.bind(llm);
+    let first = true;
+    llm.chat = async (...args: Parameters<typeof chat>) => {
+      const turn = await chat(...args);
+      if (first) {
+        first = false;
+        return { ...turn, content: '', toolCalls: [], truncated: true };
+      }
+      return turn;
+    };
+    llm.then({ content: '' }).calls([call('open_page', { page: 'dashboard' })], 'Opened.');
+    const { agent, runtime } = makeAgent(llm);
+    const outcome = await agent.run('open the dashboard');
+    expect(said(llm.requests[1])).toMatch(/cut off before the tool call was complete/);
+    expect(runtime.openPage).toHaveBeenCalled();
+    expect(outcome.reply).toBe('Opened.');
+  });
+
+  it('"Let me correct this:" after a failed call is not the answer — the model is told to do it', async () => {
+    const llm = new ScriptedLLM().then(
+      { calls: [call('add_medications', { medications: [{ medicationName: 'Panadol' }] })] },
+      { content: 'I need to add the medication names properly. Let me correct this:' },
+      { calls: [call('open_page', { page: 'dashboard' })] },
+      { content: 'Opened the dashboard.', followUp: true },
+    );
+    const { agent } = makeAgent(llm, { createRecords: vi.fn(async (): Promise<ToolResult> => ({ ok: false, message: 'Nothing was added.' })) });
+    const outcome = await agent.run('add panadol');
+    expect(said(llm.requests[2])).toMatch(/^Do it now: call the tool/);
+    expect(outcome.reply).toBe('Opened the dashboard.');
+  });
+
+  it('an empty answer with nothing done is retried once, then said plainly — never "Done."', async () => {
+    const llm = new ScriptedLLM().then({ content: '' }, { content: '' });
+    const { agent } = makeAgent(llm);
+    const outcome = await agent.run('add the following medications to each of the four patients');
+    expect(llm.requests).toHaveLength(2);
+    expect(outcome.reply).toMatch(/couldn't carry that out — nothing was changed/);
+  });
+
+  it('a confirmation may be said in the model’s own words; a question from the app is kept as asked', async () => {
+    const confirm = new ScriptedLLM().then({ calls: [call('add_medications', { medications: [{ medicationName: 'Metformin' }] })] }, { content: 'Metformin for James is ready — please review and confirm.', followUp: true });
+    expect((await makeAgent(confirm).agent.run('add metformin')).reply).toBe('Metformin for James is ready — please review and confirm.');
+    const question = new ScriptedLLM().then({ calls: [call('add_medications', { medications: [{ medicationName: 'Metformin' }] })] }, { content: 'I opened the form.', followUp: true });
+    const asking = makeAgent(question, { createRecords: vi.fn(async (): Promise<ToolResult> => ({ ok: true, message: 'What dosage for Metformin?', awaitUser: true })) });
+    expect((await asking.agent.run('add metformin')).reply).toBe('What dosage for Metformin?');
   });
 });

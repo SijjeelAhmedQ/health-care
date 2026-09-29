@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Collapse, Input, InputNumber, Radio, Select, Slider, Space, Switch, Tag, Tooltip, message } from 'antd';
-import { AudioLines, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, Loader2, RefreshCw, RotateCcw, Save, Server } from 'lucide-react';
+import { AudioLines, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, Loader2, RefreshCw, RotateCcw, Save } from 'lucide-react';
 import { useAppSelector } from '@/store';
 import { PageHeader, SectionCard } from '@/components/common';
 import { aiConfig, bridgeHttpUrl, clearAIOverride, effectiveConfig, getAIOverride, setAIOverride, type AIConfig, type LLMProviderKind } from '@/services/ai/config';
 import { listModels, testModel, unloadOllamaModel, type ModelInfo, type ModelTestResult } from '@/services/ai/modelCatalog';
 import { getSttConfig, saveSttConfig, type SttConfig, type SttSettings } from '@/services/ai/sttConfig';
 import { getVoiceController } from '@/services/ai/voiceController';
-import { getCompute, REMOTE_LLMS, switchCompute, switchRemoteModel, type ComputeMode, type ComputeStatus, type RemoteSpeech } from '@/services/ai/compute';
+import { AiSetupSection } from '@/components/config/AiSetupSection';
 
 const RUNTIMES: Array<{ value: LLMProviderKind; label: string; hint: string; defaultUrl: string }> = [
   { value: 'ollama', label: 'Ollama', hint: 'Models you pull with `ollama pull …` appear here.', defaultUrl: 'http://127.0.0.1:11434' },
-  { value: 'openai-compatible', label: 'OpenAI-compatible server', hint: 'llama.cpp server, LM Studio, mlx_lm.server, vLLM.', defaultUrl: 'http://127.0.0.1:8080' },
+  { value: 'openai-compatible', label: 'OpenAI-compatible server', hint: 'Your own llama.cpp server, LM Studio, mlx_lm.server or vLLM. For OpenRouter use “Where the AI runs” above.', defaultUrl: 'http://127.0.0.1:8080' },
   { value: 'bridge', label: 'Python bridge', hint: "Uses the bridge's own model runtime (python/.env).", defaultUrl: 'http://127.0.0.1:8765' },
 ];
 
@@ -30,163 +30,12 @@ export default function ConfigurationPage() {
   return (
     <div className="page">
       <PageHeader title="Configuration" subtitle="Choose the models the assistant runs on. Changes apply at once; nothing needs a restart." />
-      <ComputeSection />
+      <AiSetupSection />
       <div className="config-grid">
         <LanguageModelSection />
         <SpeechModelSection />
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------- where the AI runs
-
-/**
- * The top-level switch: both models — speech recognition and the language model — on this computer,
- * or both on a remote GPU (a Kaggle T4 running python/kaggle/careflow_gpu_server.py behind a tunnel).
- */
-function ComputeSection() {
-  const [status, setStatus] = useState<ComputeStatus | null>(null);
-  const [mode, setMode] = useState<ComputeMode>('local');
-  const [url, setUrl] = useState('');
-  const [key, setKey] = useState('');
-  const [speech, setSpeech] = useState<RemoteSpeech>('whisper');
-  // The language model on the server: the one in use while remote, qwen3.5:4b otherwise.
-  const remoteModelNow = () => (effectiveConfig().llm.apiUrl.endsWith('/ollama') ? effectiveConfig().llm.model : REMOTE_LLMS[0].name);
-  const [model, setModel] = useState<string>(remoteModelNow);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const revision = useAppSelector((s) => s.ui.aiConfigRevision);
-
-  const load = useCallback(async () => {
-    try {
-      const s = await getCompute();
-      setStatus(s);
-      setMode(s.mode);
-      setUrl((u) => u || s.remote_url);
-      if (s.remote_engine) setSpeech(s.remote_engine);
-      if (s.mode === 'remote') setModel(remoteModelNow());
-      setError(null);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load, revision]);
-
-  const sameServer = status?.mode === 'remote' && mode === 'remote' && url === status.remote_url && !key && speech === (status.remote_engine ?? 'whisper');
-  const modelInUse = status?.mode === 'remote' ? effectiveConfig().llm.model : null;
-
-  const apply = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      if (sameServer) {
-        // Already on the Kaggle GPU: change only the language model there.
-        const problem = await switchRemoteModel(model);
-        if (problem) setError(`${model} could not be loaded on the server: ${problem}`);
-        else message.success(`The assistant now runs on ${model} (Kaggle GPU)`);
-        await load();
-        return;
-      }
-      const { status: next, problem } = await switchCompute(mode, mode === 'remote' ? { url, key, speech, model } : undefined);
-      setStatus(next);
-      setKey('');
-      if (problem) setError(`Switched, but the language model is not ready: ${problem}`);
-      else message.success(mode === 'remote' ? 'Speech recognition and the language model now run on the remote GPU' : 'Both models run on this computer again');
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remote = status?.remote;
-  return (
-    <SectionCard
-      title="Where the AI runs"
-      icon={<Server size={16} />}
-      description="Both models move together: speech recognition (Omi Med STT) and the language model (Qwen). The microphone, voice detection and the app itself stay on this computer."
-    >
-      <Radio.Group className="choice-cards" value={mode} onChange={(e) => setMode(e.target.value)} style={{ marginBottom: 14 }}>
-        <Space direction="vertical">
-          <Radio value="local">
-            <strong>This computer</strong> <span className="muted">Omi Med STT on the CPU, Qwen on this GPU (Ollama)</span>
-          </Radio>
-          <Radio value="remote">
-            <strong>Kaggle GPU (remote)</strong> <span className="muted">both on a T4 — python/kaggle/careflow_gpu_server.py behind a tunnel</span>
-          </Radio>
-        </Space>
-      </Radio.Group>
-
-      {mode === 'remote' && (
-        <div className="config-field">
-          <label htmlFor="compute-url">Server address</label>
-          <Input id="compute-url" value={url} onChange={(e) => setUrl(e.target.value.trim())} placeholder="https://your-name.loca.lt" />
-          <label htmlFor="compute-key" style={{ marginTop: 8 }}>
-            Key (CAREFLOW_KEY on the server)
-          </label>
-          <Input.Password id="compute-key" value={key} onChange={(e) => setKey(e.target.value)} placeholder={status?.has_key ? 'saved — leave empty to keep it' : ''} />
-          <label style={{ marginTop: 8 }}>Speech model on the server</label>
-          <Radio.Group className="choice-cards" value={speech} onChange={(e) => setSpeech(e.target.value)}>
-            <Space direction="vertical">
-              <Radio value="whisper">
-                <strong>Whisper large-v3-turbo</strong> <span className="muted">best with non-US accents; knows the app's patients, drugs and diagnoses</span>
-              </Radio>
-              <Radio value="omi">
-                <strong>Omi Med STT v1</strong> <span className="muted">medical, trained mostly on US English</span>
-              </Radio>
-            </Space>
-          </Radio.Group>
-          <label style={{ marginTop: 8 }}>Language model on the server</label>
-          <Radio.Group className="choice-cards" value={model} onChange={(e) => setModel(e.target.value)}>
-            <Space direction="vertical">
-              {REMOTE_LLMS.map((m) => {
-                const installed = remote?.ollama?.models;
-                const missing = !!installed?.length && !installed.includes(m.name);
-                return (
-                  <Radio key={m.name} value={m.name} disabled={missing}>
-                    <strong>{m.name}</strong> <span className="muted">{missing ? 'not on the server yet — run the updated careflow_kaggle.ipynb' : m.hint}</span>
-                    {modelInUse === m.name && (
-                      <Tag color="blue" style={{ marginLeft: 8 }}>
-                        in use
-                      </Tag>
-                    )}
-                  </Radio>
-                );
-              })}
-            </Space>
-          </Radio.Group>
-          <div className="config-hint">
-            Import python/kaggle/careflow_kaggle.ipynb into Kaggle (GPU T4, Internet on), set its KEY and Run All; it prints the address. Speech travels over a public tunnel: keep the key secret.
-          </div>
-        </div>
-      )}
-
-      {status && (
-        <div className="config-status">
-          {status.mode === 'remote' && remote?.ok !== false ? <CheckCircle2 size={15} color="#0f9d63" /> : status.mode === 'remote' ? <CircleAlert size={15} color="#e5484d" /> : <CheckCircle2 size={15} color="#0f9d63" />}
-          <span>Now:</span>
-          <Tag color={status.mode === 'remote' ? 'blue' : 'green'}>{status.mode === 'remote' ? 'Kaggle GPU' : 'This computer'}</Tag>
-          {status.mode === 'remote' && remote && (
-            <span className="muted">
-              {remote.ok === false ? remote.error : `${remote.model} on ${remote.gpu ?? remote.device}; language models there: ${(remote.ollama?.models ?? []).join(', ') || 'none'}`}
-            </span>
-          )}
-        </div>
-      )}
-
-      {error && <Alert type="error" showIcon message={error} style={{ marginTop: 12 }} />}
-      {busy && <Alert type="info" showIcon icon={<Loader2 size={16} className="spin" />} message={sameServer ? `Loading ${model} on the Kaggle GPU — the first time takes a minute…` : 'Switching both models — checking the server, loading speech recognition and the language model…'} style={{ marginTop: 12 }} />}
-
-      <Space wrap className="config-actions">
-        <Button type="primary" icon={<Save size={15} />} onClick={() => void apply()} loading={busy} disabled={mode === status?.mode && (mode === 'local' || (sameServer && model === modelInUse))}>
-          {sameServer ? `Switch to ${model}` : mode === 'remote' ? 'Switch to the Kaggle GPU' : 'Switch to this computer'}
-        </Button>
-      </Space>
-    </SectionCard>
   );
 }
 
@@ -340,7 +189,17 @@ function LanguageModelSection() {
           notFoundContent={listError ? 'The runtime is not reachable' : 'No models installed'}
           style={{ width: '100%' }}
         />
-        {listError && <Alert type="error" showIcon message="Cannot list the models" description={listError} style={{ marginTop: 8 }} />}
+        {listError && draft.provider === 'openai-compatible' && !draft.apiUrl.includes('/openrouter') ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginTop: 8 }}
+            message={`No server is running at ${draft.apiUrl}`}
+            description="This option is for a model server you run yourself (LM Studio, llama.cpp, vLLM). For OpenRouter or the Kaggle GPU, choose “Kaggle + OpenRouter” or “Kaggle GPU” in “Where the AI runs” above — no address is needed there."
+          />
+        ) : (
+          listError && <Alert type="error" showIcon message="Cannot list the models" description={listError} style={{ marginTop: 8 }} />
+        )}
         {models && !selected && (
           <Alert type="warning" showIcon style={{ marginTop: 8 }} message={`${draft.model} is not installed in this runtime`} description={draft.provider === 'ollama' ? `Run: ollama pull ${draft.model}` : undefined} />
         )}
@@ -367,7 +226,7 @@ function LanguageModelSection() {
             label: 'Performance',
             children: (
               <div className="config-advanced-grid">
-                <NumberSetting label="Context window (tokens)" hint="Tool schemas take ~8k; 12288 leaves room for the conversation." value={draft.numCtx} min={4096} max={131072} step={1024} onChange={(v) => set('numCtx', v)} />
+                <NumberSetting label="Context window (tokens)" hint="The least it may be: the app raises it by itself to fit the assistant's instructions and tools (a prompt that does not fit loses its start — the instructions and today's date)." value={draft.numCtx} min={4096} max={131072} step={1024} onChange={(v) => set('numCtx', v)} />
                 <NumberSetting label="GPU layers" hint="99 = the whole model on the GPU; 0 = CPU only." value={draft.numGpu} min={0} max={999} onChange={(v) => set('numGpu', v)} />
                 <NumberSetting label="Timeout per request (s)" hint="The first request after a change loads the model." value={Math.round(draft.timeoutMs / 1000)} min={10} max={900} onChange={(v) => set('timeoutMs', v * 1000)} />
                 <NumberSetting label="Steps per request" hint="Most model calls one request may take (tool → result → next tool …)." value={draft.maxSteps} min={1} max={12} onChange={(v) => set('maxSteps', v)} />

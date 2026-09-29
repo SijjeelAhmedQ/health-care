@@ -101,7 +101,10 @@ export function InboxAiPanel({ item, patient, isCurrentPatient, unfiledCount, on
     if (s.kind === 'email') return [];
     const current = valuesFor(s);
     const filled = Object.fromEntries(Object.entries(current).filter(([, v]) => v !== ''));
-    return FieldRegistry.missingRequired(s.kind, filled).map((f) => f.label);
+    // The card is always for the Inbox record's own patient, so it has no Patient field to fill.
+    return FieldRegistry.missingRequired(s.kind, filled)
+      .filter((f) => f.optionsFrom !== 'patients')
+      .map((f) => f.label);
   };
 
   const add = async (s: InboxSuggestion) => {

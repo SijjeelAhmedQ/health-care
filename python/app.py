@@ -42,7 +42,7 @@ from dataclasses import replace
 
 from fastapi import Request, Response
 
-from services.compute import ComputeSettings, probe_remote
+from services.compute import OPENROUTER, ComputeSettings, openrouter_headers, probe_openrouter, probe_remote
 from services.netfix import install as install_netfix
 from services.diagnostics import RECORDINGS_DIR, Recorder
 from services.qwen import QwenChat
@@ -242,13 +242,32 @@ LOCAL_STT_FIELDS = ("engine", "repo", "gguf_file", "backend", "threads", "precis
 
 
 async def compute_status() -> dict[str, Any]:
+    # The Kaggle server matters whenever it serves either model (speech, or the language model).
     remote = None
-    if compute.mode == "remote":
+    if compute.mode == "remote" or compute.speech == "remote":
         try:
             remote = await run_in_threadpool(probe_remote, compute.remote_url, compute.remote_key)
         except RuntimeError as exc:
             remote = {"ok": False, "error": str(exc)}
-    return {"mode": compute.mode, "remote_url": compute.remote_url, "remote_engine": compute.remote_engine, "has_key": bool(compute.remote_key), "remote": remote, "stt": stt_engine.info()}
+    openrouter = None
+    if compute.mode == "openrouter":
+        try:
+            openrouter = await run_in_threadpool(probe_openrouter, compute.openrouter_key)
+        except RuntimeError as exc:
+            openrouter = {"ok": False, "error": str(exc)}
+    return {
+        "mode": compute.mode,
+        "speech": compute.speech,
+        "remote_url": compute.remote_url,
+        "remote_engine": compute.remote_engine,
+        "has_key": bool(compute.remote_key),
+        "remote": remote,
+        # The OpenRouter key itself never leaves this process.
+        "has_openrouter_key": bool(compute.openrouter_key),
+        "openrouter_model": compute.openrouter_model,
+        "openrouter": openrouter,
+        "stt": stt_engine.info(),
+    }
 
 
 @app.get("/api/config/compute")
@@ -257,42 +276,106 @@ async def get_compute() -> dict[str, Any]:
 
 
 class ComputeBody(BaseModel):
+    #: Where the language model runs: local (Ollama here), remote (Ollama on the Kaggle GPU) or openrouter.
     mode: str
+    #: Where speech recognition runs: local, or remote (the Kaggle GPU). Left out: with the language model.
+    speech: str = ""
     remote_url: str = ""
     remote_key: str = ""
     remote_engine: str = "whisper"
+    openrouter_key: str = ""
+    openrouter_model: str = ""
+
+
+async def restore_local_stt() -> None:
+    """Speech recognition back on this computer, as it was before the remote GPU took it over."""
+    if stt_settings.engine == "remote":
+        back = compute.local_stt or {"engine": "gguf", "repo": "omi-health/omi-med-stt-v1-gguf", "gguf_file": "omi-med-stt-v1-q8_0.gguf", "backend": "cpu"}
+        await apply_stt(replace(stt_settings, **back))
+
+
+async def checked_kaggle(url: str, key: str, need_llm: bool, engine: str | None) -> dict[str, Any]:
+    """The Kaggle server, checked before anything moves to it: reachable, the key right, and what is asked of it there."""
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Give the Kaggle server's address — careflow_kaggle.ipynb prints it (https://….trycloudflare.com)")
+    if not key:
+        raise HTTPException(status_code=400, detail="Give the key the Kaggle server was started with (KEY in careflow_kaggle.ipynb)")
+    try:
+        health = await run_in_threadpool(probe_remote, url, key)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=f"{exc}. Nothing was switched.") from exc
+    if need_llm and not (health.get("ollama") or {}).get("ok"):
+        raise HTTPException(status_code=409, detail=f"The Kaggle server's language model is not ready: {(health.get('ollama') or {}).get('error', 'no Ollama')}. Nothing was switched.")
+    engines = health.get("engines") or {}
+    if engine and engines and engine not in engines:
+        raise HTTPException(status_code=409, detail=f"The Kaggle server has no {engine} speech model (it loaded {', '.join(engines)}). Nothing was switched.")
+    return health
+
+
+class KaggleCheckBody(BaseModel):
+    remote_url: str = ""
+    remote_key: str = ""
+
+
+@app.post("/api/config/compute/check")
+async def check_kaggle(body: KaggleCheckBody) -> dict[str, Any]:
+    """Is the Kaggle server there, and what does it run? — asked from Configuration before switching to it."""
+    url = (body.remote_url or compute.remote_url).strip().rstrip("/")
+    key = body.remote_key or compute.remote_key  # an empty key field means the saved one
+    if not url:
+        return {"ok": False, "error": "No Kaggle server address yet"}
+    try:
+        return await run_in_threadpool(probe_remote, url, key)
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @app.put("/api/config/compute")
 async def put_compute(body: ComputeBody) -> dict[str, Any]:
-    """Move both models: speech recognition (STT engine) and the language model (the /ollama proxy)."""
+    """
+    Where the two models run. Speech recognition: this computer or the Kaggle GPU. The language model:
+    this computer (Ollama), the Kaggle GPU (Ollama there, through /ollama) or OpenRouter (through
+    /openrouter). Everything is checked first; nothing moves unless all of it can.
+    """
     global compute
-    if body.mode not in ("local", "remote"):
-        raise HTTPException(status_code=400, detail="mode is local or remote")
-    if body.mode == "remote":
-        url = body.remote_url.strip().rstrip("/")
-        key = body.remote_key or compute.remote_key  # an empty key field keeps the saved one
-        if not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="Give the remote GPU server's address, e.g. https://your-name.loca.lt")
-        if not key:
-            raise HTTPException(status_code=400, detail="Give the key the remote GPU server was started with (CAREFLOW_KEY)")
+    if body.mode not in ("local", "remote", "openrouter"):
+        raise HTTPException(status_code=400, detail="mode is local, remote or openrouter")
+    speech = body.speech or ("remote" if body.mode == "remote" else "local")
+    if speech not in ("local", "remote"):
+        raise HTTPException(status_code=400, detail="speech is local or remote")
+
+    url = body.remote_url.strip().rstrip("/") or compute.remote_url
+    key = body.remote_key or compute.remote_key  # an empty key field keeps the saved one
+    if body.mode == "remote" or speech == "remote":
+        await checked_kaggle(url, key, need_llm=body.mode == "remote", engine=body.remote_engine if speech == "remote" else None)
+
+    or_key = body.openrouter_key.strip() or compute.openrouter_key
+    or_model = body.openrouter_model.strip() or compute.openrouter_model
+    if body.mode == "openrouter":
+        if not or_key:
+            raise HTTPException(status_code=400, detail="Give your OpenRouter API key (openrouter.ai/keys)")
         try:
-            health = await run_in_threadpool(probe_remote, url, key)
+            await run_in_threadpool(probe_openrouter, or_key)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=f"{exc}. Nothing was switched.") from exc
-        if not (health.get("ollama") or {}).get("ok"):
-            raise HTTPException(status_code=409, detail=f"The remote server's language model is not ready: {(health.get('ollama') or {}).get('error', 'no Ollama')}. Nothing was switched.")
-        local_stt = compute.local_stt if stt_settings.engine == "remote" else {f: getattr(stt_settings, f) for f in LOCAL_STT_FIELDS}
-        engines = health.get("engines") or {}
-        if engines and body.remote_engine not in engines:
-            raise HTTPException(status_code=409, detail=f"The remote server has no {body.remote_engine} speech model (it loaded {', '.join(engines)}). Nothing was switched.")
+
+    # Everything checked: move speech recognition, then remember where both models are.
+    local_stt = compute.local_stt if stt_settings.engine == "remote" else {f: getattr(stt_settings, f) for f in LOCAL_STT_FIELDS}
+    if speech == "remote":
         await apply_stt(replace(stt_settings, engine="remote", repo="remote", gguf_file=None, remote_url=url, remote_key=key, remote_engine=body.remote_engine))
-        compute = ComputeSettings(mode="remote", remote_url=url, remote_key=key, remote_engine=body.remote_engine, local_stt=local_stt)
     else:
-        if stt_settings.engine == "remote":
-            back = compute.local_stt or {"engine": "gguf", "repo": "omi-health/omi-med-stt-v1-gguf", "gguf_file": "omi-med-stt-v1-q8_0.gguf", "backend": "cpu"}
-            await apply_stt(replace(stt_settings, **back))
-        compute = replace(compute, mode="local")
+        await restore_local_stt()
+    compute = replace(
+        compute,
+        mode=body.mode,
+        speech=speech,
+        remote_url=url,
+        remote_key=key,
+        remote_engine=body.remote_engine if speech == "remote" else compute.remote_engine,
+        local_stt=local_stt,
+        openrouter_key=or_key,
+        openrouter_model=or_model,
+    )
     compute.save()
     return await compute_status()
 
@@ -328,6 +411,23 @@ async def ollama_proxy(path: str, request: Request) -> Response:
             raise HTTPException(status_code=502, detail=f"The tunnel to the remote GPU server dropped the request {attempts} times ({res.status_code}). Check that the Kaggle notebook is still running.")
         return Response(content=res.content, status_code=res.status_code, media_type=res.headers.get("content-type"))
     raise HTTPException(status_code=502, detail="The remote GPU server did not answer")
+
+
+@app.api_route("/openrouter/{path:path}", methods=["GET", "POST"])
+async def openrouter_proxy(path: str, request: Request) -> Response:
+    """
+    OpenRouter's OpenAI-compatible API (/openrouter/api/v1/chat/completions, /openrouter/api/v1/models),
+    with the saved key added here — the app's browser never holds it.
+    """
+    if not compute.openrouter_key:
+        raise HTTPException(status_code=409, detail="No OpenRouter key is saved — add it in Configuration → Where the AI runs → OpenRouter.")
+    headers = {**openrouter_headers(compute.openrouter_key), "Content-Type": request.headers.get("content-type", "application/json")}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0)) as client:
+            res = await client.request(request.method, f"{OPENROUTER}/{path}", content=await request.body(), headers=headers, params=dict(request.query_params))
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"OpenRouter is not reachable: {exc}") from exc
+    return Response(content=res.content, status_code=res.status_code, media_type=res.headers.get("content-type"))
 
 
 @app.post("/api/diagnostics/trace")

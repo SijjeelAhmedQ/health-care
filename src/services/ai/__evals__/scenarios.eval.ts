@@ -13,6 +13,7 @@ import { fetchPatients, patientSelectors, setCurrentPatient } from '@/store/slic
 import { fetchProviders } from '@/store/slices/providerSlice';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { router } from '@/app/router';
+import { FormRegistry } from '@/registry/formRegistry';
 import { getVoiceController } from '@/services/ai/voiceController';
 import { OllamaChat } from '@/services/ai/providers/llm';
 import { FakeMic } from '@/services/ai/__tests__/fakes';
@@ -138,10 +139,45 @@ describe(`multi-step requests — ${MODEL}`, () => {
     const r = await run(
       'crate four appointments against Dr Sarah Ahmed appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm John Anderson, James Ahmed, Ethan Anderson, Noor Anderson',
     );
-    const tabs = [...document.querySelectorAll('.app-modal-entries .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
-    console.log('appointment tabs:', tabs, '| reply:', r.reply);
+    const whose = (FormRegistry.get('appointment')?.entries?.getAll() ?? []).map((v) => String(v.patient ?? '').replace(/\s*\(.*\)$/, ''));
+    console.log('appointments for:', whose, '| reply:', r.reply);
     expect(r.dialog?.title).toMatch(/Add Appointment \(4\)/);
-    for (const name of ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson']) expect(tabs.some((t) => t.includes(name))).toBe(true);
+    expect(new Set(whose)).toEqual(new Set(['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson']));
+  });
+
+  /** The patient tabs of the open record form, and each entry's patient and name. */
+  const multi = (kind: string, primary: string) => {
+    const tabs = [...document.querySelectorAll('.entry-patient-tabs .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
+    const entries = (FormRegistry.get(kind)?.entries?.getAll() ?? []).map((v) => `${String(v.patient ?? '').replace(/\s*\(.*\)$/, '')}: ${String(v[primary] ?? '')}`);
+    console.log(`${kind} patient tabs:`, tabs, '| entries:', entries);
+    return { tabs, entries };
+  };
+
+  it('9: the same three medications for each of four patients', async () => {
+    // The provider's own words (their transcript).
+    await run('Add the following medications to each of the four patients: John Anderson, James Ahmed, Ethan Anderson, and Noor Anderson.  Panadol 500 mg — twice daily for 50 days Paracetamol 500 mg — twice daily for 50 days Gabapentin 500 mg — twice daily for 50 days');
+    const { tabs, entries } = multi('medication', 'medicationName');
+    expect(tabs).toHaveLength(4);
+    for (const who of ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'])
+      for (const drug of ['Panadol', 'Paracetamol', 'Gabapentin']) expect(entries).toContain(`${who}: ${drug}`);
+  });
+
+  it('10: a different time for each patient', async () => {
+    await run('Create four appointments with Dr. Sarah Ahmed for today for blood pressure monitoring: John Anderson at 6 pm, James Ahmed at 7 pm, Ethan Anderson at 8 pm, Noor Anderson at 9 pm');
+    const all = FormRegistry.get('appointment')?.entries?.getAll() ?? [];
+    const time = (who: string) => {
+      const v = all.find((e) => String(e.patient ?? '').startsWith(who))?.startTime;
+      return v && typeof v === 'object' && 'format' in v ? (v as { format: (f: string) => string }).format('HH:mm') : String(v);
+    };
+    console.log('appointment times:', ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'].map((w) => `${w} ${time(w)}`));
+    expect([time('John Anderson'), time('James Ahmed'), time('Ethan Anderson'), time('Noor Anderson')]).toEqual(['18:00', '19:00', '20:00', '21:00']);
+  });
+
+  it('11: different medications for different patients, never mixed', async () => {
+    await run('Add Panadol to John Anderson, Metformin to James Ahmed, and Gabapentin 500 mg twice daily for 30 days to Ethan Anderson');
+    const { entries } = multi('medication', 'medicationName');
+    expect(entries).toEqual(expect.arrayContaining(['John Anderson: Panadol', 'James Ahmed: Metformin', 'Ethan Anderson: Gabapentin']));
+    expect(entries).toHaveLength(3);
   });
 
   // Exactly what speech recognition produced for the provider's spoken request (the recall came out garbled).

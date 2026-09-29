@@ -23,6 +23,7 @@ import { VoiceAssistant } from '@/components/voice/VoiceAssistant';
 import { VoiceConfirmDialog } from '@/components/voice/VoiceConfirmDialog';
 import { AssistantHelp } from '@/components/voice/AssistantHelp';
 import { CommandPalette } from '@/components/command-palette/CommandPalette';
+import { MultiPatientLauncher } from '@/components/forms/MultiPatientLauncher';
 import { DebugPanel } from '@/components/debug/DebugPanel';
 
 function PageFallback() {
@@ -148,6 +149,7 @@ export function AppLayout() {
       <VoiceConfirmDialog />
       <AssistantHelp open={helpOpen} onClose={() => dispatch(voiceActions.setHelpOpen(false))} />
       <CommandPalette />
+      <MultiPatientLauncher />
       {aiConfig.enableDebugPanel && <DebugPanel />}
     </Layout>
   );

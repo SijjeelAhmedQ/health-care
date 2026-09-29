@@ -62,6 +62,7 @@ export function CommandPalette() {
         controller.startListening();
       },
       signOut: () => dispatch(logout()),
+      openOverlay: (id) => dispatch(uiActions.setOverlay({ id, open: true })),
     });
   };
 

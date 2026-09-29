@@ -32,6 +32,8 @@ export interface FieldDefinition {
   knownFrom?: RecordKind;
   /** A free-text value must look like this (checked when the assistant fills it), and what it should be. */
   shape?: { test: (value: string) => boolean; expected: string };
+  /** Other names the model uses for this field ("name" for a medication's name) — taken as this field. */
+  aliases?: string[];
 }
 
 export interface FormDefinition {
@@ -75,6 +77,8 @@ const patientField: FieldDefinition = {
   label: 'Patient',
   type: 'select',
   optionsFrom: 'patients',
+  // Every record belongs to a patient: one left without is asked for, never guessed or inherited.
+  required: true,
   hint: "Only for a patient other than the selected one: that patient's full name. Records for several patients: one record per patient, each with its patient",
 };
 
@@ -116,7 +120,7 @@ export const forms: FormDefinition[] = [
     sensitiveDescription: 'Save this medication to the patient record',
     fields: [
       patientField,
-      { name: 'medicationName', label: 'Medication Name', type: 'text', required: true, normalize: normalizeName, knownFrom: 'medication', hint: "The drug the provider named, e.g. 'Metformin'" },
+      { name: 'medicationName', label: 'Medication Name', type: 'text', required: true, normalize: normalizeName, knownFrom: 'medication', aliases: ['name', 'medication', 'drug', 'drugName'], hint: "The drug the provider named, e.g. 'Metformin'" },
       { name: 'dosage', label: 'Dosage', type: 'text', required: true, hint: "Strength with its unit, e.g. '500 mg', '10 ml', '2 puffs'", shape: { test: (v) => /\d/.test(v), expected: "an amount with its unit, e.g. '500 mg' — leave it out if no dose was said for this drug" } },
       { name: 'route', label: 'Route', type: 'select', options: ROUTE_OPTIONS },
       { name: 'frequency', label: 'Frequency', type: 'select', options: FREQUENCY_OPTIONS, required: true, hint: 'How many times a day: Once daily = 1, Twice daily = 2, Three times daily = 3, Four times daily = 4' },
@@ -139,7 +143,7 @@ export const forms: FormDefinition[] = [
     sensitiveDescription: 'Add this diagnosis to the problem list',
     fields: [
       patientField,
-      { name: 'description', label: 'Diagnosis', type: 'text', required: true, normalize: normalizeName, knownFrom: 'diagnosis' },
+      { name: 'description', label: 'Diagnosis', type: 'text', required: true, normalize: normalizeName, knownFrom: 'diagnosis', aliases: ['name', 'diagnosis', 'condition'] },
       { name: 'icd10', label: 'ICD-10 Code', type: 'text', hint: "Only when the clinician says the code, e.g. 'I10'" },
       { name: 'status', label: 'Status', type: 'select', options: DIAGNOSIS_STATUS_OPTIONS },
       { name: 'severity', label: 'Severity', type: 'select', options: SEVERITY_OPTIONS },
@@ -155,7 +159,7 @@ export const forms: FormDefinition[] = [
     sensitiveDescription: 'Save this task for the patient',
     fields: [
       patientField,
-      { name: 'title', label: 'Task', type: 'text', required: true },
+      { name: 'title', label: 'Task', type: 'text', required: true, aliases: ['name', 'task'] },
       { name: 'category', label: 'Category', type: 'select', options: TASK_CATEGORY_OPTIONS },
       { name: 'assignedTo', label: 'Assigned To', type: 'select', optionsFrom: 'providers' },
       { name: 'dueDate', label: 'Due Date', type: 'date', required: true },
@@ -199,8 +203,27 @@ export const forms: FormDefinition[] = [
       { name: 'notes', label: 'Notes', type: 'textarea' },
     ],
   },
+  // The provider's own schedule: cancelling or moving an appointment booked with them.
+  {
+    id: 'appointment_cancel',
+    title: 'Cancel appointment',
+    submitLabel: 'Cancel appointment',
+    sensitiveDescription: 'Cancel this appointment',
+    fields: [{ name: 'cancellationNote', label: 'Cancellation note', type: 'textarea', required: true, hint: "Why it is cancelled, in the provider's words" }],
+  },
+  {
+    id: 'appointment_reschedule',
+    title: 'Reschedule appointment',
+    submitLabel: 'Reschedule',
+    sensitiveDescription: 'Move this appointment to the new time',
+    fields: [
+      { name: 'date', label: 'New date', type: 'date', required: true },
+      { name: 'startTime', label: 'New time', type: 'time', required: true },
+      { name: 'durationMinutes', label: 'Duration (minutes)', type: 'number', hint: 'Keeps the current length when not said' },
+      { name: 'comment', label: 'Reschedule comment', type: 'textarea', required: true, hint: "Why it is moved, in the provider's words" },
+    ],
+  },
 ];
-
 
 const formById = new Map(forms.map((f) => [f.id, f]));
 
@@ -213,7 +236,13 @@ export const FieldRegistry = {
 
   /** A field of a form by its exact name. */
   resolveField(formId: string, fieldName: string): FieldDefinition | undefined {
-    return formById.get(formId)?.fields.find((f) => f.name === fieldName);
+    const fields = formById.get(formId)?.fields;
+    return fields?.find((f) => f.name === fieldName) ?? fields?.find((f) => f.aliases?.includes(fieldName));
+  },
+
+  /** Values with every alias renamed to its field ("name" → "medicationName"); unknown names are kept, to be reported. */
+  canonical<V>(formId: string, values: Record<string, V>): Record<string, V> {
+    return Object.fromEntries(Object.entries(values).map(([k, v]) => [FieldRegistry.resolveField(formId, k)?.name ?? k, v]));
   },
 
   /**

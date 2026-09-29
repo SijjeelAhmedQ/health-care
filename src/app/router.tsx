@@ -3,13 +3,13 @@ import { createBrowserRouter, Navigate, Outlet, useLocation } from 'react-router
 import { Button, Result } from 'antd';
 import { useAppSelector } from '@/store';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { RequirePatient } from '@/components/patient/RequirePatient';
 
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
 const PatientModulePage = lazy(() => import('@/pages/PatientModulePage'));
 const SummaryPage = lazy(() => import('@/pages/SummaryPage'));
 const InboxPage = lazy(() => import('@/pages/InboxPage'));
 const ConfigurationPage = lazy(() => import('@/pages/ConfigurationPage'));
+const ProviderAppointmentsPage = lazy(() => import('@/pages/ProviderAppointmentsPage'));
 const LoginPage = lazy(() => import('@/pages/LoginPage'));
 
 function RequireAuth() {
@@ -51,17 +51,14 @@ export const router = createBrowserRouter([
           { path: '/dashboard', Component: DashboardPage },
           { path: '/patients', Component: PatientModulePage },
           { path: '/configuration', Component: ConfigurationPage },
+          // The provider's own appointments (patients' appointments are in each patient's Summary).
+          { path: '/schedule', Component: ProviderAppointmentsPage },
           { path: '/inbox', element: <Navigate to="/inbox/all" replace /> },
           { path: '/inbox/:category', Component: InboxPage },
-          {
-            // The Summary is the selected patient's chart, and is not rendered at
-            // all until a patient has been selected.
-            element: <RequirePatient />,
-            children: [
-              { path: '/summary', Component: SummaryPage },
-              { path: '/summary/:tab', Component: SummaryPage },
-            ],
-          },
+          // The Summary opens without a selected patient too: records added there name their
+          // patient in the form, and each tab says when there is no patient to show.
+          { path: '/summary', Component: SummaryPage },
+          { path: '/summary/:tab', Component: SummaryPage },
           { path: '*', element: <NotFound /> },
         ],
       },

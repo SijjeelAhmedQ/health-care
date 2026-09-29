@@ -189,7 +189,7 @@ export default function DashboardPage() {
       </MetricGrid>
 
       <div className="card-grid dash-grid">
-        <SectionCard className="col-7" title="Today's schedule" icon={<CalendarDays size={16} />} count={today.length} description={dayjs().format('dddd, D MMMM')}>
+        <SectionCard className="col-7" title="Today's schedule" icon={<CalendarDays size={16} />} count={today.length} description={dayjs().format('dddd, D MMMM')} extra={<Button type="link" size="small" onClick={() => navigate('/schedule')}>Manage</Button>}>
           {today.length ? (
             <ol className="dash-timeline">
               {today.map((a) => {
@@ -297,7 +297,7 @@ export default function DashboardPage() {
           </div>
         </SectionCard>
 
-        <SectionCard className="col-6" title="Coming up" icon={<CalendarClock size={16} />} count={upcoming.length} description="The next seven days.">
+        <SectionCard className="col-6" title="Coming up" icon={<CalendarClock size={16} />} count={upcoming.length} description="The next seven days." extra={<Button type="link" size="small" onClick={() => navigate('/schedule')}>Manage</Button>}>
           {upcoming.length ? (
             <div className="dash-upcoming">
               {comingUp.map((g) => (

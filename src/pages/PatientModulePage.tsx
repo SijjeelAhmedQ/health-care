@@ -12,6 +12,8 @@ import type { Patient } from '@/types/domain';
 import { Avatar, MetricCard, MetricGrid, PageHeader, StatusTag, confirmAction } from '@/components/common';
 import { DataTable, type DataColumn } from '@/components/tables/DataTable';
 import { PatientFormModal } from '@/components/forms/PatientForm';
+import { MULTI_PATIENT_OVERLAY } from '@/components/forms/MultiPatientLauncher';
+import { uiActions } from '@/store/slices/uiSlice';
 import { formatDate } from '@/utils/format';
 
 /**
@@ -175,6 +177,9 @@ export default function PatientModulePage() {
                 Open summary
               </Button>
             )}
+            <Button icon={<Users size={15} />} onClick={() => dispatch(uiActions.setOverlay({ id: MULTI_PATIENT_OVERLAY, open: true }))}>
+              Records for several patients
+            </Button>
             <Button type="primary" icon={<UserPlus size={16} />} onClick={openCreate}>
               Add patient
             </Button>

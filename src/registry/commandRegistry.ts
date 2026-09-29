@@ -15,6 +15,8 @@ export interface AppCommandContext {
   toggleDebugPanel(): void;
   toggleSidebar(): void;
   openVoicePanel(): void;
+  /** Open a dialog by its overlay id (ui.overlays). */
+  openOverlay(id: string): void;
   signOut(): void;
 }
 
@@ -35,6 +37,7 @@ const iconForModule: Record<PageDefinition['module'], string> = {
   patient: 'Users',
   inbox: 'Inbox',
   summary: 'ClipboardList',
+  schedule: 'CalendarClock',
   configuration: 'Settings',
 };
 
@@ -71,6 +74,14 @@ const actionCommands: AppCommand[] = [
   { id: 'act:patient-panel', title: 'Show patient summary panel', group: 'Actions', keywords: ['summary panel', 'side panel', 'overview'], icon: 'PanelRight', run: (ctx) => ctx.act((r) => r.setPatientPanel(true)) },
   { id: 'act:patient-panel-close', title: 'Close patient summary panel', group: 'Actions', keywords: ['close panel', 'hide summary'], icon: 'PanelRightClose', run: (ctx) => ctx.act((r) => r.setPatientPanel(false)) },
   ...addCommands,
+  {
+    id: 'act:multi-patient',
+    title: 'Add records for several patients',
+    group: 'Actions',
+    keywords: ['several patients', 'multiple patients', 'many patients', 'bulk', 'appointments for', 'medications for'],
+    icon: 'Users',
+    run: (ctx) => ctx.openOverlay('multi-patient'),
+  },
   { id: 'sys:voice', title: 'Open the assistant', group: 'System', keywords: ['voice', 'mic', 'speak', 'assistant'], icon: 'Mic', shortcut: 'Ctrl+Shift+V', run: (ctx) => ctx.openVoicePanel() },
   { id: 'sys:debug', title: 'Toggle Debug Panel', group: 'System', keywords: ['debug', 'developer', 'trace'], icon: 'Bug', shortcut: 'Ctrl+Shift+D', run: (ctx) => ctx.toggleDebugPanel() },
   { id: 'sys:sidebar', title: 'Toggle Sidebar', group: 'System', keywords: ['sidebar', 'menu', 'collapse'], icon: 'PanelLeft', shortcut: 'Ctrl+B', run: (ctx) => ctx.toggleSidebar() },

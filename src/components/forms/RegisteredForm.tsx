@@ -38,6 +38,8 @@ interface ModalFormProps<T extends object> extends BaseProps<T> {
   entries?: EntryStore<T>;
   /** Rendered above the fields, inside the form (e.g. the entry tabs). */
   header?: ReactNode;
+  /** Checks across every entry before anything is saved (e.g. no double booking); one message per problem. */
+  checkAll?: (all: Record<string, unknown>[]) => string[];
 }
 
 /**
@@ -93,7 +95,7 @@ function VoiceBanner({ formId, fields }: { formId: string; fields: string[] }) {
  * Replaces the former slide-out shell: same props and the same FormRegistry contract
  * (open / close / isOpen / submit), rendered as a centred dialog that goes full-screen on phones.
  */
-export function RegisteredFormModal<T extends object>({ formId, title, description, icon, open, onOpen, onClose, onSubmit, initialValues, children, submitLabel, size = 'lg', width, instanceKey, extraActions, form: externalForm, entries, header }: ModalFormProps<T>) {
+export function RegisteredFormModal<T extends object>({ formId, title, description, icon, open, onOpen, onClose, onSubmit, initialValues, children, submitLabel, size = 'lg', width, instanceKey, extraActions, form: externalForm, entries, header, checkAll }: ModalFormProps<T>) {
   const [form] = Form.useForm<T>(externalForm);
   const [saving, setSaving] = useState(false);
   const def = FieldRegistry.getForm(formId);
@@ -103,16 +105,30 @@ export function RegisteredFormModal<T extends object>({ formId, title, descripti
     try {
       // With entry tabs the active tab is validated by antd; the others were snapshotted when the user (or voice) left them.
       const all = entries ? entries.items.map((snap, i) => (i === entries.active ? values : ({ ...initialValues, ...snap } as T))) : [values];
+      // Every tab is checked before anything is saved: a record still missing a required value (its patient,
+      // a dose…) is shown, and none of them is saved — never half the set.
+      const incomplete = entries ? all.findIndex((v) => FieldRegistry.missingRequired(formId, v as Record<string, unknown>).length > 0) : -1;
+      if (entries && incomplete >= 0) {
+        const missing = FieldRegistry.missingRequired(formId, all[incomplete] as Record<string, unknown>).map((f) => f.label.toLowerCase());
+        entries.setActive(incomplete);
+        throw new Error(`Record ${incomplete + 1} still needs its ${missing.join(', ')} — nothing was saved.`);
+      }
+      const problems = checkAll?.(all as Record<string, unknown>[]) ?? [];
+      if (problems.length) throw new Error(`${problems[0]} Nothing was saved.`);
       for (const v of all) await onSubmit(v);
       message.success(all.length > 1 ? `${all.length} ${title.replace(/^add\s+/i, '').toLowerCase()}s saved` : `${title} saved`);
       form.resetFields();
       onClose();
+    } catch (e) {
+      // Said on screen, and passed on: the assistant's "yes" must not report a save that did not happen.
+      message.error((e as Error).message);
+      throw e;
     } finally {
       setSaving(false);
     }
   };
 
-  const { fieldClass, voiceFilledFields } = useRegisteredForm<T>({ formId, form, isOpen: open, open: onOpen, close: () => { form.resetFields(); onClose(); }, onSubmit: submit, instanceKey, entries });
+  const { fieldClass, voiceFilledFields } = useRegisteredForm<T>({ formId, form, isOpen: open, open: onOpen, close: () => { form.resetFields(); onClose(); }, onSubmit: submit, instanceKey, entries, checkAll });
 
   /** Closing with data in the form asks first — a mis-click should never lose a dictated medication. */
   const requestClose = () => {
@@ -158,7 +174,7 @@ export function RegisteredFormModal<T extends object>({ formId, title, descripti
     >
       <VoiceBanner formId={formId} fields={voiceFilledFields} />
       {header && <div className="app-modal-entries">{header}</div>}
-      <Form<T> form={form} layout="vertical" initialValues={initialValues as never} onFinish={(v) => void submit(v)} requiredMark scrollToFirstError>
+      <Form<T> form={form} layout="vertical" initialValues={initialValues as never} onFinish={(v) => void submit(v).catch(() => undefined)} requiredMark scrollToFirstError>
         {children({ form, fc: fieldClass })}
       </Form>
     </AppModal>

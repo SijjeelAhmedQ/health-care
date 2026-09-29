@@ -6,7 +6,7 @@
  */
 import type { RecordKind } from '@/types/records';
 
-export type PageModule = 'dashboard' | 'patient' | 'inbox' | 'summary' | 'configuration';
+export type PageModule = 'dashboard' | 'patient' | 'inbox' | 'summary' | 'schedule' | 'configuration';
 
 export interface PageDefinition {
   number: number;
@@ -51,9 +51,12 @@ export const pages: PageDefinition[] = [
   p(3, 'inbox', '/inbox', 'Inbox', 'inbox', 'Incoming lab results, radiology reports, referrals and discharge summaries.', {
     keywords: ['results', 'correspondence', 'lab', 'radiology', 'referral', 'discharge'],
   }),
-  p(4, 'summary', '/summary', 'Summary', 'summary', "The selected patient's chart. Medications, diagnoses, tasks, recalls and appointments are all managed here, one tab each, plus the AI Summary tab for dictated notes.", {
-    requiresPatient: true,
+  p(4, 'summary', '/summary', 'Summary', 'summary', "The selected patient's chart (opens without one too). Medications, diagnoses, tasks, recalls and appointments are all managed here, one tab each, plus the AI Summary tab for dictated notes.", {
     keywords: ['chart', 'patient summary', 'record'],
+  }),
+
+  p(17, 'my-appointments', '/schedule', 'My Appointments', 'schedule', "The signed-in provider's own appointments — every appointment booked with them, across their patients: see who each is with, cancel one with a note, reschedule one with a comment. A patient's own appointments are in that patient's Summary.", {
+    keywords: ['my appointments', 'my schedule', 'provider appointments', 'agenda', 'calendar', 'bookings'],
   }),
 
   p(16, 'configuration', '/configuration', 'Configuration', 'configuration', 'Choose the AI models: the language model the assistant runs on (any model installed in Ollama) and the Omi Med STT speech model, backend and timings.', {
@@ -62,22 +65,22 @@ export const pages: PageDefinition[] = [
 
   // Summary tabs — real routes so every tab has a URL.
   p(5, 'summary-ai', '/summary/ai-summary', 'AI Summary', 'summary', 'Dictate or paste a clinical note; the AI extracts medications, diagnoses, tasks, recalls and appointments for review.', {
-    requiresPatient: true, parentId: 'summary', tab: 'ai-summary', hideInSidebar: true, keywords: ['dictate', 'note', 'extract'],
+    parentId: 'summary', tab: 'ai-summary', hideInSidebar: true, keywords: ['dictate', 'note', 'extract'],
   }),
   p(6, 'summary-medication', '/summary/medication', 'Medications', 'summary', "The selected patient's medications: add, edit, stop and delete.", {
-    requiresPatient: true, parentId: 'summary', tab: 'medication', recordKind: 'medication', hideInSidebar: true, keywords: ['meds', 'drugs', 'prescriptions'],
+    parentId: 'summary', tab: 'medication', recordKind: 'medication', hideInSidebar: true, keywords: ['meds', 'drugs', 'prescriptions'],
   }),
   p(7, 'summary-diagnosis', '/summary/diagnosis', 'Diagnoses', 'summary', "The selected patient's problem list: add, edit, resolve and delete diagnoses.", {
-    requiresPatient: true, parentId: 'summary', tab: 'diagnosis', recordKind: 'diagnosis', hideInSidebar: true, keywords: ['problems', 'conditions', 'icd'],
+    parentId: 'summary', tab: 'diagnosis', recordKind: 'diagnosis', hideInSidebar: true, keywords: ['problems', 'conditions', 'icd'],
   }),
   p(8, 'summary-task', '/summary/task', 'Tasks', 'summary', 'Work owed to the selected patient: follow-up calls, monitoring, paperwork.', {
-    requiresPatient: true, parentId: 'summary', tab: 'task', recordKind: 'task', hideInSidebar: true, keywords: ['to do', 'todo'],
+    parentId: 'summary', tab: 'task', recordKind: 'task', hideInSidebar: true, keywords: ['to do', 'todo'],
   }),
   p(9, 'summary-recall', '/summary/recall', 'Recalls', 'summary', 'Reminders to bring the selected patient back: reviews, screening, repeat labs, vaccinations.', {
-    requiresPatient: true, parentId: 'summary', tab: 'recall', recordKind: 'recall', hideInSidebar: true, keywords: ['reminders', 'bring back'],
+    parentId: 'summary', tab: 'recall', recordKind: 'recall', hideInSidebar: true, keywords: ['reminders', 'bring back'],
   }),
   p(10, 'summary-appointment', '/summary/appointment', 'Appointments', 'summary', "The selected patient's past and upcoming appointments: book, reschedule, cancel.", {
-    requiresPatient: true, parentId: 'summary', tab: 'appointment', recordKind: 'appointment', hideInSidebar: true, keywords: ['visits', 'bookings'],
+    parentId: 'summary', tab: 'appointment', recordKind: 'appointment', hideInSidebar: true, keywords: ['visits', 'bookings'],
   }),
 
   // Inbox categories — real routes, so every category has a URL.
@@ -126,6 +129,7 @@ export const moduleLabels: Record<PageModule, string> = {
   patient: 'Patients',
   inbox: 'Inbox',
   summary: 'Summary',
+  schedule: 'My Appointments',
   configuration: 'Configuration',
 };
 
@@ -135,5 +139,6 @@ export const moduleHome: Record<PageModule, string> = {
   patient: '/patients',
   inbox: '/inbox',
   summary: '/summary',
+  schedule: '/schedule',
   configuration: '/configuration',
 };

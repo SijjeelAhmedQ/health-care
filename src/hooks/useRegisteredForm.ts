@@ -26,6 +26,8 @@ interface Options<T> {
   onSubmit: (values: T) => Promise<void> | void;
   instanceKey?: string;
   entries?: EntryStore<T>;
+  /** Checks that span every entry (e.g. no two appointments in one slot); one message per problem. */
+  checkAll?: (all: Record<string, unknown>[]) => string[];
 }
 
 /**
@@ -34,12 +36,12 @@ interface Options<T> {
  * Returns a helper to highlight fields that were just filled by voice, plus the list of every field
  * voice has filled since the form was opened (drives the "Filled by voice" banner).
  */
-export function useRegisteredForm<T extends object>({ formId, form, isOpen, open, close, onSubmit, instanceKey, entries }: Options<T>) {
+export function useRegisteredForm<T extends object>({ formId, form, isOpen, open, close, onSubmit, instanceKey, entries, checkAll }: Options<T>) {
   const [voiceFields, setVoiceFields] = useState<Record<string, number>>({});
   // Every field voice has filled since the form opened — cleared on close/save, not faded.
   const [voiceFilledFields, setVoiceFilledFields] = useState<string[]>([]);
-  const latest = useRef({ isOpen, open, close, onSubmit, entries });
-  latest.current = { isOpen, open, close, onSubmit, entries };
+  const latest = useRef({ isOpen, open, close, onSubmit, entries, checkAll });
+  latest.current = { isOpen, open, close, onSubmit, entries, checkAll };
   const def = useMemo(() => FieldRegistry.getForm(formId), [formId]);
   const multi = !!entries;
 
@@ -151,6 +153,7 @@ export function useRegisteredForm<T extends object>({ formId, form, isOpen, open
             for (const f of FieldRegistry.missingRequired(formId, values)) errors.push(`${entryLabel(values, i)}: ${f.label} is required`);
           });
         }
+        errors.push(...(latest.current.checkAll?.(allEntries()) ?? []));
         return errors;
       },
       submit: async () => {

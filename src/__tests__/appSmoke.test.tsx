@@ -53,11 +53,12 @@ describe('application smoke test', () => {
     expect(document.querySelector('.patient-banner')).toBeNull();
   }, TIMEOUT);
 
-  it('sends you to the patient list when the Summary needs a patient', async () => {
+  it('opens the Summary with no patient selected, and says so instead of showing anyone', async () => {
     await signIn();
-    await renderAppAt('/summary', () => pageText().includes('Select a patient to open'));
-    expect(router.state.location.pathname).toBe('/patients');
-    expect(pageText()).toContain('Select a patient to open Summary');
+    store.dispatch(setCurrentPatient(null));
+    await renderAppAt('/summary/medication', () => pageText().includes('No patient selected'));
+    expect(router.state.location.pathname).toBe('/summary/medication');
+    expect(pageText()).toContain('choose each patient in the form');
   }, TIMEOUT);
 
   it('picking a patient from the list opens their Summary, with the patient banner', async () => {
@@ -100,6 +101,7 @@ describe('application smoke test', () => {
     await renderAppAt('/dashboard', () => document.querySelectorAll('.mobile-nav-item').length > 0);
     const menu = Array.from(document.querySelectorAll('.mobile-nav-item')).map((el) => el.textContent?.trim());
     expect(menu).toEqual(['Dashboard', 'Patients', 'Inbox', 'Summary', 'Menu']);
+    // My Appointments and Configuration are in the full menu (five slots in the bottom bar at most).
     for (const path of ['/medications', '/diagnoses', '/tasks', '/recalls', '/appointments']) {
       await router.navigate(path);
       await waitUntil(() => pageText().includes('Page not found'));

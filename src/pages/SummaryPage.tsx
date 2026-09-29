@@ -42,7 +42,11 @@ export default function SummaryPage() {
     <div className="page page-fill">
       <PageHeader
         title="Summary"
-        subtitle={patient ? `${patient.fullName}'s chart — every record in one place, plus the AI summary of anything you dictate.` : 'Select a patient to see their summary.'}
+        subtitle={
+          patient
+            ? `${patient.fullName}'s chart — every record in one place, plus the AI summary of anything you dictate.`
+            : 'No patient selected — select one on the Patients page to see their chart, or add records here and choose the patient in the form.'
+        }
         actions={
           patient && (
             <Button icon={<ClipboardList size={15} />} onClick={() => CarePlanRegistry.get()?.open({ medication: [{}] })}>

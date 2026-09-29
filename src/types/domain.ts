@@ -345,6 +345,13 @@ export interface Appointment {
   checkedInAt?: string;
   isTelehealth: boolean;
   reminderSent: boolean;
+  /** Set when the provider cancels: when, and the note they gave. */
+  cancelledAt?: string;
+  cancellationNote?: string;
+  /** Every move of the appointment, oldest first, with the provider's comment. */
+  rescheduleHistory?: Array<{ fromDate: string; fromTime: string; toDate: string; toTime: string; comment: string; at: string; by: string }>;
+  /** What the patient was told about each cancellation or move, how and when — oldest first. */
+  patientNotices?: Array<{ kind: 'cancelled' | 'rescheduled'; channel: 'SMS' | 'Email'; to: string; message: string; at: string }>;
 }
 
 export interface AppointmentTypeDef {

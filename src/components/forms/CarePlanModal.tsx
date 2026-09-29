@@ -5,6 +5,7 @@ import { useAppDispatch, useAppSelector } from '@/store';
 import { providerSelectors } from '@/store/slices/providerSlice';
 import { patientSelectors } from '@/store/slices/patientSlice';
 import { findPatientByRef, patientRef, patientRefName } from '@/services/records/patientRef';
+import { batchConflicts, slotFromValues } from '@/services/appointments/conflicts';
 import { recordSlices } from '@/store/slices/recordSlices';
 import { voiceActions } from '@/store/slices/voiceSlice';
 import { useSelectedPatient } from '@/hooks/usePatientData';
@@ -54,6 +55,7 @@ export function CarePlanHost() {
   const user = useAppSelector((s) => s.auth.user);
   const providers = useAppSelector(providerSelectors.selectAll);
   const patients = useAppSelector(patientSelectors.selectAll);
+  const booked = useAppSelector(recordSlices.appointment.selectors.selectAll);
   const pending = useAppSelector((s) => s.voice.pendingConfirmation);
   const slot = useAppSelector((s) => s.voice.pendingSlot);
   const [open, setOpen] = useState(false);
@@ -99,7 +101,9 @@ export function CarePlanHost() {
     if (slot && FormRegistry.get(slot.formId)?.instanceKey?.startsWith(CARE_PLAN_INSTANCE)) dispatch(voiceActions.setPendingSlot(null));
   }, [dispatch, pending, slot]);
 
-  const entryLabel = (e: Entry) => labels[e.id] || String(e.values[primaryField[e.kind]] ?? '') || `${titles[e.kind].one} ${entries.filter((x) => x.kind === e.kind).indexOf(e) + 1}`;
+  const severalPatients = new Set(entries.map((e) => e.values.patient).filter(Boolean)).size > 1;
+  const entryLabel = (e: Entry) =>
+    `${labels[e.id] || String(e.values[primaryField[e.kind]] ?? '') || `${titles[e.kind].one} ${entries.filter((x) => x.kind === e.kind).indexOf(e) + 1}`}${severalPatients && e.values.patient ? ` · ${patientRefName(e.values.patient)}` : ''}`;
 
   const validate = async (): Promise<{ errors: string[]; firstBad?: string }> => {
     if (!entries.length) return { errors: ['The care plan is empty.'] };
@@ -130,6 +134,18 @@ export function CarePlanHost() {
       if (firstBad) focus(firstBad, entries);
       throw new Error(errors.slice(0, 3).join('; '));
     }
+    // No double booking — checked for the whole plan before any of it is saved.
+    const clashes = batchConflicts(
+      booked,
+      entries
+        .filter((e) => e.kind === 'appointment')
+        .map((e) => {
+          const values = forms.current.get(e.id)?.getFieldsValue(true) as AnyValues;
+          const who = entryPatient(values);
+          return slotFromValues(values, { patientId: who?.id, patientName: who?.fullName, providerId: providers.find((p) => p.fullName === values.providerName)?.id });
+        }),
+    );
+    if (clashes.length) throw new Error(clashes[0]);
     setSaving(true);
     let saved = 0;
     const savedFor = new Set<string>();

@@ -56,13 +56,25 @@ function fieldSchema(field: FieldDefinition): z.ZodTypeAny {
   return notes.length ? schema.optional().describe(notes.join('; ')) : schema.optional();
 }
 
-/** The fields of a form as an object schema: every field optional (the app asks for missing required ones). */
+/**
+ * The fields of a form as an object schema: every field optional (the app asks for missing required ones).
+ * A field under another name ("name" for the drug) is kept, not silently dropped: the app takes known
+ * aliases as the field and tells the model about any other name — nothing said is lost without a word.
+ */
 function formSchema(formId: string) {
   const def = FieldRegistry.getForm(formId)!;
-  return z.object(Object.fromEntries(def.fields.map((f) => [f.name, fieldSchema(f)])));
+  return z.object(Object.fromEntries(def.fields.map((f) => [f.name, fieldSchema(f)]))).passthrough();
 }
 
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
+/**
+ * The same records for each of several patients ("…to each of John Anderson, James Ahmed and Noor
+ * Anderson"): the app makes one copy per patient, so the model never has to repeat — or mix — them.
+ */
+const forPatients = z
+  .array(z.string())
+  .optional()
+  .describe('"To each of" / "for all of" several patients: their full names here, and every record listed ONCE (no patient field) — each patient gets all of them. Only records that differ per patient carry their own patient field. Omit for the selected patient');
 const recordKind = z.enum(RECORD_KINDS);
 const inboxTarget = z
   .union([z.number().int().positive(), z.enum(['this', 'next', 'previous', 'last'])])
@@ -189,21 +201,25 @@ export function buildTools(): Tool[] {
         'Add records of SEVERAL kinds at once — e.g. medications plus a diagnosis, a task, a recall and an appointment said in one request. Opens the Care Plan on the Summary: one tab per kind, one tab per record, all filled with what was said, saved together after one confirmation. Give patient to select that patient first. Each list uses the same fields as the matching add_* tool; a dose, frequency or duration said once for several drugs applies to each of them.',
       parameters: z.object({
         patient: z.string().optional().describe('Patient full name, id or MRN when the provider names one; omit for the selected patient'),
+        for_patients: forPatients,
         ...Object.fromEntries(RECORD_KINDS.map((kind) => [plural[kind], z.array(formSchema(kind)).optional()])),
       }),
       progress: () => 'Opening the care plan…',
       run: (args, { runtime }) => {
-        const { patient, ...lists } = args as { patient?: string } & Record<string, FieldValues[] | undefined>;
-        return runtime.addCarePlan({ patient, items: Object.fromEntries(RECORD_KINDS.map((kind) => [kind, lists[plural[kind]] ?? []])) });
+        const { patient, for_patients, ...lists } = args as { patient?: string; for_patients?: string[] } & Record<string, FieldValues[] | undefined>;
+        return runtime.addCarePlan({ patient, forPatients: for_patients, items: Object.fromEntries(RECORD_KINDS.map((kind) => [kind, lists[plural[kind]] ?? []])) });
       },
     }),
     ...RECORD_KINDS.map((kind) =>
       defineTool({
         name: `add_${plural[kind]}`,
-        description: `Add one or more ${plural[kind]} (and nothing else) to the selected patient: opens the ${kind} form (one tab per ${kind}) filled with what was said. The app asks for missing required fields and for confirmation before saving. With records of other kinds in the same request use add_care_plan.`,
-        parameters: z.object({ [plural[kind]]: z.array(formSchema(kind)).min(1) }),
+        description: `Add one or more ${plural[kind]} (and nothing else) for the selected patient or for the patients named — no need to select them first: opens the ${kind} form (one tab per patient, one tab per ${kind}) filled with what was said. The app asks for missing required fields and for confirmation before saving. When that form is already open (CONTEXT: open form), the new records are ADDED to it as more tabs — never save, confirm or cancel it first; saving is the provider's. With records of other kinds in the same request use add_care_plan.`,
+        parameters: z.object({ [plural[kind]]: z.array(formSchema(kind)).min(1), for_patients: forPatients }),
         progress: () => `Opening the ${kind} form…`,
-        run: (args, { runtime }) => runtime.createRecords(kind, (args as Record<string, FieldValues[]>)[plural[kind]]),
+        run: (args, { runtime }) => {
+          const { for_patients, ...lists } = args as { for_patients?: string[] } & Record<string, FieldValues[]>;
+          return runtime.createRecords(kind, lists[plural[kind]], for_patients);
+        },
       }),
     ),
     defineTool({
@@ -283,6 +299,87 @@ export function buildTools(): Tool[] {
       parameters: noArgs,
       progress: () => 'Summarising the patient…',
       run: async (_, { runtime }) => runtime.patientSummary(),
+    }),
+
+    // ------------------------------------------- the provider's own appointments
+    // Appointments booked WITH the signed-in provider (their schedule), across patients. Not a patient's
+    // appointments — those are that patient's records (add_appointments, update_record).
+    defineTool({
+      name: 'list_my_appointments',
+      description:
+        "The provider's OWN appointments (\"my appointments\", \"my schedule\", \"who am I seeing\"): shows them on My Appointments and returns them with the patient each one is with.",
+      parameters: z.object({
+        when: z.enum(['upcoming', 'today', 'past', 'cancelled', 'all']).optional().describe('Which ones; upcoming when not said'),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD').optional().describe('Only this day, YYYY-MM-DD'),
+        patient: z.string().optional().describe("Only those with this patient (the patient's name)"),
+      }),
+      progress: () => 'Opening your appointments…',
+      run: (args, { runtime }) => runtime.myAppointments(args),
+    }),
+    defineTool({
+      name: 'cancel_my_appointment',
+      description:
+        "Cancel one of the provider's OWN booked appointments, with a cancellation note: opens its cancel dialog on My Appointments; cancelled only after the provider confirms. Identify it by id, or by the patient's name plus its date / time when needed.",
+      parameters: z.object({
+        appointment: z.string().optional().describe('The appointment id from list_my_appointments'),
+        patient: z.string().optional().describe("The patient's name, when no id"),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD').optional().describe('Its date, YYYY-MM-DD'),
+        time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use 24-hour HH:mm').optional().describe('Its start time, HH:mm'),
+        note: z.string().optional().describe("The cancellation note, in the provider's words; leave out when not said (they are asked)"),
+      }),
+      progress: () => 'Opening the appointment…',
+      run: (args, { runtime }) => runtime.cancelMyAppointment(args),
+    }),
+    defineTool({
+      name: 'reschedule_my_appointment',
+      description:
+        "Move one of the provider's OWN booked appointments to a new date / time, with a reschedule comment: opens its reschedule dialog on My Appointments; moved only after the provider confirms. Double bookings are refused.",
+      parameters: z.object({
+        appointment: z.string().optional().describe('The appointment id from list_my_appointments'),
+        patient: z.string().optional().describe("The patient's name, when no id"),
+        from_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD').optional().describe('When it is NOW (only to pick the right one), YYYY-MM-DD'),
+        from_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use 24-hour HH:mm').optional().describe('Its start time NOW, HH:mm'),
+        to_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD').optional().describe('The date to MOVE it to, YYYY-MM-DD'),
+        to_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use 24-hour HH:mm').optional().describe('The start time to MOVE it to, HH:mm'),
+        duration_minutes: z.number().int().positive().optional(),
+        comment: z.string().optional().describe("The reschedule comment, in the provider's words; leave out when not said (they are asked)"),
+      }),
+      progress: () => 'Opening the appointment…',
+      run: ({ from_date, from_time, to_date, to_time, duration_minutes, ...rest }, { runtime }) =>
+        runtime.rescheduleMyAppointment({ ...rest, date: from_date, time: from_time, newDate: to_date, newTime: to_time, durationMinutes: duration_minutes }),
+    }),
+    // The selected patient's appointments (with any provider) — the same two dialogs, on their Appointments tab.
+    defineTool({
+      name: 'cancel_patient_appointment',
+      description:
+        "Cancel one of the SELECTED PATIENT's appointments (with any provider), with a cancellation note: opens its cancel dialog on the patient's Appointments tab; cancelled only after the provider confirms; the patient is told the reason.",
+      parameters: z.object({
+        appointment: z.string().optional().describe('The appointment id (list_records appointment)'),
+        provider: z.string().optional().describe("The provider it is with, when no id"),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD').optional().describe('Its date, YYYY-MM-DD'),
+        time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use 24-hour HH:mm').optional().describe('Its start time, HH:mm'),
+        note: z.string().optional().describe("The cancellation note, in the provider's words; leave out when not said (they are asked)"),
+      }),
+      progress: () => 'Opening the appointment…',
+      run: (args, { runtime }) => runtime.cancelAppointment('patient', args),
+    }),
+    defineTool({
+      name: 'reschedule_patient_appointment',
+      description:
+        "Move one of the SELECTED PATIENT's appointments (with any provider) to a new date / time, with a reschedule comment: opens its reschedule dialog on the patient's Appointments tab; moved only after the provider confirms; the patient is told the new time and reason. Double bookings are refused.",
+      parameters: z.object({
+        appointment: z.string().optional().describe('The appointment id (list_records appointment)'),
+        provider: z.string().optional().describe("The provider it is with, when no id"),
+        from_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD').optional().describe('When it is NOW (only to pick the right one), YYYY-MM-DD'),
+        from_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use 24-hour HH:mm').optional().describe('Its start time NOW, HH:mm'),
+        to_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD').optional().describe('The date to MOVE it to, YYYY-MM-DD'),
+        to_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use 24-hour HH:mm').optional().describe('The start time to MOVE it to, HH:mm'),
+        duration_minutes: z.number().int().positive().optional(),
+        comment: z.string().optional().describe("The reschedule comment, in the provider's words; leave out when not said (they are asked)"),
+      }),
+      progress: () => 'Opening the appointment…',
+      run: ({ from_date, from_time, to_date, to_time, duration_minutes, ...rest }, { runtime }) =>
+        runtime.rescheduleAppointment('patient', { ...rest, date: from_date, time: from_time, newDate: to_date, newTime: to_time, durationMinutes: duration_minutes }),
     }),
 
     // ---------------------------------------------------------------- inbox

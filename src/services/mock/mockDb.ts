@@ -704,3 +704,79 @@ export const auditLogs: AuditLog[] = Array.from({ length: 260 }, (_, i) => {
 });
 
 export const TODAY_ISO = TODAY.format('YYYY-MM-DD');
+
+// ---- The Inbox: exactly 25 records ----------------------------------------------------------------
+// Lab 7, Radiology 6, Discharge Summary 6, Referrals 6 — 12 abnormal, 13 normal. Chosen here, after
+// everything is generated and without the random generator, so every other seeded value stays as it was.
+// (Only the Inbox reads labs, imaging, referrals, discharge notes and discharge documents.)
+curateInbox();
+
+function curateInbox() {
+  const byName = (name: string) => patients.find((p) => p.fullName === name) ?? patients[0];
+  const who = ['John Smith', 'James Ahmed', 'Noor Anderson', 'John Anderson', 'Ethan Anderson', 'Sarah Johnson', 'Fatima Malik'].map(byName);
+  const assign = <T extends { patientId: string; patientName: string }>(row: T, n: number): T => Object.assign(row, { patientId: who[n % who.length].id, patientName: who[n % who.length].fullName });
+  const daysAgo = (n: number) => TODAY.subtract(n, 'day').hour(9 + (n % 7)).minute((n * 17) % 60);
+
+  // Lab: 7 resulted — 4 abnormal, 3 normal. Every other order is still in the lab's hands.
+  const labAbnormal = [true, false, true, true, false, true, false];
+  labOrders.forEach((lab, i) => {
+    if (i < labAbnormal.length) {
+      const [, , , normal, abnormalResult, range] = labTests.find((t) => t[0] === lab.testName) ?? labTests[0];
+      assign(lab, i);
+      Object.assign(lab, { status: 'Resulted', abnormal: labAbnormal[i], resultedAt: daysAgo(i + 1).toISOString(), orderedAt: daysAgo(i + 3).toISOString(), result: labAbnormal[i] ? abnormalResult : normal, referenceRange: range });
+    } else if (lab.status === 'Resulted') {
+      Object.assign(lab, { status: 'In Progress', resultedAt: undefined, result: undefined, referenceRange: undefined, abnormal: undefined });
+    }
+  });
+
+  // Radiology: 6 reported — 3 abnormal, 3 normal.
+  const imgAbnormal = [true, false, true, false, true, false];
+  imagingOrders.forEach((order, i) => {
+    if (i < imgAbnormal.length) {
+      assign(order, i + 2);
+      const findings = imagingFindings(imgAbnormal[i] ? 2 : 0);
+      Object.assign(order, { status: 'Reported', abnormal: imgAbnormal[i], findings: findings.findings, scheduledFor: daysAgo(i + 2).toISOString(), orderedAt: daysAgo(i + 6).toISOString() });
+    } else if (order.status === 'Reported') {
+      Object.assign(order, { status: 'Performed', abnormal: undefined, findings: undefined });
+    }
+  });
+
+  // Referrals: 6 — 2 abnormal, 4 normal.
+  referrals.splice(6);
+  const refAbnormal = [false, true, false, false, true, false];
+  referrals.forEach((referral, i) => {
+    assign(referral, i + 4);
+    Object.assign(referral, { abnormal: refAbnormal[i], createdAt: daysAgo(i + 4).toISOString() });
+  });
+  // John Smith has one of each kind of record (the Inbox is often opened on him).
+  assign(referrals[0], 0);
+
+  // Discharge summaries: 3 notes + 3 documents — 3 abnormal, 3 normal. Other discharge notes and documents
+  // become ordinary progress notes and documents, so they leave the Inbox.
+  const noteAbnormal = [true, false, true];
+  let kept = 0;
+  notes.forEach((note) => {
+    if (note.type !== 'Discharge') return;
+    if (kept < noteAbnormal.length) {
+      assign(note, kept + 1);
+      Object.assign(note, { abnormal: noteAbnormal[kept], status: 'Signed', createdAt: daysAgo(kept + 2).toISOString() });
+      kept++;
+    } else {
+      Object.assign(note, { type: 'Progress', title: note.title.replace(/^Discharge note/, 'Progress note'), abnormal: undefined });
+    }
+  });
+  const docAbnormal = [false, false, true];
+  kept = 0;
+  documents.forEach((doc) => {
+    if (doc.category !== 'Discharge Summary') return;
+    if (kept < docAbnormal.length) {
+      assign(doc as { patientId: string; patientName: string }, kept + 3);
+      Object.assign(doc, { abnormal: docAbnormal[kept], status: 'Final', uploadedAt: daysAgo(kept + 5).toISOString() });
+      kept++;
+    } else {
+      Object.assign(doc, { category: 'Other', title: doc.title.replace(/^Discharge Summary/, 'Other'), abnormal: undefined });
+    }
+  });
+  // John Smith's discharge summary.
+  assign(notes.find((n) => n.type === 'Discharge')!, 0);
+}

@@ -861,6 +861,11 @@ export class VoiceController {
       },
       providerNames: () => providerSelectors.selectAll(getState()).map((p) => p.fullName),
       inboxItems: () => getState().inbox.items,
+      providerAppointments: () => {
+        const s = getState();
+        const provider = selectCurrentProvider(s);
+        return provider ? recordSlices.appointment.selectors.selectAll(s).filter((a) => a.providerId === provider.id) : [];
+      },
       addInboxComments: (itemIds: string[], text: string) =>
         dispatch(inboxActions.addComments({ itemIds, text, author: selectCurrentProvider(getState())?.fullName ?? 'You' })),
       stopListening: () => this.stopListening(),

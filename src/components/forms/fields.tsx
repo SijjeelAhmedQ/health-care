@@ -139,7 +139,7 @@ export function DateField({ formId, name, fc, span, rules, label, disabled, help
   );
 }
 
-export function TimeField({ formId, name, fc, span, label, help }: BaseFieldProps) {
+export function TimeField({ formId, name, fc, span, label, help, disabled }: BaseFieldProps) {
   const def = useDef(formId, name);
   const text = label ?? def.label;
   return (
@@ -150,7 +150,7 @@ export function TimeField({ formId, name, fc, span, label, help }: BaseFieldProp
       rules={def.required ? [{ required: true, message: `Pick ${text.toLowerCase()}` }] : []}
       extra={help}
     >
-      <TimePicker style={{ width: '100%' }} format="h:mm A" minuteStep={5} use12Hours placeholder="Select time" />
+      <TimePicker style={{ width: '100%' }} format="h:mm A" minuteStep={5} use12Hours placeholder="Select time" disabled={disabled} />
     </Form.Item>
   );
 }

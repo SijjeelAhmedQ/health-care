@@ -23,6 +23,7 @@ import type {
   User,
 } from '@/types/domain';
 import { createMockRepository, delay } from './repository';
+import { describeConflict, findConflict } from '@/services/appointments/conflicts';
 
 /** Everything that hangs off a patient is queried the same way. */
 interface PatientScoped {
@@ -72,8 +73,24 @@ export const recallService = withPatientScope(createMockRepository<Recall>(db.re
 
 // ---- Appointments ----
 const appointmentRepo = createMockRepository<Appointment>(db.appointments, { persistKey: 'careflow.appointments' });
+
+/** The last line against double booking: whatever path a booking takes, it is checked here. */
+async function assertSlotFree(slot: Appointment | (Omit<Appointment, 'id'> & { id?: string })) {
+  const conflict = findConflict(await appointmentRepo.all(), slot);
+  if (conflict) throw new Error(describeConflict(slot, conflict));
+}
+
 export const appointmentService = {
   ...withPatientScope(appointmentRepo),
+  async create(input: Omit<Appointment, 'id'> & Partial<Pick<Appointment, 'id'>>) {
+    await assertSlotFree(input);
+    return appointmentRepo.create(input);
+  },
+  async update(id: string, patch: Partial<Appointment>) {
+    const current = await appointmentRepo.get(id);
+    if (current) await assertSlotFree({ ...current, ...patch, id });
+    return appointmentRepo.update(id, patch);
+  },
   async byDate(date: string) {
     const all = await appointmentRepo.all();
     return all.filter((a) => a.date === date).sort((a, b) => a.startTime.localeCompare(b.startTime));

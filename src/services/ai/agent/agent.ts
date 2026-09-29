@@ -53,6 +53,29 @@ export function planCovers(steps: string[], said: string): boolean {
   return kept.length / content.length >= 0.75;
 }
 
+/** Words that only announce what the model is about to do ("Let me correct this:"), not an answer. */
+function announcesOnly(text: string): boolean {
+  const t = text.trim();
+  return !t.endsWith('?') && (/:\s*$/.test(t) || /\b(let me|i will|i'll|i need to|i am going to|i'm going to)\b/i.test(t));
+}
+
+const NUDGE_ACT = 'Do it now: call the tool(s) that carry out SAID. Do not describe what you will do.';
+const NUDGE_TRUNCATED =
+  'Your answer was cut off before the tool call was complete, so nothing happened. Call the tool again, shorter: only the fields the provider said, and the same records for several patients listed once with for_patients.';
+
+/**
+ * The reply the provider hears. A question from the app is kept word for word; a confirmation may be put
+ * in the model's own words when they say the same (review / confirm); otherwise the model's words, or
+ * what the last tool did — and when nothing happened, it says so rather than "Done".
+ */
+function finalReply(awaiting: string | null, modelText: string, lastToolMessage: string, calledTools: boolean): string {
+  const usable = !!modelText && !announcesOnly(modelText);
+  if (awaiting) return !awaiting.trim().endsWith('?') && usable && /\b(review|confirm)/i.test(modelText) ? modelText : awaiting;
+  if (usable) return modelText;
+  if (lastToolMessage) return lastToolMessage;
+  return calledTools ? 'Done.' : "I couldn't carry that out — nothing was changed. Please say it again, or in shorter parts.";
+}
+
 const PLAN_FILLER = new Set(['then', 'also', 'with', 'that', 'this', 'please', 'after', 'into', 'from', 'have', 'them', 'they', 'their', 'there', 'and', 'what', 'will', 'would', 'could', 'should', 'just', 'okay', 'well', 'unclear']);
 
 let stepCounter = 0;
@@ -243,6 +266,11 @@ export class Agent {
     let stalls = 0;
     /** What the app is waiting on the provider for (the latest question or confirmation), if anything. */
     let awaiting: string | null = null;
+    /** The model's own last words, when it wrote any beside its tool calls. */
+    let lastModelText = '';
+    let lastResultOk = true;
+    /** One nudge per request: an answer cut off, empty, or only announcing what it would do. */
+    let nudged = false;
 
     for (let step = 0; step < this.maxSteps; step++) {
       const modelStep: AgentStep = { id: stepId(), type: 'model', startedAt: Date.now() };
@@ -250,10 +278,12 @@ export class Agent {
       hooks.onProgress?.(step === 0 ? 'Understanding…' : 'Thinking…');
       let content = '';
       let calls: ToolCall[] = [];
+      let truncated = false;
       try {
         const answer = await this.llm.chat(messages, this.schemas, { signal });
         content = answer.content.trim();
         calls = answer.toolCalls;
+        truncated = !!answer.truncated;
         hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), content, toolCalls: calls });
       } catch (e) {
         hooks.onStep?.({ ...modelStep, finishedAt: Date.now(), error: (e as Error).message });
@@ -261,11 +291,22 @@ export class Agent {
       }
 
       if (!calls.length) {
-        outcome.reply = awaiting ?? (content || lastToolMessage || 'Done.');
+        // No tool call, but the request is not done: the answer was cut off, came back empty, or only
+        // announced what it would do ("Let me correct this:"). The model is told once to carry it out.
+        const stalledOut = truncated || (!content && !calledTools) || (!!content && !lastResultOk && announcesOnly(content));
+        if (stalledOut && !nudged && step < this.maxSteps - 1) {
+          nudged = true;
+          if (content) messages.push({ role: 'assistant', content });
+          messages.push({ role: 'user', content: truncated ? NUDGE_TRUNCATED : NUDGE_ACT });
+          continue;
+        }
+        if (content) lastModelText = content;
+        outcome.reply = finalReply(awaiting, lastModelText, lastToolMessage, calledTools);
         if (awaiting) outcome.speak = true;
         if (!calledTools) outcome.speak = true;
         break;
       }
+      if (content) lastModelText = content;
       calledTools = true;
       messages.push({ role: 'assistant', content, tool_calls: calls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) });
 
@@ -293,6 +334,7 @@ export class Agent {
         const note = stalled ? { ...result, message: `${result.message} (Same call, same result as before — do not repeat it: try something different or answer the provider.)` } : result;
         messages.push({ role: 'tool', tool_name: call.name, content: toolMessage(note) });
         lastToolMessage = result.message;
+        lastResultOk = result.ok;
         if (result.fieldsModified) outcome.fieldsModified.push(...result.fieldsModified);
         if (result.speak) outcome.speak = true;
         if (result.awaitUser) {

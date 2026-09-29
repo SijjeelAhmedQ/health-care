@@ -280,7 +280,9 @@ export function VoiceAssistant() {
                   </div>
                 )}
 
-                {pending && (
+                {/* Records being added (medications, diagnoses, tasks, recalls, appointments, the care plan) and
+                    appointment changes are reviewed and saved in their own dialog, not confirmed again here. */}
+                {pending && !(pending.kind === 'form' && pending.formId !== 'patient') && (
                   <div className={`va-card ${pending.kind === 'delete' ? 'is-danger' : 'is-confirm'}`}>
                     <div className="va-card-head">
                       <span className="va-card-icon" aria-hidden>

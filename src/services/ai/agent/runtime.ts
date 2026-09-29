@@ -15,7 +15,11 @@
  */
 import dayjs from 'dayjs';
 import type { FieldValues, PendingConfirmation, ToolResult } from '@/types/ai';
-import type { Patient } from '@/types/domain';
+import type { Appointment, Patient } from '@/types/domain';
+import { PatientAppointmentsRegistry, ScheduleRegistry, type PatientAppointmentsController, type ScheduleController, type ScheduleView } from '@/registry/scheduleRegistry';
+
+/** Whose appointments: the signed-in provider's own, or the selected patient's. */
+type AppointmentScope = 'mine' | 'patient';
 import { RECORD_KINDS, type EntityKind, type RecordKind } from '@/types/records';
 import { categoryMeta, type InboxItem, type InboxView } from '@/services/inbox/inboxModel';
 import { findPatientByRef, patientRef, patientRefName } from '@/services/records/patientRef';
@@ -74,6 +78,8 @@ export interface RuntimeDeps {
   getWorkload(): ProviderWorkload | null;
   /** Full names of the practice's providers (for provider fields). */
   providerNames(): string[];
+  /** The signed-in provider's own appointments — every one booked with them, across patients. */
+  providerAppointments(): Appointment[];
   /** Every Inbox record (all patients, filed or not), once the Inbox has loaded. */
   inboxItems(): InboxItem[];
   /** Add the same comment, signed by the provider, to each of these Inbox records. */
@@ -136,14 +142,26 @@ function primaryField(def: FormDefinition): FieldDefinition | undefined {
   return def.fields.find((f) => f.required && f.type === 'text') ?? def.fields.find((f) => f.required);
 }
 
-/** True when none of the record-defining required fields have a value. */
+/**
+ * The same records for each of several patients: one copy per patient, grouped by patient in the order
+ * named. A record that already names its own patient is kept once, as it is — never copied to others.
+ */
+function forEachPatient(items: FieldValues[], patients?: string[]): FieldValues[] {
+  const names = [...new Set((patients ?? []).map((p) => p.trim()).filter(Boolean))];
+  if (!names.length) return items;
+  const own = items.filter((item) => typeof item.patient === 'string' && item.patient.trim());
+  const shared = items.filter((item) => !own.includes(item));
+  return [...names.flatMap((patient) => shared.map((item) => ({ ...item, patient }))), ...own];
+}
+
 /** Say which spoken patient names were taken as a close match ("Noor Andersen" -> Noor Anderson). */
 function withHeard(result: ToolResult, heard: string[]): ToolResult {
   return heard.length ? { ...result, message: `${heard.join('; ')}. ${result.message}` } : result;
 }
 
+/** True when none of the record-defining required fields have a value (who it is for does not define a record). */
 function isBlank(def: FormDefinition, values: Record<string, unknown>): boolean {
-  return def.fields.filter((f) => f.required).every((f) => values[f.name] === undefined || values[f.name] === '' || values[f.name] === null);
+  return def.fields.filter((f) => f.required && f.optionsFrom !== 'patients').every((f) => values[f.name] === undefined || values[f.name] === '' || values[f.name] === null);
 }
 
 export class AppRuntime {
@@ -180,14 +198,44 @@ export class AppRuntime {
    */
   private remind(result: ToolResult): ToolResult {
     if (this.origin !== 'assistant' || !result.ok) return result;
+    // Records for several patients: what each patient now has, side by side, so the model can see a record
+    // given to the wrong patient or missing for one ("Panadol to John, Paracetamol to James…" when every
+    // patient was to get all three).
+    const byPatient = this.openRecordsByPatient();
     return {
       ...result,
       data: {
         ...(result.data as Record<string, unknown> | undefined),
         check:
           'Compare with SAID: every medication, diagnosis, task, recall and appointment the provider mentioned must be open now. If one is missing, add only the missing ones (add_care_plan — records added while a form is open join one care plan). Do not change, clear or re-add what is there, and do not open saved records.',
+        ...(byPatient
+          ? {
+              by_patient: byPatient,
+              check_patients:
+                'Each patient must have exactly the records SAID gives them: "to each of" / "all of them" means every record for every patient named. If a patient is missing records, add them (add_* with for_patients or the patient field). Never fill a value SAID did not give for that record — the provider is asked.',
+            }
+          : {}),
       },
     };
+  }
+
+  /** The open form's (or care plan's) records grouped by patient, when they are for more than one patient. */
+  private openRecordsByPatient(): Record<string, string[]> | null {
+    const groups: Record<string, string[]> = {};
+    const add = (kind: string, values: Record<string, unknown>) => {
+      const def = FieldRegistry.getForm(kind);
+      const primary = def ? primaryField(def) : undefined;
+      const who = patientRefName(values.patient) || this.state().currentPatientName || 'no patient';
+      (groups[who] ??= []).push(String((primary && values[primary.name]) || kind));
+    };
+    const plan = CarePlanRegistry.get();
+    if (plan?.isOpen()) plan.entries().forEach((e) => add(e.kind, e.values));
+    else {
+      const form = FormRegistry.active();
+      if (!form?.entries || !(RECORD_KINDS as readonly string[]).includes(form.formId)) return null;
+      form.entries.getAll().forEach((v) => add(form.formId, v));
+    }
+    return Object.keys(groups).length > 1 ? groups : null;
   }
 
   /**
@@ -214,8 +262,13 @@ export class AppRuntime {
   // ----------------------------------------------------------------- pages
 
   /** Patient-dependent actions are refused while no patient is selected. */
-  private requirePatient(what: string): ToolResult | null {
+  /** `forRecords`: new records can name their patients instead — say so, rather than send the model searching. */
+  private requirePatient(what: string, forRecords = false): ToolResult | null {
     if (this.state().currentPatientId) return null;
+    if (forRecords)
+      return fail(
+        `No patient is selected and none was named, so I can't ${what}. Call it again naming the patient the provider said: in each record's patient field, or all of them in for_patients (no need to select anyone first). If the provider named no patient, ask them who it is for.`,
+      );
     return fail(`No patient is selected, so I can't ${what}. Select a patient first (search_patients / select_patient).`);
   }
 
@@ -438,20 +491,24 @@ export class AppRuntime {
   }
 
   /** Open the create dialog pre-filled with one or more records (several = one tab each). */
-  async createRecords(kind: EntityKind, items: FieldValues[]): Promise<ToolResult> {
+  /** `forPatients`: every item is for each of these patients — one copy per patient, made here, never by the model. */
+  async createRecords(kind: EntityKind, items: FieldValues[], forPatients?: string[]): Promise<ToolResult> {
+    items = items.map((item) => FieldRegistry.canonical(kind, item));
     if (kind === 'patient') return this.openRecords(kind, items);
+    items = forEachPatient(items, forPatients);
     // Records named for other patients ("…for John Anderson, James Ahmed and Noor Anderson"): each
     // patient is found first — none guessed; nothing opens while one of them is unclear.
     const named = await this.resolveItemPatients(items);
     if ('ok' in named) return named;
+    // Records that name their patients need nobody selected (the form asks for any patient still missing).
+    if (!named.first) {
+      const blocked = this.requirePatient(`add a ${recordLabels[kind].singular}`, true);
+      if (blocked) return blocked;
+    }
     return withHeard(await this.openRecords(kind, named.items), named.heard);
   }
 
   private async openRecords(kind: EntityKind, items: FieldValues[]): Promise<ToolResult> {
-    if (kind !== 'patient') {
-      const blocked = this.requirePatient(`add a ${recordLabels[kind].singular}`);
-      if (blocked) return blocked;
-    }
     // A medication given a dose but no drug (a diagnosis with details but no condition) is not a record:
     // the details belong to a named one. An empty item — "add a medication" — still opens the blank form.
     const nameField = kind === 'patient' ? undefined : FieldRegistry.getForm(kind)!.fields.find((f) => f.knownFrom === kind);
@@ -517,6 +574,11 @@ export class AppRuntime {
     if (this.preparedThisTurn()) return fail(WAITING_ON_PROVIDER);
     const found = this.resolveRecord(kind, record);
     if ('ok' in found) return found;
+    if (kind === 'appointment' && (changes.date !== undefined || changes.startTime !== undefined || ['Cancelled', 'Rescheduled'].includes(String(changes.status ?? '')))) {
+      return fail(
+        'An appointment is moved or cancelled with a reason, and the patient is told — not edited. Use reschedule_patient_appointment (new date / time and the comment) or cancel_patient_appointment (the note) instead.',
+      );
+    }
     const controller = await this.ensureModule(kind);
     if ('ok' in controller) return controller;
     const existing = FormRegistry.active();
@@ -599,7 +661,17 @@ export class AppRuntime {
     if (skipped) notes.push(`this form holds one record at a time; ${skipped} more were not added`);
     // A record tab of the care plan is saved with the whole plan, never on its own.
     if (controller.instanceKey?.startsWith(CARE_PLAN_INSTANCE)) return this.remind(this.carePlanNextStep(modified, notes));
-    return this.remind(this.nextStep(def, controller, modified, notes));
+    const next = this.remind(this.nextStep(def, controller, modified, notes));
+    // No double booking: an appointment that would clash is not offered for saving at all.
+    if (this.state().pendingConfirmation?.formId === def.id && (def.id === 'appointment' || def.id === 'appointment_reschedule')) {
+      const clashes = (await controller.validate()).filter((e) => /already (has an appointment|booked)/.test(e));
+      if (clashes.length) {
+        this.deps.setPendingConfirmation(null);
+        this.pendingTurn = null;
+        return fail(`Not bookable: ${clashes.join(' ')} Nothing is booked — ask the provider for another time.`, { fieldsModified: modified, speak: true });
+      }
+    }
+    return next;
   }
 
   /**
@@ -654,7 +726,11 @@ export class AppRuntime {
    * pre-filled with every record given (or add them to the plan already open). Selects the named
    * patient first. Then asks for the first missing required value, or stages one save for all.
    */
-  async addCarePlan(args: { patient?: string; items: CarePlanItems }): Promise<ToolResult> {
+  async addCarePlan(args: { patient?: string; forPatients?: string[]; items: CarePlanItems }): Promise<ToolResult> {
+    args = { ...args, items: Object.fromEntries(RECORD_KINDS.map((kind) => [kind, (args.items[kind] ?? []).map((item) => FieldRegistry.canonical(kind, item))])) as CarePlanItems };
+    if (args.forPatients?.length) {
+      args = { ...args, items: Object.fromEntries(RECORD_KINDS.map((kind) => [kind, forEachPatient(args.items[kind] ?? [], args.forPatients)])) as CarePlanItems };
+    }
     if (args.patient) {
       const found = this.resolvePatient(args.patient);
       if ('ok' in found) return found;
@@ -675,7 +751,12 @@ export class AppRuntime {
       at += given.length;
     }
     args = { ...args, items: resolved };
-    const blocked = this.requirePatient('open a care plan');
+    // A care plan belongs to one patient's Summary: with nobody selected, the first one named is.
+    if (named.first && !this.state().currentPatientId && !args.patient) {
+      this.deps.setCurrentPatient(named.first.id);
+      await sleep(60);
+    }
+    const blocked = this.requirePatient('open a care plan', true);
     if (blocked) return blocked;
     return withHeard(await this.openCarePlan(args), named.heard);
   }
@@ -835,10 +916,10 @@ export class AppRuntime {
 
   /**
    * Find the patient each record names. Any that cannot be found for certain stops everything — a
-   * record must never fall back to the selected patient because another one's name was unclear. With
-   * no patient selected, the first one named is selected (the records' page belongs to a patient).
+   * record must never fall back to the selected patient because another one's name was unclear.
+   * `first`: the first patient named (the care plan, which belongs to one patient, selects them).
    */
-  private async resolveItemPatients(items: FieldValues[]): Promise<{ items: FieldValues[]; heard: string[] } | ToolResult> {
+  private async resolveItemPatients(items: FieldValues[]): Promise<{ items: FieldValues[]; heard: string[]; first?: Patient } | ToolResult> {
     const all = this.deps.allPatients();
     const out: FieldValues[] = [];
     const heard: string[] = [];
@@ -859,11 +940,7 @@ export class AppRuntime {
       first ??= patient;
       out.push({ ...item, patient: patientRef(patient) });
     }
-    if (first && !this.state().currentPatientId) {
-      this.deps.setCurrentPatient(first.id);
-      await sleep(60);
-    }
-    return { items: out, heard };
+    return { items: out, heard, first };
   }
 
   /** A provider named in a field: the full name, or enough of it to identify exactly one provider. */
@@ -928,7 +1005,9 @@ export class AppRuntime {
     const pending = this.state().pendingConfirmation;
     if (!pending) return fail('Nothing is waiting for confirmation.');
     if (this.origin === 'assistant' && this.turn !== null && this.pendingTurn === this.turn) {
-      return fail('The user has not confirmed yet — this was only just prepared. Ask them to confirm.');
+      return fail(
+        'Not confirmed: the provider has not said yes — this was only just prepared. If SAID asks for more records, add them now (add_* or add_care_plan); otherwise stop and let the provider confirm.',
+      );
     }
     this.pendingTurn = null;
 
@@ -1205,6 +1284,145 @@ export class AppRuntime {
     if (item.patientId === this.state().currentPatientId) return ok(`${item.patientName} is already the selected patient.`);
     this.deps.setCurrentPatient(item.patientId);
     return ok(`${item.patientName} is now the selected patient.`);
+  }
+
+  // ------------------------------------------------ the provider's own appointments
+
+  /**
+   * One appointment to change — from the provider's own (`mine`: across their patients, named by patient)
+   * or the selected patient's (`patient`: any provider, named by provider): by id or booking code, or by
+   * name, narrowed by date and time. Several or none that fit: the model is told, with the candidates.
+   */
+  private findAppointment(scope: AppointmentScope, args: { appointment?: string; patient?: string; provider?: string; date?: string; time?: string }): { appointment: Appointment } | ToolResult {
+    const all = scope === 'mine' ? this.deps.providerAppointments() : (this.deps.getRecords('appointment') as Appointment[]);
+    const whose = scope === 'mine' ? 'of yours' : `of ${this.state().currentPatientName ?? 'the patient'}`;
+    const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const exact = args.appointment ? all.find((a) => a.id === args.appointment || key(a.code) === key(args.appointment!)) : undefined;
+    if (exact) return { appointment: exact };
+    const now = dayjs();
+    let pool = all.filter((a) => !['Cancelled', 'No Show', 'Completed'].includes(a.status) && !dayjs(`${a.date}T${a.startTime}`).isBefore(now));
+    // Mine are told apart by patient; a patient's by provider.
+    const who = scope === 'mine' ? (args.patient ?? args.appointment) : (args.provider ?? args.appointment);
+    const nameOf = (a: Appointment) => (scope === 'mine' ? a.patientName : a.providerName);
+    if (who) {
+      const named = pool.filter((a) => key(nameOf(a)).includes(key(who)) || key(who).includes(key(nameOf(a))));
+      pool = named.length ? named : soundAlikes(who, pool, nameOf).matches.map((m) => m.item);
+    }
+    if (args.date) pool = pool.filter((a) => a.date === args.date);
+    if (args.time) pool = pool.filter((a) => a.startTime === args.time);
+    const brief = (a: Appointment) => ({ id: a.id, date: a.date, time: `${a.startTime}-${a.endTime}`, patient: a.patientName, provider: a.providerName, type: a.type, reason: a.reason, status: a.status });
+    if (pool.length === 1) return { appointment: pool[0] };
+    if (!pool.length)
+      return fail(`No upcoming appointment ${whose} matches${who ? ` "${who}"` : ''}${args.date ? ` on ${args.date}` : ''}${args.time ? ` at ${args.time}` : ''}.`, {
+        data: all.filter((a) => a.date >= now.format('YYYY-MM-DD') && a.status !== 'Cancelled').slice(0, 10).map(brief),
+      });
+    return fail(`${pool.length} appointments ${whose} match — ask the provider which one (date and time), or use its id.`, { data: pool.slice(0, 8).map(brief) });
+  }
+
+  /** Open My Appointments (the provider's own schedule) and wait for it. */
+  private async ensureSchedule(): Promise<ScheduleController | ToolResult> {
+    const page = PageRegistry.get('my-appointments')!;
+    if (this.state().currentPageId !== page.id || !ScheduleRegistry.get()) {
+      const nav = await this.goTo(page);
+      if (!nav.ok) return nav;
+    }
+    return (await waitFor(() => ScheduleRegistry.get(), 4000)) ?? fail('My Appointments did not open.');
+  }
+
+  /** Where the cancel / reschedule dialogs live for a scope: My Appointments, or the patient's Appointments tab. */
+  private async appointmentDialogs(scope: AppointmentScope): Promise<PatientAppointmentsController | ToolResult> {
+    if (scope === 'mine') return this.ensureSchedule();
+    const blocked = this.requirePatient("change a patient's appointment");
+    if (blocked) return blocked;
+    const tab = await this.ensureModule('appointment');
+    if ('ok' in tab) return tab;
+    return (await waitFor(() => PatientAppointmentsRegistry.get(), 4000)) ?? fail('The Appointments tab did not open.');
+  }
+
+  /** The provider's own appointments: shows them on My Appointments and returns them. */
+  async myAppointments(args: { when?: ScheduleView; date?: string; patient?: string }): Promise<ToolResult> {
+    const schedule = await this.ensureSchedule();
+    if ('ok' in schedule) return schedule;
+    const when = args.date ? 'all' : (args.when ?? 'upcoming');
+    schedule.setView(when);
+    schedule.setSearch(args.patient ?? '');
+    const today = dayjs().format('YYYY-MM-DD');
+    const inView = (a: Appointment) =>
+      when === 'today' ? a.date === today : when === 'upcoming' ? a.date >= today && a.status !== 'Cancelled' : when === 'past' ? a.date < today : when === 'cancelled' ? a.status === 'Cancelled' : true;
+    const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const rows = this.deps
+      .providerAppointments()
+      .filter((a) => inView(a) && (!args.date || a.date === args.date) && (!args.patient || key(a.patientName).includes(key(args.patient))))
+      .sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`));
+    return ok(`${rows.length} ${when === 'all' ? '' : `${when} `}appointment${rows.length === 1 ? '' : 's'} of yours${args.date ? ` on ${args.date}` : ''}${args.patient ? ` with ${args.patient}` : ''}. My Appointments is open.`, {
+      speak: true,
+      data: rows.slice(0, 25).map((a) => ({
+        id: a.id,
+        date: a.date,
+        time: `${a.startTime}-${a.endTime}`,
+        patient: a.patientName,
+        type: a.type,
+        reason: a.reason,
+        status: a.status,
+        cancellationNote: a.cancellationNote,
+        rescheduled: a.rescheduleHistory?.at(-1)?.comment,
+      })),
+    });
+  }
+
+  /** Cancel an appointment: its cancel dialog with the provider's note; saved on their yes; the patient is told why. */
+  async cancelAppointment(scope: AppointmentScope, args: { appointment?: string; patient?: string; provider?: string; date?: string; time?: string; note?: string }): Promise<ToolResult> {
+    const found = this.findAppointment(scope, args);
+    if ('ok' in found) return found;
+    const dialogs = await this.appointmentDialogs(scope);
+    if ('ok' in dialogs) return dialogs;
+    const a = found.appointment;
+    if (!dialogs.openCancel(a.id)) return fail(`The appointment with ${a.patientName} on ${a.date} at ${a.startTime} cannot be cancelled (it is past, completed or already cancelled).`);
+    const form = await waitFor(() => (FormRegistry.get('appointment_cancel')?.isOpen() ? FormRegistry.get('appointment_cancel') : undefined), 3000);
+    if (!form) return fail('The cancel dialog did not open.');
+    const filled = await this.fill('appointment_cancel', form, [args.note ? { cancellationNote: args.note } : {}], 'active');
+    return { ...filled, message: `Cancelling ${a.patientName}'s appointment with ${a.providerName} on ${dayjs(a.date).format('D MMM')} at ${a.startTime} (the patient is told the reason). ${filled.message}` };
+  }
+
+  /** Move an appointment: its reschedule dialog, the new slot and the provider's comment; saved on their yes; the patient is told. */
+  async rescheduleAppointment(
+    scope: AppointmentScope,
+    args: { appointment?: string; patient?: string; provider?: string; date?: string; time?: string; newDate?: string; newTime?: string; durationMinutes?: number; comment?: string },
+  ): Promise<ToolResult> {
+    const found = this.findAppointment(scope, args);
+    if ('ok' in found) return found;
+    const dialogs = await this.appointmentDialogs(scope);
+    if ('ok' in dialogs) return dialogs;
+    const a = found.appointment;
+    if (!dialogs.openReschedule(a.id)) return fail(`The appointment with ${a.patientName} on ${a.date} at ${a.startTime} cannot be rescheduled (it is past, completed or cancelled).`);
+    const form = await waitFor(() => (FormRegistry.get('appointment_reschedule')?.isOpen() ? FormRegistry.get('appointment_reschedule') : undefined), 3000);
+    if (!form) return fail('The reschedule dialog did not open.');
+    await sleep(80); // the dialog starts on the current slot
+    const lead = `Rescheduling ${a.patientName}'s appointment with ${a.providerName} (now ${dayjs(a.date).format('D MMM')} at ${a.startTime}); the patient is told the new time and reason.`;
+    const values: FieldValues = {};
+    if (args.newDate) values.date = args.newDate;
+    if (args.newTime) values.startTime = args.newTime;
+    if (args.durationMinutes) values.durationMinutes = args.durationMinutes;
+    if (args.comment) values.comment = args.comment;
+    if (!args.newDate && !args.newTime) {
+      // Nothing to move it to yet: the provider is asked, never a slot guessed.
+      if (args.comment) await this.fill('appointment_reschedule', form, [{ comment: args.comment }], 'active');
+      const question = `What new date and time for ${a.patientName}'s appointment?`;
+      this.deps.setPendingConfirmation(null);
+      this.deps.setPendingSlot({ formId: 'appointment_reschedule', field: 'startTime', label: 'New time', question });
+      form.focusField('date');
+      return ask(`${lead} ${question}`);
+    }
+    const filled = await this.fill('appointment_reschedule', form, [values], 'active');
+    return { ...filled, message: `${lead} ${filled.message}` };
+  }
+
+  cancelMyAppointment(args: Parameters<AppRuntime['cancelAppointment']>[1]) {
+    return this.cancelAppointment('mine', args);
+  }
+
+  rescheduleMyAppointment(args: Parameters<AppRuntime['rescheduleAppointment']>[1]) {
+    return this.rescheduleAppointment('mine', args);
   }
 
   // ----------------------------------------------------------------- lists

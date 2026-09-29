@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef } from 'react';
-import { Form, Tabs } from 'antd';
-import { CalendarPlus, ListChecks, Pill, Repeat, Stethoscope } from 'lucide-react';
+import { Button, Form, Tabs } from 'antd';
+import { CalendarPlus, ListChecks, Pill, Plus, Repeat, Stethoscope } from 'lucide-react';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { providerSelectors } from '@/store/slices/providerSlice';
@@ -16,6 +16,8 @@ import { FormGrid, FormSection } from '@/components/common';
 import { RegisteredFormModal } from './RegisteredForm';
 import { CheckboxField, DateField, NumberField, PatientSelectField, ProviderSelectField, SelectField, TextField, TimeField } from './fields';
 import { findPatientByRef, patientRef, patientRefName } from '@/services/records/patientRef';
+import { recordLabel } from '@/services/records/recordMapping';
+import { batchConflicts, slotFromValues } from '@/services/appointments/conflicts';
 
 export type { RecordKind };
 type AnyValues = Record<string, unknown>;
@@ -299,29 +301,55 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, record, authorName, defaultRef, JSON.stringify(prefill ?? {})]);
 
-  // Re-seed the form whenever it is opened for a different record (edit vs add).
-  useEffect(() => {
-    if (!open) return;
-    form.resetFields();
-    form.setFieldsValue(initialValues as never);
-    itemsRef.current = [{}];
-    activeRef.current = 0;
-    rerender();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initialValues]);
-
-  // Multi-entry support: "add panadol and metformin" fills one tab per record and
-  // saves them together after a single review.
+  // Multi-entry support: "add panadol and metformin" fills one record tab each, saved together after a
+  // single review. Records are grouped into numbered main tabs (Tab 1, Tab 2…), one patient per tab —
+  // each tab its own workspace: its patient, its records, and that patient's existing chart.
   const itemsRef = useRef<AnyValues[]>([{}]);
+  /** The main tab each record belongs to (parallel to itemsRef). */
+  const tabIdsRef = useRef<string[]>(['t0']);
+  const tabCounter = useRef(1);
   const activeRef = useRef(0);
   const [, rerender] = useReducer((x: number) => x + 1, 0);
   const count = itemsRef.current.length;
   const primaryName = { medication: 'medicationName', diagnosis: 'description', task: 'title', recall: 'reason', appointment: 'reason' }[kind];
   const liveLabel = Form.useWatch(primaryName, form) as string | undefined;
   const livePatient = Form.useWatch('patient', form) as string | undefined;
-  /** Each entry's patient reference, the one on screen read live. */
-  const entryPatients = itemsRef.current.map((it, i) => (i === activeRef.current ? livePatient : (it.patient as string | undefined)) ?? defaultRef);
+
+  // Re-seed the form whenever it is opened for a different record (edit vs add).
+  useEffect(() => {
+    if (!open) return;
+    form.resetFields();
+    form.setFieldsValue(initialValues as never);
+    itemsRef.current = [{}];
+    tabIdsRef.current = ['t0'];
+    tabCounter.current = 1;
+    activeRef.current = 0;
+    rerender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialValues]);
+
+  /** A record's patient: the one on screen read live; one never given a patient is the default one. */
+  const patientOf = (i: number): string | undefined => {
+    // Read from the form itself, not the watched value: the assistant adds several records in one go,
+    // before a re-render could bring the watch up to date.
+    if (i === activeRef.current) return (form.getFieldValue('patient') as string | undefined) || undefined;
+    const it = itemsRef.current[i];
+    return 'patient' in it ? (it.patient as string | undefined) || undefined : defaultRef;
+  };
+  const entryPatients = itemsRef.current.map((_, i) => patientOf(i));
+  const tabOrder = [...new Set(tabIdsRef.current)];
+  const activeTab = tabIdsRef.current[activeRef.current];
+  const tabPatient = (tab: string) => entryPatients[tabIdsRef.current.indexOf(tab)];
   const distinctPatients = [...new Set(entryPatients.filter(Boolean))];
+  const entryLabels = itemsRef.current.map((it, i) => (i === activeRef.current ? liveLabel : (it[primaryName] as string)) || `${titles[kind]} ${i + 1}`);
+
+  // One patient per tab: changing it on any record of the tab changes it for the whole tab.
+  useEffect(() => {
+    if (!open || editing) return;
+    const tab = tabIdsRef.current[activeRef.current];
+    itemsRef.current = itemsRef.current.map((it, i) => (i !== activeRef.current && tabIdsRef.current[i] === tab ? { ...it, patient: livePatient } : it));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livePatient]);
 
   const snapshotActive = () => {
     const live = form.getFieldsValue(true) as AnyValues;
@@ -338,22 +366,45 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
     load(itemsRef.current[index]);
     rerender();
   };
-  const addEntry = (values: AnyValues = {}) => {
+  /**
+   * A new record — in `tab`, or (from the assistant) in the tab of the patient it names: a patient not in
+   * any tab yet gets a new tab.
+   */
+  const addEntry = (values: AnyValues = {}, tab?: string) => {
+    const named = 'patient' in values ? (values.patient as string | undefined) || undefined : defaultRef;
+    const existing = named ? itemsRef.current.findIndex((_, i) => patientOf(i) === named) : -1;
+    const target = tab ?? (existing >= 0 ? tabIdsRef.current[existing] : `t${tabCounter.current++}`);
     snapshotActive();
     itemsRef.current = [...itemsRef.current, values];
+    tabIdsRef.current = [...tabIdsRef.current, target];
     activeRef.current = itemsRef.current.length - 1;
     load(values);
     rerender();
     return activeRef.current;
   };
+  /** A new, empty tab: no patient chosen yet. */
+  const addTab = () => addEntry({ patient: undefined }, `t${tabCounter.current++}`);
   const removeEntry = (index: number) => {
     if (itemsRef.current.length <= 1) return;
     snapshotActive();
     itemsRef.current = itemsRef.current.filter((_, i) => i !== index);
+    tabIdsRef.current = tabIdsRef.current.filter((_, i) => i !== index);
     activeRef.current = Math.min(activeRef.current > index ? activeRef.current - 1 : activeRef.current, itemsRef.current.length - 1);
     load(itemsRef.current[activeRef.current]);
     rerender();
   };
+  const removeTab = (tab: string) => {
+    if (tabOrder.length <= 1) return;
+    snapshotActive();
+    const keep = tabIdsRef.current.map((t) => t !== tab);
+    const activeKept = keep[activeRef.current];
+    itemsRef.current = itemsRef.current.filter((_, i) => keep[i]);
+    tabIdsRef.current = tabIdsRef.current.filter((_, i) => keep[i]);
+    activeRef.current = activeKept ? keep.slice(0, activeRef.current).filter(Boolean).length : 0;
+    load(itemsRef.current[activeRef.current]);
+    rerender();
+  };
+
   const entries: EntryStore<AnyValues> = {
     get items() {
       return itemsRef.current;
@@ -362,13 +413,14 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
       return activeRef.current;
     },
     setActive: switchTo,
-    add: addEntry,
+    add: (values) => addEntry(values),
   };
 
   const submit = async (values: AnyValues) => {
-    // An existing record stays with its patient; a new one goes to the patient its form names.
-    const target = record ? (recordPatient ?? patient) : (findPatientByRef(patients, values.patient) ?? patient);
-    if (!target) throw new Error('No patient is selected — choose the patient this is for before saving.');
+    // An existing record stays with its patient; a new one goes to the patient its tab names — never to
+    // anyone by default.
+    const target = record ? recordPatient : findPatientByRef(patients, values.patient);
+    if (!target) throw new Error('Choose the patient for every tab before saving.');
     const provider = providers.find((p) => p.fullName === values.providerName);
     const payload = formValuesToRecord(kind, values, {
       patientId: target.id,
@@ -383,15 +435,70 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
     onSaved?.();
   };
 
+  // No double booking: every appointment in the dialog against what is booked, and against each other.
+  const booked = useAppSelector(recordSlices.appointment.selectors.selectAll);
+  const checkAll =
+    kind === 'appointment'
+      ? (all: Record<string, unknown>[]) =>
+          batchConflicts(
+            booked,
+            all.map((v) => {
+              const who = record ? recordPatient : findPatientByRef(patients, v.patient);
+              const provider = providers.find((p) => p.fullName === v.providerName);
+              return slotFromValues(v, { id: record?.id, patientId: who?.id, patientName: who?.fullName, providerId: provider?.id });
+            }),
+          )
+      : undefined;
+
+  const noun = titles[kind].toLowerCase();
+  const tabRecords = entryLabels.flatMap((label, i) => (tabIdsRef.current[i] === activeTab ? [{ key: String(i), label, closable: true }] : []));
+  const header = editing ? undefined : (
+    <>
+      <Tabs
+        className="entry-patient-tabs"
+        type="editable-card"
+        size="small"
+        activeKey={activeTab}
+        onChange={(tab) => switchTo(tabIdsRef.current.indexOf(tab))}
+        onEdit={(tab, action) => (action === 'add' ? addTab() : removeTab(String(tab)))}
+        addIcon={<Plus size={14} aria-label="Add tab" />}
+        items={tabOrder.map((tab, n) => ({ key: tab, label: `Tab ${n + 1}`, closable: tabOrder.length > 1 }))}
+        tabBarExtraContent={
+          <Button size="small" type="text" icon={<Plus size={14} />} onClick={() => addEntry({ patient: tabPatient(activeTab) }, activeTab)}>
+            Add {noun}
+          </Button>
+        }
+        style={{ marginBottom: 6 }}
+      />
+      {tabRecords.length > 1 && (
+        <Tabs
+          className="entry-record-tabs"
+          type="editable-card"
+          size="small"
+          hideAdd
+          activeKey={String(activeRef.current)}
+          onChange={(k) => switchTo(Number(k))}
+          onEdit={(key, action) => {
+            if (action === 'remove') removeEntry(Number(key));
+          }}
+          items={tabRecords}
+          style={{ marginBottom: 6 }}
+        />
+      )}
+      <PatientRecordsGlance patientRef={livePatient} />
+    </>
+  );
+
   const title = editing ? `Edit ${titles[kind]}` : `Add ${titles[kind]}${count > 1 ? ` (${count})` : ''}`;
-  const who = distinctPatients.length > 1 ? `${distinctPatients.length} patients` : patientRefName(distinctPatients[0]) || defaultPatient?.fullName;
-  const description = who
-    ? editing
-      ? `Update this ${titles[kind].toLowerCase()} for ${who}.`
+  const emptyTab = tabOrder.findIndex((tab) => !tabPatient(tab));
+  const who = distinctPatients.length > 1 ? `${distinctPatients.length} patients` : patientRefName(distinctPatients[0]) || undefined;
+  const description = editing
+    ? `Update this ${noun} for ${who ?? 'the patient'}.`
+    : emptyTab >= 0
+      ? `Choose the patient for Tab ${emptyTab + 1} — nothing is saved for a tab without one.`
       : count > 1
-        ? `${count} ${titles[kind].toLowerCase()}s will be saved for ${who} once you confirm.`
-        : `This ${titles[kind].toLowerCase()} will be saved for ${who}.`
-    : 'Choose the patient this is for.';
+        ? `${count} ${noun}s will be saved for ${who} once you confirm.`
+        : `This ${noun} will be saved for ${who}.`;
 
   return (
     <RegisteredFormModal<AnyValues>
@@ -407,32 +514,65 @@ export function RecordFormModal({ kind, open, onOpen, onClose, record, prefill, 
       form={form}
       entries={editing ? undefined : entries}
       submitLabel={editing ? `Update ${titles[kind]}` : undefined}
-      header={
-        !editing && count > 1 ? (
-          <Tabs
-            type="editable-card"
-            size="small"
-            activeKey={String(activeRef.current)}
-            onChange={(k) => switchTo(Number(k))}
-            onEdit={(key, action) => (action === 'add' ? addEntry() : removeEntry(Number(key)))}
-            items={itemsRef.current.map((it, i) => ({
-              key: String(i),
-              label: [
-                (i === activeRef.current ? liveLabel : (it[primaryName] as string)) || `${titles[kind]} ${i + 1}`,
-                // Several patients: say whose each tab is.
-                distinctPatients.length > 1 ? patientRefName(entryPatients[i]) : '',
-              ]
-                .filter(Boolean)
-                .join(' · '),
-              closable: count > 1,
-            }))}
-            style={{ marginBottom: 8 }}
-          />
-        ) : undefined
-      }
+      header={header}
+      checkAll={checkAll}
     >
       {({ fc }) => <RecordFields kind={kind} fc={fc} lockPatient={editing} />}
     </RegisteredFormModal>
+  );
+}
+
+const glanceKinds: Array<{ kind: RecordKind; one: string; many: string }> = [
+  { kind: 'medication', one: 'medication', many: 'medications' },
+  { kind: 'diagnosis', one: 'diagnosis', many: 'diagnoses' },
+  { kind: 'task', one: 'task', many: 'tasks' },
+  { kind: 'recall', one: 'recall', many: 'recalls' },
+  { kind: 'appointment', one: 'appointment', many: 'appointments' },
+];
+
+/**
+ * The chart of the patient a tab is for — their medications, diagnoses, tasks, recalls and appointments
+ * as they are now — so the provider sees what exists while adding more. Only that patient's; with no
+ * patient chosen, nothing (never another patient's records).
+ */
+function PatientRecordsGlance({ patientRef: ref }: { patientRef?: string }) {
+  const patients = useAppSelector(patientSelectors.selectAll);
+  const lists: Record<RecordKind, Array<{ id: string; patientId: string }>> = {
+    medication: useAppSelector(recordSlices.medication.selectors.selectAll),
+    diagnosis: useAppSelector(recordSlices.diagnosis.selectors.selectAll),
+    task: useAppSelector(recordSlices.task.selectors.selectAll),
+    recall: useAppSelector(recordSlices.recall.selectors.selectAll),
+    appointment: useAppSelector(recordSlices.appointment.selectors.selectAll),
+  };
+  const patient = findPatientByRef(patients, ref);
+  if (!patient) {
+    return <div className="patient-glance is-empty">Choose this tab&apos;s patient to see their records.</div>;
+  }
+  const mine = glanceKinds.map((g) => ({ ...g, rows: lists[g.kind].filter((r) => r.patientId === patient.id) }));
+  return (
+    <details className="patient-glance" open>
+      <summary>
+        <strong>{patient.fullName}&apos;s records</strong>
+        <span className="muted"> — {mine.map((m) => `${m.rows.length} ${m.rows.length === 1 ? m.one : m.many}`).join(' · ')}</span>
+      </summary>
+      <div className="patient-glance-grid">
+        {mine.map(({ kind, many, rows }) => (
+          <div key={kind} className="patient-glance-col">
+            <div className="patient-glance-head">{many.charAt(0).toUpperCase() + many.slice(1)}</div>
+            {rows.length ? (
+              <ul>
+                {rows.slice(0, 4).map((r) => (
+                  <li key={r.id}>{recordLabel(kind, r as never)}</li>
+                ))}
+                {rows.length > 4 && <li className="muted">+{rows.length - 4} more</li>}
+              </ul>
+            ) : (
+              <div className="muted">No {many} found</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -540,8 +680,9 @@ export function RecordFields({ kind, fc, lockPatient }: { kind: RecordKind; fc: 
           <FormSection title="When">
             <FormGrid cols={2}>
               {who}
-              <DateField formId={formId} name="date" fc={fc} />
-              <TimeField formId={formId} name="startTime" fc={fc} />
+              {/* A booked appointment is moved or cancelled with a reason — and the patient told — never just edited. */}
+              <DateField formId={formId} name="date" fc={fc} disabled={lockPatient} help={lockPatient ? 'To move it, use Reschedule — the patient is told why.' : undefined} />
+              <TimeField formId={formId} name="startTime" fc={fc} disabled={lockPatient} />
               <NumberField formId={formId} name="durationMinutes" fc={fc} min={5} max={240} suffix="min" />
               <SelectField formId={formId} name="type" fc={fc} />
             </FormGrid>
@@ -550,7 +691,7 @@ export function RecordFields({ kind, fc, lockPatient }: { kind: RecordKind; fc: 
             <FormGrid cols={2}>
               <ProviderSelectField formId={formId} name="providerName" fc={fc} />
               <SelectField formId={formId} name="locationName" fc={fc} />
-              <SelectField formId={formId} name="status" fc={fc} />
+              <SelectField formId={formId} name="status" fc={fc} disabled={lockPatient} help={lockPatient ? 'To cancel it, use Cancel — the patient is told why.' : undefined} />
               <SelectField formId={formId} name="priority" fc={fc} />
               <CheckboxField formId={formId} name="isTelehealth" fc={fc} />
             </FormGrid>

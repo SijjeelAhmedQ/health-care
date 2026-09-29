@@ -201,6 +201,12 @@ describe('the Inbox through the assistant', () => {
     expect(new Set(items.map((i) => i.status))).toEqual(new Set(['Abnormal', 'Normal']));
     // Every kind of record can be abnormal, not only lab results.
     expect(new Set(items.filter((i) => i.status === 'Abnormal').map((i) => i.category))).toEqual(new Set(['lab', 'radiology', 'referral', 'discharge']));
+    // Exactly 25: Lab 7, Radiology 6, Referrals 6, Discharge 6 — 13 normal, 12 abnormal.
+    expect(items).toHaveLength(25);
+    expect(items.filter((i) => i.status === 'Normal')).toHaveLength(13);
+    expect(items.filter((i) => i.status === 'Abnormal')).toHaveLength(12);
+    const count = (c: string) => items.filter((i) => i.category === c).length;
+    expect([count('lab'), count('radiology'), count('referral'), count('discharge')]).toEqual([7, 6, 6, 6]);
   });
 
   it('"Add comment hello world to all abnormal records": added at once, no confirmation, and the reply says how many', async () => {

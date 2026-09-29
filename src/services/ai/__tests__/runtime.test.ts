@@ -13,6 +13,9 @@ import { ListRegistry } from '@/registry/listRegistry';
 import type { SttConfig } from '@/services/ai/sttConfig';
 
 /** Minimal in-memory form controller standing in for a mounted Ant Design form. */
+/** Like the real record dialogs, a new record starts with the selected patient (John Smith). */
+const seedFor = (formId: string): Record<string, FormValue> => (formId === 'patient' ? {} : { patient: 'John Smith (MRN-1)' });
+
 function fakeForm(formId: string) {
   let open = false;
   let values: Record<string, FormValue> = {};
@@ -20,7 +23,7 @@ function fakeForm(formId: string) {
   const controller: FormController = {
     formId,
     isOpen: () => open,
-    open: () => { open = true; },
+    open: () => { if (!open) values = { ...seedFor(formId), ...values }; open = true; },
     close: () => { open = false; values = {}; },
     getValues: () => values,
     setValues: (v) => { values = { ...values, ...v }; },
@@ -43,7 +46,7 @@ function fakeMultiForm(formId: string) {
   const controller: FormController = {
     formId,
     isOpen: () => open,
-    open: () => { open = true; },
+    open: () => { if (!open) items[0] = { ...seedFor(formId), ...items[0] }; open = true; },
     close: () => { open = false; items = [{}]; active = 0; },
     getValues: () => items[active],
     setValues: (v) => { items[active] = { ...items[active], ...v }; },
@@ -56,7 +59,7 @@ function fakeMultiForm(formId: string) {
       count: () => items.length,
       active: () => active,
       setActive: (i) => { active = i; },
-      add: (v) => { items.push({ ...v }); active = items.length - 1; return active; },
+      add: (v) => { items.push({ ...seedFor(formId), ...v }); active = items.length - 1; return active; },
       getAll: () => items,
     },
   };
@@ -150,6 +153,7 @@ function setup(state: Partial<RuntimeState> = {}) {
     getWorkload: () => null,
     providerNames: () => ['Dr. Sarah Ahmed', 'Dr. James Carter'],
     inboxItems: () => [],
+    providerAppointments: () => [],
     addInboxComments: vi.fn(),
     setDashboardPanel: vi.fn(),
     aiSettings: () => ({ llm: { provider: 'ollama', apiUrl: 'http://127.0.0.1:11434', model: 'qwen3.5:4b', timeoutMs: 90000, numGpu: 99, numCtx: 12288, maxSteps: 6 }, bridgeUrl: 'http://127.0.0.1:8765' }),
@@ -179,13 +183,14 @@ describe('AppRuntime — what the tools do', () => {
     NavigationRegistry.setPathname('/summary');
   });
 
-  it('opens pages by id, and refuses patient pages while no patient is selected', async () => {
+  it('opens pages by id — the Summary and its tabs too, with no patient selected', async () => {
     const { runtime, state } = setup({ currentPatientId: null, currentPatientName: null });
     expect((await runtime.openPage('dashboard')).ok).toBe(true);
     expect(state.currentPageId).toBe('dashboard');
-    const blocked = await runtime.openPage('summary-medication');
-    expect(blocked.ok).toBe(false);
-    expect(blocked.message).toMatch(/no patient is selected/i);
+    expect((await runtime.openPage('summary-medication')).ok).toBe(true);
+    expect(state.currentPageId).toBe('summary-medication');
+    // Reading a patient's records still needs to know whose.
+    expect((await runtime.listRecords('medication')).message).toMatch(/no patient is selected/i);
     expect((await runtime.openPage('nowhere')).ok).toBe(false);
   });
 
@@ -269,7 +274,7 @@ describe('AppRuntime — what the tools do', () => {
     expect(state.pendingConfirmation).not.toBeNull();
     const self = await runtime.confirm();
     expect(self.ok).toBe(false);
-    expect(self.message).toMatch(/has not confirmed yet/);
+    expect(self.message).toMatch(/Not confirmed: the provider has not said yes/);
     expect(form.submit).not.toHaveBeenCalled();
     runtime.endTurn();
 
