@@ -75,7 +75,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   store.dispatch(voiceActions.resetVoice());
-  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'lwhite', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
   await store.dispatch(fetchProviders()).unwrap();
   store.dispatch(setCurrentPatient(null));
@@ -91,44 +91,44 @@ describe(`multi-step requests — ${MODEL}`, () => {
     expect(await getVoiceController().warmUp()).toBeNull();
   });
 
-  it('1: patients → select James Ahmed → task form filled for blood pressure monitoring', async () => {
-    const r = await run('go to patients and select james ahmed and create a task for blood pressure monitoring');
-    expect(r.patient).toBe('James Ahmed');
+  it('1: patients → select Harry White → task form filled for blood pressure monitoring', async () => {
+    const r = await run('go to patients and select harry white and create a task for blood pressure monitoring');
+    expect(r.patient).toBe('Harry White');
     expect(r.dialog?.title).toMatch(/task/i);
     expect(Object.values(r.dialog?.values ?? {}).join(' ')).toMatch(/blood pressure/i);
-    expect(pageText()).toContain('James Ahmed');
+    expect(pageText()).toContain('Harry White');
   });
 
-  it('2: patients → select James Ahmed → inbox → first record', async () => {
-    const r = await run('go to patients and select james ahmed and goto inbox and select first record');
-    expect(r.patient).toBe('James Ahmed');
+  it('2: patients → select Harry White → inbox → first record', async () => {
+    const r = await run('go to patients and select harry white and goto inbox and select first record');
+    expect(r.patient).toBe('Harry White');
     expect(r.path).toMatch(/^\/inbox/);
     expect(r.calls.some((c) => c.startsWith('inbox_open_item') && c.includes('-> ok'))).toBe(true);
   });
 
   it('3: medication in the same sentence', async () => {
-    const r = await run('go to patients and select james ahmed and add metformin 500 mg twice daily');
-    expect(r.patient).toBe('James Ahmed');
+    const r = await run('go to patients and select harry white and add metformin 500 mg twice daily');
+    expect(r.patient).toBe('Harry White');
     expect(r.dialog?.title).toMatch(/medication/i);
     expect(Object.values(r.dialog?.values ?? {}).join(' ')).toMatch(/metformin/i);
   });
 
   it('4: diagnosis in the same sentence', async () => {
-    const r = await run('open patients, select james ahmed and add a diagnosis of hypertension');
-    expect(r.patient).toBe('James Ahmed');
+    const r = await run('open patients, select harry white and add a diagnosis of hypertension');
+    expect(r.patient).toBe('Harry White');
     expect(r.dialog?.title).toMatch(/diagnos/i);
     expect(Object.values(r.dialog?.values ?? {}).join(' ')).toMatch(/hypertension/i);
   });
 
   it('5: recall in the same sentence', async () => {
-    const r = await run('go to patients, select james ahmed and create a recall for an annual physical in 3 months');
-    expect(r.patient).toBe('James Ahmed');
+    const r = await run('go to patients, select harry white and create a recall for an annual physical in 3 months');
+    expect(r.patient).toBe('Harry White');
     expect(r.dialog?.title).toMatch(/recall/i);
   });
 
   it('7: the same care-plan request, as the provider meant it (clean text)', async () => {
     const r = await run(
-      'Go to patients, select James Ahmed and add medication metformin, panadol, gabapentin and rituximab 500 mg twice daily for 30 days, create a task for blood pressure monitoring, recall the patient after two weeks and schedule a follow-up appointment next Tuesday at 3 pm',
+      'Go to patients, select Harry White and add medication metformin, panadol, gabapentin and rituximab 500 mg twice daily for 30 days, create a task for blood pressure monitoring, recall the patient after two weeks and schedule a follow-up appointment next Tuesday at 3 pm',
     );
     const kinds = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
     console.log('care plan tabs:', kinds, '| reply:', r.reply);
@@ -137,12 +137,12 @@ describe(`multi-step requests — ${MODEL}`, () => {
 
   it('8: four appointments for four patients, said in one breath', async () => {
     const r = await run(
-      'crate four appointments against Dr Sarah Ahmed appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm John Anderson, James Ahmed, Ethan Anderson, Noor Anderson',
+      'crate four appointments against Dr Lucy White appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm Liam Martin, Harry White, Lucas Martin, Lily Martin',
     );
     const whose = (FormRegistry.get('appointment')?.entries?.getAll() ?? []).map((v) => String(v.patient ?? '').replace(/\s*\(.*\)$/, ''));
     console.log('appointments for:', whose, '| reply:', r.reply);
     expect(r.dialog?.title).toMatch(/Add Appointment \(4\)/);
-    expect(new Set(whose)).toEqual(new Set(['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson']));
+    expect(new Set(whose)).toEqual(new Set(['Liam Martin', 'Harry White', 'Lucas Martin', 'Lily Martin']));
   });
 
   /** The patient tabs of the open record form, and each entry's patient and name. */
@@ -155,37 +155,37 @@ describe(`multi-step requests — ${MODEL}`, () => {
 
   it('9: the same three medications for each of four patients', async () => {
     // The provider's own words (their transcript).
-    await run('Add the following medications to each of the four patients: John Anderson, James Ahmed, Ethan Anderson, and Noor Anderson.  Panadol 500 mg — twice daily for 50 days Paracetamol 500 mg — twice daily for 50 days Gabapentin 500 mg — twice daily for 50 days');
+    await run('Add the following medications to each of the four patients: Liam Martin, Harry White, Lucas Martin, and Lily Martin.  Panadol 500 mg — twice daily for 50 days Paracetamol 500 mg — twice daily for 50 days Gabapentin 500 mg — twice daily for 50 days');
     const { tabs, entries } = multi('medication', 'medicationName');
     expect(tabs).toHaveLength(4);
-    for (const who of ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'])
+    for (const who of ['Liam Martin', 'Harry White', 'Lucas Martin', 'Lily Martin'])
       for (const drug of ['Panadol', 'Paracetamol', 'Gabapentin']) expect(entries).toContain(`${who}: ${drug}`);
   });
 
   it('10: a different time for each patient', async () => {
-    await run('Create four appointments with Dr. Sarah Ahmed for today for blood pressure monitoring: John Anderson at 6 pm, James Ahmed at 7 pm, Ethan Anderson at 8 pm, Noor Anderson at 9 pm');
+    await run('Create four appointments with Dr. Lucy White for today for blood pressure monitoring: Liam Martin at 6 pm, Harry White at 7 pm, Lucas Martin at 8 pm, Lily Martin at 9 pm');
     const all = FormRegistry.get('appointment')?.entries?.getAll() ?? [];
     const time = (who: string) => {
       const v = all.find((e) => String(e.patient ?? '').startsWith(who))?.startTime;
       return v && typeof v === 'object' && 'format' in v ? (v as { format: (f: string) => string }).format('HH:mm') : String(v);
     };
-    console.log('appointment times:', ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'].map((w) => `${w} ${time(w)}`));
-    expect([time('John Anderson'), time('James Ahmed'), time('Ethan Anderson'), time('Noor Anderson')]).toEqual(['18:00', '19:00', '20:00', '21:00']);
+    console.log('appointment times:', ['Liam Martin', 'Harry White', 'Lucas Martin', 'Lily Martin'].map((w) => `${w} ${time(w)}`));
+    expect([time('Liam Martin'), time('Harry White'), time('Lucas Martin'), time('Lily Martin')]).toEqual(['18:00', '19:00', '20:00', '21:00']);
   });
 
   it('11: different medications for different patients, never mixed', async () => {
-    await run('Add Panadol to John Anderson, Metformin to James Ahmed, and Gabapentin 500 mg twice daily for 30 days to Ethan Anderson');
+    await run('Add Panadol to Liam Martin, Metformin to Harry White, and Gabapentin 500 mg twice daily for 30 days to Lucas Martin');
     const { entries } = multi('medication', 'medicationName');
-    expect(entries).toEqual(expect.arrayContaining(['John Anderson: Panadol', 'James Ahmed: Metformin', 'Ethan Anderson: Gabapentin']));
+    expect(entries).toEqual(expect.arrayContaining(['Liam Martin: Panadol', 'Harry White: Metformin', 'Lucas Martin: Gabapentin']));
     expect(entries).toHaveLength(3);
   });
 
   // Exactly what speech recognition produced for the provider's spoken request (the recall came out garbled).
   it('6: the spoken care-plan request — medications, task, recall and appointment all survive', async () => {
     const r = await run(
-      'Go to Patients. Select James Ahmed, Add Medications, Metformin, Panadol, Gabapentin, Rituximab, 500 mg twice daily for 30 days. Create a task.  unclear Pressure Monitoring. Recall the patient after two weeks and schedule a follow up appointment next Tuesday at 3 p.m.',
+      'Go to Patients. Select Harry White, Add Medications, Metformin, Panadol, Gabapentin, Rituximab, 500 mg twice daily for 30 days. Create a task.  unclear Pressure Monitoring. Recall the patient after two weeks and schedule a follow up appointment next Tuesday at 3 p.m.',
     );
-    expect(r.patient).toBe('James Ahmed');
+    expect(r.patient).toBe('Harry White');
     // The care plan dialog, tab by tab: every kind that was said is there.
     const kinds = [...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
     console.log('care plan tabs:', kinds, '| reply:', r.reply);

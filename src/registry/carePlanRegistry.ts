@@ -29,8 +29,11 @@ export interface CarePlanEntryRef {
 
 export interface CarePlanController {
   isOpen(): boolean;
-  /** Open the dialog with these records (replacing whatever it held). */
-  open(items: CarePlanItems): void;
+  /**
+   * Open the dialog with these records (replacing whatever it held). `instant`: it takes the place of a
+   * record form already on screen, so it appears at once — no zoom — while that form closes behind it.
+   */
+  open(items: CarePlanItems, options?: { instant?: boolean }): void;
   /** Add records to the open dialog: one new tab each. */
   add(items: CarePlanItems): void;
   /** Every record tab once mounted, in kind order. */

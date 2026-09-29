@@ -89,7 +89,7 @@ const cases: Case[] = [
     context: { currentPatientId: null, currentPatientName: null },
     check: (calls) => (calls.some((c) => (c.name === 'select_patient' || c.name === 'search_patients') && String(c.arguments.patient ?? c.arguments.query ?? '').includes(db.patients[10].lastName)) ? null : `expected select/search for ${db.patients[10].fullName}, got ${JSON.stringify(calls)}`),
   },
-  { id: 'search-patient', said: 'find patient khan', check: named('search_patients', includes('query', 'khan')) },
+  { id: 'search-patient', said: 'find patient king', check: named('search_patients', includes('query', 'king')) },
   {
     id: 'med-spoken',
     said: 'add metformin 500 milligrams two times a day for ten days',
@@ -157,8 +157,8 @@ const cases: Case[] = [
   { id: 'inbox-comment-normal', said: 'add comment hello world to all normal records', context: { currentPatientId: null, currentPatientName: null, currentPageId: 'dashboard', currentPageTitle: 'Dashboard' }, check: named('inbox_add_comment', all(eq('which', 'normal'), includes('text', 'hello world'))) },
   { id: 'inbox-comment-abnormal', said: 'add comment hello world to all abnormal records', context: { currentPatientId: null, currentPatientName: null, currentPageId: 'dashboard', currentPageTitle: 'Dashboard' }, check: named('inbox_add_comment', all(eq('which', 'abnormal'), includes('text', 'hello world'))) },
   { id: 'my-appointments', said: 'show me my appointments for today', context: { currentPatientId: null, currentPatientName: null, currentPageId: 'dashboard', currentPageTitle: 'Dashboard' }, check: named('list_my_appointments') },
-  { id: 'my-cancel', said: 'cancel my appointment with James Ahmed tomorrow, he is travelling', context: { currentPatientId: null, currentPatientName: null, currentPageId: 'dashboard', currentPageTitle: 'Dashboard' }, lookup: { ok: true, message: '1 upcoming appointment of yours with James Ahmed.', data: [{ id: 'apt-771', date: iso(today.add(1, 'day')), time: '10:00-10:30', patient: 'James Ahmed', type: 'Follow-up', reason: 'Review', status: 'Scheduled' }] }, check: named('cancel_my_appointment', includes('note', 'travel')) },
-  { id: 'my-reschedule', said: 'move my appointment with Noor Anderson to next Friday at 4 pm because the patient asked', context: { currentPatientId: null, currentPatientName: null, currentPageId: 'dashboard', currentPageTitle: 'Dashboard' }, lookup: { ok: true, message: '1 upcoming appointment of yours with Noor Anderson.', data: [{ id: 'apt-772', date: iso(today.add(2, 'day')), time: '11:00-11:30', patient: 'Noor Anderson', type: 'Follow-up', reason: 'Review', status: 'Scheduled' }] }, check: named('reschedule_my_appointment', all(eq('to_date', iso(nextWeekday(5))), eq('to_time', '16:00'))) },
+  { id: 'my-cancel', said: 'cancel my appointment with Harry White tomorrow, he is travelling', context: { currentPatientId: null, currentPatientName: null, currentPageId: 'dashboard', currentPageTitle: 'Dashboard' }, lookup: { ok: true, message: '1 upcoming appointment of yours with Harry White.', data: [{ id: 'apt-771', date: iso(today.add(1, 'day')), time: '10:00-10:30', patient: 'Harry White', type: 'Follow-up', reason: 'Review', status: 'Scheduled' }] }, check: named('cancel_my_appointment', includes('note', 'travel')) },
+  { id: 'my-reschedule', said: 'move my appointment with Lily Martin to next Friday at 4 pm because the patient asked', context: { currentPatientId: null, currentPatientName: null, currentPageId: 'dashboard', currentPageTitle: 'Dashboard' }, lookup: { ok: true, message: '1 upcoming appointment of yours with Lily Martin.', data: [{ id: 'apt-772', date: iso(today.add(2, 'day')), time: '11:00-11:30', patient: 'Lily Martin', type: 'Follow-up', reason: 'Review', status: 'Scheduled' }] }, check: named('reschedule_my_appointment', all(eq('to_date', iso(nextWeekday(5))), eq('to_time', '16:00'))) },
   { id: 'pt-appt-cancel', said: "cancel this patient's appointment next Monday, the doctor is on leave", context: { currentPageId: 'summary-appointment', currentPageTitle: 'Appointments' }, check: named('cancel_patient_appointment', all(eq('date', iso(nextWeekday(1))), includes('note', 'leave'))) },
   { id: 'pt-appt-move', said: 'move her appointment on Monday to Thursday at 11 am because the lab results are not back', context: { currentPageId: 'summary-appointment', currentPageTitle: 'Appointments' }, check: named('reschedule_patient_appointment', all(eq('to_date', iso(nextWeekday(4))), eq('to_time', '11:00'))) },
   { id: 'inbox-file', said: 'file this one', context: { currentPageId: 'inbox-lab', currentPageTitle: 'Inbox — Lab', inbox: { view: 'lab', items: 5, openItem: 'CBC with differential', query: '' } }, check: named('inbox_file_item', eq('file', true)) },
@@ -170,7 +170,7 @@ const cases: Case[] = [
   {
     id: 'delete',
     said: 'delete the metformin',
-    lookup: { ok: true, message: 'John has 2 medications.', data: [{ id: 'med-7', label: 'Metformin', details: '500 mg · Oral', status: 'Active' }, { id: 'med-9', label: 'Lisinopril', details: '10 mg · Oral', status: 'Active' }] },
+    lookup: { ok: true, message: 'Liam has 2 medications.', data: [{ id: 'med-7', label: 'Metformin', details: '500 mg · Oral', status: 'Active' }, { id: 'med-9', label: 'Lisinopril', details: '10 mg · Oral', status: 'Active' }] },
     check: named('delete_record', all(eq('kind', 'medication'), (c) => (/metformin|med-7/i.test(String(arg(c, 'record'))) ? null : `record: expected metformin or med-7, got ${JSON.stringify(arg(c, 'record'))}`))),
   },
   {

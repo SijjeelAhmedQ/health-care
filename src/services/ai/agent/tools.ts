@@ -68,8 +68,8 @@ function formSchema(formId: string) {
 
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
 /**
- * The same records for each of several patients ("…to each of John Anderson, James Ahmed and Noor
- * Anderson"): the app makes one copy per patient, so the model never has to repeat — or mix — them.
+ * The same records for each of several patients ("…to each of Liam Martin, Harry White and Lily
+ * Martin"): the app makes one copy per patient, so the model never has to repeat — or mix — them.
  */
 const forPatients = z
   .array(z.string())

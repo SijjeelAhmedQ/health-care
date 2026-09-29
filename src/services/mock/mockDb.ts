@@ -44,9 +44,9 @@ import { createRng, pad } from './random';
 const rng = createRng(20260919);
 const TODAY = dayjs('2026-09-19');
 
-const firstNamesM = ['Ahmed', 'John', 'Michael', 'Omar', 'David', 'Ali', 'James', 'Hassan', 'Daniel', 'Yusuf', 'Robert', 'Bilal', 'William', 'Imran', 'Thomas', 'Zain', 'Carlos', 'Noah', 'Ethan', 'Samuel'];
-const firstNamesF = ['Sarah', 'Fatima', 'Emily', 'Ayesha', 'Jessica', 'Maryam', 'Emma', 'Zainab', 'Olivia', 'Hira', 'Sophia', 'Amina', 'Isabella', 'Sana', 'Grace', 'Noor', 'Maria', 'Hannah', 'Layla', 'Chloe'];
-const lastNames = ['Smith', 'Khan', 'Johnson', 'Ahmed', 'Williams', 'Malik', 'Brown', 'Hussain', 'Jones', 'Qureshi', 'Garcia', 'Raza', 'Miller', 'Siddiqui', 'Davis', 'Shah', 'Rodriguez', 'Iqbal', 'Martinez', 'Farooq', 'Anderson', 'Butt', 'Taylor', 'Chaudhry', 'Wilson', 'Nawaz'];
+const firstNamesM = ['Luke', 'Liam', 'Oliver', 'Ben', 'Jack', 'Sam', 'Harry', 'Mason', 'Charlie', 'George', 'Hunter', 'Henry', 'Harrison', 'Adam', 'Finn', 'Ryan', 'Max', 'Leo', 'Lucas', 'Josh'];
+const firstNamesF = ['Lucy', 'Ella', 'Ruby', 'Anna', 'Charlotte', 'Katie', 'Isla', 'Molly', 'Amelia', 'Zoe', 'Harper', 'Mia', 'Rose', 'Jess', 'Georgia', 'Lily', 'Matilda', 'Holly', 'Amy', 'Sophie'];
+const lastNames = ['Thompson', 'King', 'Young', 'White', 'Walker', 'Hall', 'Campbell', 'Green', 'Stewart', 'Hill', 'Scott', 'Moore', 'Robertson', 'Wood', 'Clarke', 'Baker', 'Cooper', 'Lee', 'Bell', 'Adams', 'Martin', 'Reid', 'Fraser', 'Kelly', 'Ward', 'Allen'];
 const cities = [
   ['Austin', 'TX', '787'], ['Houston', 'TX', '770'], ['Dallas', 'TX', '752'], ['Chicago', 'IL', '606'], ['Seattle', 'WA', '981'], ['Denver', 'CO', '802'], ['Phoenix', 'AZ', '850'], ['Boston', 'MA', '021'],
 ];
@@ -60,26 +60,26 @@ const departments = ['Primary Care', 'Cardiology', 'Pediatrics', 'Dermatology', 
 export const locations: Location[] = [
   { id: 'loc-1', name: 'Riverside Medical Center', code: 'RMC', type: 'Main Clinic', address: { line1: '1200 Riverside Dr', city: 'Austin', state: 'TX', postalCode: '78701', country: 'USA' }, phone: '(512) 555-0100', email: 'riverside@careflow.health', timezone: 'America/Chicago', openingHours: 'Mon–Fri 7:30–18:00, Sat 9:00–13:00', isActive: true, rooms: 18, providers: 9, manager: 'Linda Park' },
   { id: 'loc-2', name: 'Northgate Family Clinic', code: 'NFC', type: 'Satellite', address: { line1: '455 Northgate Blvd', city: 'Austin', state: 'TX', postalCode: '78753', country: 'USA' }, phone: '(512) 555-0140', email: 'northgate@careflow.health', timezone: 'America/Chicago', openingHours: 'Mon–Fri 8:00–17:00', isActive: true, rooms: 8, providers: 4, manager: 'Marcus Reed' },
-  { id: 'loc-3', name: 'Lakeside Specialty Center', code: 'LSC', type: 'Satellite', address: { line1: '88 Lakeside Pkwy', city: 'Round Rock', state: 'TX', postalCode: '78664', country: 'USA' }, phone: '(512) 555-0180', email: 'lakeside@careflow.health', timezone: 'America/Chicago', openingHours: 'Mon–Thu 8:00–18:00, Fri 8:00–15:00', isActive: true, rooms: 12, providers: 5, manager: 'Priya Natarajan' },
+  { id: 'loc-3', name: 'Lakeside Specialty Center', code: 'LSC', type: 'Satellite', address: { line1: '88 Lakeside Pkwy', city: 'Round Rock', state: 'TX', postalCode: '78664', country: 'USA' }, phone: '(512) 555-0180', email: 'lakeside@careflow.health', timezone: 'America/Chicago', openingHours: 'Mon–Thu 8:00–18:00, Fri 8:00–15:00', isActive: true, rooms: 12, providers: 5, manager: 'Kate Evans' },
   { id: 'loc-4', name: 'CareFlow Virtual Care', code: 'CVC', type: 'Telehealth Hub', address: { line1: '1200 Riverside Dr, Suite 400', city: 'Austin', state: 'TX', postalCode: '78701', country: 'USA' }, phone: '(512) 555-0199', email: 'virtual@careflow.health', timezone: 'America/Chicago', openingHours: 'Daily 7:00–21:00', isActive: true, rooms: 0, providers: 6, manager: 'Sofia Alvarez' },
 ];
 
 // ---------- Providers ----------
 const providerSeeds: Array<[string, string, string, string, string]> = [
-  ['Sarah', 'Ahmed', 'MD', 'Family Medicine', 'Primary Care'],
-  ['James', 'Carter', 'MD', 'Internal Medicine', 'Primary Care'],
-  ['Priya', 'Natarajan', 'MD', 'Cardiology', 'Cardiology'],
-  ['Omar', 'Farooq', 'MD', 'Pediatrics', 'Pediatrics'],
-  ['Emily', 'Chen', 'DO', 'Dermatology', 'Dermatology'],
-  ['Michael', 'Torres', 'MD', 'Orthopedics', 'Orthopedics'],
-  ['Ayesha', 'Malik', 'MD', 'Endocrinology', 'Endocrinology'],
-  ['David', 'Okafor', 'MD', 'Neurology', 'Neurology'],
-  ['Hannah', 'Lindqvist', 'PsyD', 'Psychiatry', 'Behavioral Health'],
-  ['Maria', 'Gonzalez', 'MD', 'Obstetrics & Gynecology', 'Women\'s Health'],
-  ['Robert', 'Kim', 'MD', 'Pulmonology', 'Primary Care'],
-  ['Zainab', 'Hussain', 'NP', 'Family Medicine', 'Primary Care'],
-  ['Thomas', 'Wright', 'PA-C', 'Internal Medicine', 'Primary Care'],
-  ['Layla', 'Nasser', 'MD', 'Gastroenterology', 'Diagnostics'],
+  ['Lucy', 'White', 'MD', 'Family Medicine', 'Primary Care'],
+  ['Harry', 'Carter', 'MD', 'Internal Medicine', 'Primary Care'],
+  ['Kate', 'Evans', 'MD', 'Cardiology', 'Cardiology'],
+  ['Ben', 'Adams', 'MD', 'Pediatrics', 'Pediatrics'],
+  ['Ruby', 'Chen', 'DO', 'Dermatology', 'Dermatology'],
+  ['Oliver', 'Hughes', 'MD', 'Orthopedics', 'Orthopedics'],
+  ['Anna', 'Hall', 'MD', 'Endocrinology', 'Endocrinology'],
+  ['Jack', 'Taylor', 'MD', 'Neurology', 'Neurology'],
+  ['Holly', 'Morgan', 'PsyD', 'Psychiatry', 'Behavioral Health'],
+  ['Matilda', 'Price', 'MD', 'Obstetrics & Gynecology', 'Women\'s Health'],
+  ['Hunter', 'Ross', 'MD', 'Pulmonology', 'Primary Care'],
+  ['Molly', 'Green', 'NP', 'Family Medicine', 'Primary Care'],
+  ['Finn', 'Murphy', 'PA-C', 'Internal Medicine', 'Primary Care'],
+  ['Amy', 'Parker', 'MD', 'Gastroenterology', 'Diagnostics'],
 ];
 
 export const providers: Provider[] = providerSeeds.map(([first, last, title, specialty, department], i) => {
@@ -159,12 +159,31 @@ function makePatient(i: number): Patient {
   };
 }
 
-export const patients: Patient[] = Array.from({ length: 96 }, (_, i) => makePatient(i));
-// Guarantee the demo names used in voice examples exist.
-Object.assign(patients[0], { firstName: 'John', lastName: 'Smith', fullName: 'John Smith', gender: 'Male', mrn: 'MRN-102934', status: 'Active', age: 54, dateOfBirth: '1972-03-14' });
-Object.assign(patients[1], { firstName: 'Ahmed', lastName: 'Khan', fullName: 'Ahmed Khan', gender: 'Male', mrn: 'MRN-104512', status: 'Active', age: 32, dateOfBirth: '1994-07-02' });
-Object.assign(patients[2], { firstName: 'Sarah', lastName: 'Johnson', fullName: 'Sarah Johnson', gender: 'Female', mrn: 'MRN-101877', status: 'Active' });
-Object.assign(patients[3], { firstName: 'Fatima', lastName: 'Malik', fullName: 'Fatima Malik', gender: 'Female', mrn: 'MRN-107220', status: 'Active' });
+// Twenty patients, each with a common, easy name of their own: no two alike and none like a provider's,
+// so a name said by voice always means one person.
+const patientNames: Array<[string, string, Patient['gender']]> = [
+  ['Liam', 'Thompson', 'Male'], ['Luke', 'King', 'Male'], ['Lucy', 'Young', 'Female'], ['Ella', 'Hall', 'Female'], ['Harry', 'White', 'Male'],
+  ['Liam', 'Martin', 'Male'], ['Lily', 'Martin', 'Female'], ['Lucas', 'Martin', 'Male'], ['Henry', 'Green', 'Male'], ['Sophie', 'Brown', 'Female'],
+  ['Tom', 'Baker', 'Male'], ['Grace', 'Cooper', 'Female'], ['Sam', 'Wood', 'Male'], ['Mia', 'Scott', 'Female'], ['Josh', 'Clarke', 'Male'],
+  ['Chloe', 'Bell', 'Female'], ['Max', 'Walker', 'Male'], ['Zoe', 'Hill', 'Female'], ['Leo', 'Moore', 'Male'], ['Rose', 'Kelly', 'Female'],
+];
+export const patients: Patient[] = patientNames.map(([firstName, lastName, gender], i) => {
+  const p = makePatient(i);
+  return {
+    ...p,
+    firstName,
+    lastName,
+    fullName: `${firstName} ${lastName}`,
+    gender,
+    email: `${firstName.toLowerCase()}.${lastName.toLowerCase()}${i + 1}@example.com`,
+    emergencyContactName: `${p.emergencyContactName.split(' ')[0]} ${lastName}`,
+  };
+});
+// The demo patients used in voice examples: fixed details.
+Object.assign(patients[0], { mrn: 'MRN-102934', status: 'Active', age: 54, dateOfBirth: '1972-03-14' });
+Object.assign(patients[1], { mrn: 'MRN-104512', status: 'Active', age: 32, dateOfBirth: '1994-07-02' });
+Object.assign(patients[2], { status: 'Active' });
+Object.assign(patients[3], { mrn: 'MRN-107220', status: 'Active' });
 
 // ---------- Appointments ----------
 const apptTypes: AppointmentType[] = ['New Patient', 'Follow-up', 'Consultation', 'Procedure', 'Telehealth', 'Annual Physical', 'Urgent', 'Lab Visit', 'Vaccination'];
@@ -216,9 +235,9 @@ function makeAppointment(i: number): Appointment {
 export const appointments: Appointment[] = Array.from({ length: 220 }, (_, i) => makeAppointment(i)).sort((a, b) =>
   `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`),
 );
-// Ensure John Smith has a 3:00 PM appointment today for the demo.
+// Ensure Liam Thompson has a 3:00 PM appointment today for the demo.
 Object.assign(appointments[0], {
-  patientId: patients[0].id, patientName: 'John Smith', patientMrn: patients[0].mrn, date: TODAY.format('YYYY-MM-DD'),
+  patientId: patients[0].id, patientName: 'Liam Thompson', patientMrn: patients[0].mrn, date: TODAY.format('YYYY-MM-DD'),
   startTime: '15:00', endTime: '15:30', durationMinutes: 30, status: 'Confirmed', type: 'Follow-up', providerId: providers[0].id, providerName: providers[0].fullName,
 });
 
@@ -713,7 +732,7 @@ curateInbox();
 
 function curateInbox() {
   const byName = (name: string) => patients.find((p) => p.fullName === name) ?? patients[0];
-  const who = ['John Smith', 'James Ahmed', 'Noor Anderson', 'John Anderson', 'Ethan Anderson', 'Sarah Johnson', 'Fatima Malik'].map(byName);
+  const who = ['Liam Thompson', 'Harry White', 'Lily Martin', 'Liam Martin', 'Lucas Martin', 'Lucy Young', 'Ella Hall'].map(byName);
   const assign = <T extends { patientId: string; patientName: string }>(row: T, n: number): T => Object.assign(row, { patientId: who[n % who.length].id, patientName: who[n % who.length].fullName });
   const daysAgo = (n: number) => TODAY.subtract(n, 'day').hour(9 + (n % 7)).minute((n * 17) % 60);
 
@@ -748,7 +767,7 @@ function curateInbox() {
     assign(referral, i + 4);
     Object.assign(referral, { abnormal: refAbnormal[i], createdAt: daysAgo(i + 4).toISOString() });
   });
-  // John Smith has one of each kind of record (the Inbox is often opened on him).
+  // Liam Thompson has one of each kind of record (the Inbox is often opened on him).
   assign(referrals[0], 0);
 
   // Discharge summaries: 3 notes + 3 documents — 3 abnormal, 3 normal. Other discharge notes and documents
@@ -777,6 +796,6 @@ function curateInbox() {
       Object.assign(doc, { category: 'Other', title: doc.title.replace(/^Discharge Summary/, 'Other'), abnormal: undefined });
     }
   });
-  // John Smith's discharge summary.
+  // Liam Thompson's discharge summary.
   assign(notes.find((n) => n.type === 'Discharge')!, 0);
 }

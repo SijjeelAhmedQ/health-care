@@ -190,7 +190,7 @@ class SecondOpinionTest(unittest.TestCase):
 
         def main(pcm, prompt=None):
             main_prompts.append(prompt)
-            return "select patient gems and milk"
+            return "select patient hairy why it"
 
         async def go():
             session = StreamingSession(main, emit, StreamConfig(endpoint_ms=500, partial_interval_ms=300), vad=EnergyVAD(), refine=second)
@@ -205,11 +205,11 @@ class SecondOpinionTest(unittest.TestCase):
         return [e for e in events if e["type"] == "final"], heard
 
     def test_the_final_carries_both_versions_and_the_vocabulary_reaches_the_second(self):
-        finals, heard = self.run_session([silence(0.3), speech(1.5), silence(1.0)], lambda pcm: "Select patient James Ahmed.", vocabulary="James Ahmed, Metformin")
-        self.assertEqual(finals, [{"type": "final", "text": "select patient gems and milk", "alt": "Select patient James Ahmed."}])
-        self.assertEqual(heard[0][1], "James Ahmed, Metformin")
+        finals, heard = self.run_session([silence(0.3), speech(1.5), silence(1.0)], lambda pcm: "Select patient Harry White.", vocabulary="Harry White, Metformin")
+        self.assertEqual(finals, [{"type": "final", "text": "select patient hairy why it", "alt": "Select patient Harry White."}])
+        self.assertEqual(heard[0][1], "Harry White, Metformin")
         # The main recogniser gets the vocabulary as well (Whisper uses it; Omi ignores it).
-        self.assertIn("James Ahmed, Metformin", self.main_prompts)
+        self.assertIn("Harry White, Metformin", self.main_prompts)
         self.assertGreater(heard[0][0], SAMPLE_RATE)  # the whole utterance, not a tail
 
     def test_a_failing_second_recogniser_never_costs_the_transcript(self):
@@ -217,7 +217,7 @@ class SecondOpinionTest(unittest.TestCase):
             raise RuntimeError("whisper crashed")
 
         finals, _ = self.run_session([silence(0.3), speech(1.5), silence(1.0)], broken)
-        self.assertEqual(finals, [{"type": "final", "text": "select patient gems and milk"}])
+        self.assertEqual(finals, [{"type": "final", "text": "select patient hairy why it"}])
 
 
 if __name__ == "__main__":

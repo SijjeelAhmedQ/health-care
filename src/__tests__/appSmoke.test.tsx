@@ -22,7 +22,7 @@ beforeAll(installBrowserStubs);
 afterEach(unmountApp);
 
 async function signIn() {
-  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'lwhite', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
   await store.dispatch(fetchProviders()).unwrap();
   await store.dispatch(appointmentsSlice.fetchAll()).unwrap();

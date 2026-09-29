@@ -34,5 +34,5 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health | ConvertTo-Json -Depth 4
 
 # --- 3. Frontend -------------------------------------------------------------------
 if (-not (Test-Path "node_modules")) { npm install }
-Write-Host "`nCareFlow -> http://localhost:5173   (sign in with a provider account, e.g. sahmed; press Ctrl+Shift+V to talk)`n"
+Write-Host "`nCareFlow -> http://localhost:5173   (sign in with a provider account, e.g. lwhite; press Ctrl+Shift+V to talk)`n"
 npm run dev

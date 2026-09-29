@@ -1,5 +1,5 @@
 /**
- * How a record form names its patient: "James Ahmed (MRN-100373)". Readable wherever the value is
+ * How a record form names its patient: "Harry White (MRN-100373)". Readable wherever the value is
  * shown (the form, the confirmation, the assistant's CONTEXT) and unique even when two patients
  * share a name — so a record is never saved against the wrong one.
  */
@@ -14,5 +14,5 @@ export function findPatientByRef<P extends Pick<Patient, 'id' | 'fullName' | 'mr
   return all.find((p) => patientRef(p) === value) ?? all.find((p) => p.id === value);
 }
 
-/** "James Ahmed (MRN-100373)" -> "James Ahmed". */
+/** "Harry White (MRN-100373)" -> "Harry White". */
 export const patientRefName = (ref: unknown) => (typeof ref === 'string' ? ref.replace(/\s*\([^)]*\)\s*$/, '') : '');

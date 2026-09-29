@@ -144,9 +144,9 @@ describe('microphone lifecycle — stays on until the user turns it off', () => 
     llm.then({ content: 'Selected.' });
     controller.startListening();
     mic.current.callbacks.onSpeechStart?.();
-    mic.current.callbacks.onFinal('select patient pharma volt', 'Select patient Fatima Malik.');
+    mic.current.callbacks.onFinal('select patient pharma volt', 'Select patient Ella Hall.');
     await flush(1500);
-    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: select patient pharma volt\nALSO HEARD: Select patient Fatima Malik\.$/);
+    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: select patient pharma volt\nALSO HEARD: Select patient Ella Hall\.$/);
   });
 
   it('speech too unclear to trust is not acted on: the provider is asked to say it again', async () => {
@@ -320,18 +320,18 @@ describe('a turn is handed over only when the speaker has finished', () => {
   it('pauses inside a long instruction do not split it', async () => {
     llm.then({ content: 'Done.' });
     controller.startListening();
-    mic.say('go to patients, select James Ahmed and add metformin, Panadol, gabapentin,');
+    mic.say('go to patients, select Harry White and add metformin, Panadol, gabapentin,');
     await flush(80);
     mic.say('create a task for blood pressure monitoring');
     await flush(80);
     mic.say('and schedule a follow-up next Tuesday at 3 pm');
     await flush(80);
     expect(llm.requests).toHaveLength(0);
-    expect(store.getState().voice.interimTranscript).toMatch(/James Ahmed .* blood pressure .* 3 pm …$/);
+    expect(store.getState().voice.interimTranscript).toMatch(/Harry White .* blood pressure .* 3 pm …$/);
     await flush(150);
     expect(llm.requests).toHaveLength(1);
     expect(llm.requests[0].at(-1)?.content).toMatch(
-      /SAID: go to patients, select James Ahmed and add metformin, Panadol, gabapentin, create a task for blood pressure monitoring and schedule a follow-up next Tuesday at 3 pm$/,
+      /SAID: go to patients, select Harry White and add metformin, Panadol, gabapentin, create a task for blood pressure monitoring and schedule a follow-up next Tuesday at 3 pm$/,
     );
   });
 

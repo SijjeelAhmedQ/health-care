@@ -47,7 +47,7 @@ const inputValue = (id: string) => (document.querySelector(`#${id}`) as HTMLInpu
 
 beforeEach(async () => {
   store.dispatch(voiceActions.resetVoice());
-  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'lwhite', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
   await store.dispatch(fetchProviders()).unwrap();
   await store.dispatch(diagnosesSlice.fetchAll()).unwrap();
@@ -224,18 +224,18 @@ describe('the assistant against the real application', () => {
     expect(document.querySelector('.app-shell')!.className).toContain('has-right-dock');
   }, TIMEOUT);
 
-  it('"go to patients and select james ahmed and create a task for blood pressure monitoring" — one step after another', async () => {
+  it('"go to patients and select harry white and create a task for blood pressure monitoring" — one step after another', async () => {
     store.dispatch(setCurrentPatient(null));
     await renderAppAt('/dashboard');
     model.then(
       { calls: [call('open_page', { page: 'patients' })] },
-      { calls: [call('select_patient', { patient: 'James Ahmed' })] },
+      { calls: [call('select_patient', { patient: 'Harry White' })] },
       { calls: [call('add_tasks', { tasks: [{ title: 'Blood pressure monitoring' }] })] },
     );
-    await say('go to patients and select james ahmed and create a task for blood pressure monitoring');
+    await say('go to patients and select harry white and create a task for blood pressure monitoring');
     await waitUntil(() => pageText().includes('Add Task'));
     const selected = patientSelectors.selectById(store.getState(), store.getState().patients.currentPatientId ?? '');
-    expect(selected?.fullName).toBe('James Ahmed');
+    expect(selected?.fullName).toBe('Harry White');
     expect(router.state.location.pathname).toBe('/summary/task');
     expect(inputValue('title')).toBe('Blood pressure monitoring');
     // Nothing is saved until the provider confirms.
@@ -252,7 +252,7 @@ describe('the assistant against the real application', () => {
     model.then({
       calls: [
         call('add_care_plan', {
-          patient: 'James Ahmed',
+          patient: 'Harry White',
           medications: ['Metformin', 'Panadol', 'Gabapentin', 'Rituximab'].map((medicationName) => ({ medicationName, ...med })),
           diagnoses: [{ description: 'Hypertension' }],
           tasks: [{ title: 'Blood pressure monitoring', category: 'Monitoring' }],
@@ -261,11 +261,11 @@ describe('the assistant against the real application', () => {
         }),
       ],
     });
-    await say('goto patients select James Ahmed and add medication metformin, panadol, gabapentin, rituximab 500 mg twice daily for 30 days, add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks, and schedule a follow-up appointment next Tuesday at 3 pm');
+    await say('goto patients select Harry White and add medication metformin, panadol, gabapentin, rituximab 500 mg twice daily for 30 days, add hypertension as a diagnosis, create a task for blood pressure monitoring, recall the patient after two weeks, and schedule a follow-up appointment next Tuesday at 3 pm');
     await waitUntil(() => pageText().includes('Care plan (8)'));
 
     const patient = patientSelectors.selectById(store.getState(), store.getState().patients.currentPatientId ?? '')!;
-    expect(patient.fullName).toBe('James Ahmed');
+    expect(patient.fullName).toBe('Harry White');
     expect(router.state.location.pathname.startsWith('/summary')).toBe(true);
     const values = (field: string) => [...document.querySelectorAll<HTMLInputElement>(`.care-plan-modal [id$="_${field}"]`)].map((el) => el.value);
     expect(values('medicationName')).toEqual(['Metformin', 'Panadol', 'Gabapentin', 'Rituximab']);
@@ -345,19 +345,19 @@ describe('the assistant against the real application', () => {
     expect(store.getState().voice.pendingSlot ?? store.getState().voice.pendingConfirmation).not.toBeNull();
   }, TIMEOUT);
 
-  it('"create four appointments … John Anderson, James Ahmed, Ethan Anderson, Noor Anderson" at the SAME time with one provider: never booked — no double booking', async () => {
+  it('"create four appointments … Liam Martin, Harry White, Lucas Martin, Lily Martin" at the SAME time with one provider: never booked — no double booking', async () => {
     store.dispatch(setCurrentPatient(null)); // said from anywhere, with nobody selected
     await renderAppAt('/dashboard');
     const today = dayjs().format('YYYY-MM-DD');
-    const names = ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'];
+    const names = ['Liam Martin', 'Harry White', 'Lucas Martin', 'Lily Martin'];
     const reason = 'Blood Pressure monitoring';
     const bookedToday = async () => (await appointmentService.byDate(today)).filter((a) => a.reason === reason && a.startTime === '18:00');
     const before = (await bookedToday()).length;
 
     model.then({
-      calls: [call('add_appointments', { appointments: names.map((patient) => ({ patient, providerName: 'Dr Sarah Ahmed', date: today, startTime: '18:00', reason })) })],
+      calls: [call('add_appointments', { appointments: names.map((patient) => ({ patient, providerName: 'Dr Lucy White', date: today, startTime: '18:00', reason })) })],
     });
-    await say('crate four appointments against Dr Sarah Ahmed appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm John Anderson, James Ahmed, Ethan Anderson, Noor Anderson');
+    await say('crate four appointments against Dr Lucy White appointment is for Blood Pressure monitoring add appoint ment for today after 6 pm Liam Martin, Harry White, Lucas Martin, Lily Martin');
     await waitUntil(() => pageText().includes('Add Appointment (4)'));
     // One numbered tab per patient, each holding its patient…
     const tabs = [...document.querySelectorAll('.entry-patient-tabs .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
@@ -365,7 +365,7 @@ describe('the assistant against the real application', () => {
     expect(FormRegistry.get('appointment')!.entries!.getAll().map((v) => String(v.patient).replace(/\s*\(.*\)$/, ''))).toEqual(names);
     // …but one provider cannot see four patients at 18:00: nothing is offered for saving, and the model is told why.
     expect(store.getState().voice.pendingConfirmation).toBeNull();
-    expect(model.lastToolResults()[0].message).toMatch(/^Not bookable: .*Dr\. Sarah Ahmed is already booked/);
+    expect(model.lastToolResults()[0].message).toMatch(/^Not bookable: .*Dr\. Lucy White is already booked/);
 
     // A "yes" now saves nothing; and the Save button refuses too.
     model.calls([call('confirm_pending_action')], 'Nothing to confirm.');
@@ -376,7 +376,7 @@ describe('the assistant against the real application', () => {
   }, TIMEOUT);
 
   describe('several patients in one request — no patient selected first', () => {
-    const FOUR = ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anderson'];
+    const FOUR = ['Liam Martin', 'Harry White', 'Lucas Martin', 'Lily Martin'];
     /** The numbered main tabs (Tab 1, Tab 2…), one patient each. */
     const patientTabs = () => [...document.querySelectorAll('.entry-patient-tabs .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
     const tabsFor = (n: number) => Array.from({ length: n }, (_, i) => `Tab ${i + 1}`);
@@ -408,7 +408,7 @@ describe('the assistant against the real application', () => {
           }),
         ],
       });
-      await say('Add the following medications to each of the four patients John Anderson, James Ahmed, Ethan Anderson and Noor Anderson: Panadol, Paracetamol, Gabapentin 500 mg twice daily for 50 days');
+      await say('Add the following medications to each of the four patients Liam Martin, Harry White, Lucas Martin and Lily Martin: Panadol, Paracetamol, Gabapentin 500 mg twice daily for 50 days');
       await waitUntil(() => pageText().includes('Add Medication (12)'));
       expect(patientTabs()).toEqual(tabsFor(4));
       for (let n = 1; n <= 4; n++) {
@@ -426,7 +426,7 @@ describe('the assistant against the real application', () => {
       }
       expect(pageText()).toContain('12 medications will be saved for 4 patients');
       // Not saved: Panadol has no dose yet, so the provider is asked — the save waits for them.
-      expect(store.getState().voice.pendingSlot?.question).toMatch(/Panadol for John Anderson/);
+      expect(store.getState().voice.pendingSlot?.question).toMatch(/Panadol for Liam Martin/);
     }, TIMEOUT);
 
     it('Example 2: a different time for each patient — each appointment stays with its patient, and is saved for them after "yes"', async () => {
@@ -435,13 +435,13 @@ describe('the assistant against the real application', () => {
       const times = ['18:00', '19:00', '20:00', '21:00'];
       const reason = 'Blood pressure monitoring (per patient)';
       model.then({
-        calls: [call('add_appointments', { appointments: FOUR.map((patient, i) => ({ patient, providerName: 'Dr. Sarah Ahmed', date: today, startTime: times[i], reason })) })],
+        calls: [call('add_appointments', { appointments: FOUR.map((patient, i) => ({ patient, providerName: 'Dr. Lucy White', date: today, startTime: times[i], reason })) })],
       });
-      await say('Create four appointments with Dr. Sarah Ahmed for today for blood pressure monitoring: John Anderson 6 pm, James Ahmed 7 pm, Ethan Anderson 8 pm, Noor Anderson 9 pm');
+      await say('Create four appointments with Dr. Lucy White for today for blood pressure monitoring: Liam Martin 6 pm, Harry White 7 pm, Lucas Martin 8 pm, Lily Martin 9 pm');
       await waitUntil(() => pageText().includes('Add Appointment (4)'));
       expect(patientTabs()).toEqual(tabsFor(4));
       await openTab(3);
-      expect(tabPatient('appointment')).toBe('Ethan Anderson');
+      expect(tabPatient('appointment')).toBe('Lucas Martin');
       expect(recordTabs()).toEqual([]); // one appointment in this tab
       expect(FormRegistry.get('appointment')!.getValues()).toMatchObject({ startTime: expect.anything() });
       const all = entriesOf('appointment');
@@ -459,11 +459,11 @@ describe('the assistant against the real application', () => {
     it('Example 4: three diagnoses for each of four patients', async () => {
       await renderAppAt('/dashboard');
       model.then({ calls: [call('add_diagnoses', { for_patients: FOUR, diagnoses: [{ description: 'Hypertension' }, { description: 'Type 2 Diabetes' }, { description: 'Migraine' }] })] });
-      await say('Add hypertension, type 2 diabetes and migraine to each of John Anderson, James Ahmed, Ethan Anderson and Noor Anderson');
+      await say('Add hypertension, type 2 diabetes and migraine to each of Liam Martin, Harry White, Lucas Martin and Lily Martin');
       await waitUntil(() => pageText().includes('Add Diagnosis (12)'));
       expect(patientTabs()).toEqual(tabsFor(4));
       await openTab(4);
-      expect(tabPatient('diagnosis')).toBe('Noor Anderson');
+      expect(tabPatient('diagnosis')).toBe('Lily Martin');
       expect(recordTabs()).toEqual(['Hypertension', 'Type 2 Diabetes', 'Migraine']);
       expect(store.getState().voice.pendingConfirmation?.kind).toBe('form'); // saved only after the provider's yes
     }, TIMEOUT);
@@ -489,51 +489,51 @@ describe('the assistant against the real application', () => {
       button('Records for several patients').click();
       await waitUntil(() => !!document.querySelector('.multi-patient-select'));
       (document.querySelector('.multi-patient-launcher input[type="radio"][value="task"]') as HTMLInputElement).click();
-      await pickPatients('multi-patient-select', ['John Anderson', 'Noor Anderson']);
+      await pickPatients('multi-patient-select', ['Liam Martin', 'Lily Martin']);
       button('Open form').click();
       await waitUntil(() => pageText().includes('Add Task (2)'));
       await waitUntil(() => patientTabs().length === 2);
       expect(patientTabs()).toEqual(tabsFor(2));
-      expect(entriesOf('task').map(whose)).toEqual(['John Anderson', 'Noor Anderson']);
+      expect(entriesOf('task').map(whose)).toEqual(['Liam Martin', 'Lily Martin']);
       expect(store.getState().voice.pendingConfirmation).toBeNull(); // nothing to confirm until the provider fills it in
     }, TIMEOUT);
 
     it('by mouse: + opens an empty tab — no patient, nothing inherited — and nothing is saved until it has one', async () => {
-      const james = patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'James Ahmed')!;
-      store.dispatch(setCurrentPatient(james.id));
+      const harry = patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Harry White')!;
+      store.dispatch(setCurrentPatient(harry.id));
       await renderAppAt('/summary/medication');
       await getVoiceController().runAction((r) => r.createRecords('medication', [{ medicationName: 'Panadol', dosage: '500 mg', frequency: 'Twice daily' }]));
       await waitUntil(() => pageText().includes('Add Medication'));
       // Tab 1 is the selected patient's, with their chart.
       expect(patientTabs()).toEqual(tabsFor(1));
-      expect(tabPatient('medication')).toBe('James Ahmed');
-      expect(glance()).toContain("James Ahmed's records");
+      expect(tabPatient('medication')).toBe('Harry White');
+      expect(glance()).toContain("Harry White's records");
 
       (document.querySelector('.entry-patient-tabs .ant-tabs-nav-add') as HTMLElement).click();
       await waitUntil(() => patientTabs().length === 2);
       expect(document.querySelector('.entry-patient-tabs .ant-tabs-tab-active')?.textContent?.trim()).toBe('Tab 2');
-      expect(tabPatient('medication')).toBe(''); // empty — not James
+      expect(tabPatient('medication')).toBe(''); // empty — not Harry
       expect(glance()).toContain("Choose this tab's patient");
       expect(pageText()).toContain('Choose the patient for Tab 2');
 
-      const before = (await medicationService.byPatient(james.id)).length;
+      const before = (await medicationService.byPatient(harry.id)).length;
       button('Save Medication').click();
       await new Promise((r) => setTimeout(r, 400));
-      expect((await medicationService.byPatient(james.id)).length).toBe(before); // nothing saved, not even Tab 1's
+      expect((await medicationService.byPatient(harry.id)).length).toBe(before); // nothing saved, not even Tab 1's
       await openTab(1);
-      expect(tabPatient('medication')).toBe('James Ahmed');
+      expect(tabPatient('medication')).toBe('Harry White');
     }, TIMEOUT);
 
     it('the call qwen3.5:9b actually made — add_care_plan with "name" for the drug and for_patients — opens all twelve, each with its patient', async () => {
       // From the provider's trace: the model named the drug in "name" (not medicationName) and cut one
-      // patient's name short ("Noor Anders"). Nothing was added then; now the alias is understood.
-      store.dispatch(setCurrentPatient(patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'James Ahmed')!.id));
+      // patient's name short ("Lily Mart"). Nothing was added then; now the alias is understood.
+      store.dispatch(setCurrentPatient(patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Harry White')!.id));
       await renderAppAt('/summary/medication');
       const med = (name: string) => ({ dosage: '500 mg', duration: '50 days', frequency: 'Twice daily', name });
       model.then({
-        calls: [call('add_care_plan', { medications: [med('Panadol'), med('Paracetamol'), med('Gabapentin')], for_patients: ['John Anderson', 'James Ahmed', 'Ethan Anderson', 'Noor Anders'] })],
+        calls: [call('add_care_plan', { medications: [med('Panadol'), med('Paracetamol'), med('Gabapentin')], for_patients: ['Liam Martin', 'Harry White', 'Lucas Martin', 'Lily Mart'] })],
       });
-      await say('Add the following medications to each of the four patients: John Anderson, James Ahmed, Ethan Anderson, and Noor Anderson. Panadol 500 mg twice daily for 50 days, Paracetamol 500 mg twice daily for 50 days, Gabapentin 500 mg twice daily for 50 days');
+      await say('Add the following medications to each of the four patients: Liam Martin, Harry White, Lucas Martin, and Lily Martin. Panadol 500 mg twice daily for 50 days, Paracetamol 500 mg twice daily for 50 days, Gabapentin 500 mg twice daily for 50 days');
       await waitUntil(() => pageText().includes('Care plan (12)'));
       const tabs = [...document.querySelectorAll('.care-plan-modal .ant-tabs-tab')].map((t) => t.textContent?.trim() ?? '');
       for (const who of FOUR) for (const drug of ['Panadol', 'Paracetamol', 'Gabapentin']) expect(tabs.some((t) => t.includes(drug) && t.includes(who))).toBe(true);
@@ -545,21 +545,21 @@ describe('the assistant against the real application', () => {
         calls: [
           call('add_medications', {
             medications: [
-              { patient: 'John Anderson', medicationName: 'Panadol' },
-              { patient: 'James Ahmed', medicationName: 'Metformin' },
-              { patient: 'Ethan Anderson', medicationName: 'Gabapentin', dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' },
+              { patient: 'Liam Martin', medicationName: 'Panadol' },
+              { patient: 'Harry White', medicationName: 'Metformin' },
+              { patient: 'Lucas Martin', medicationName: 'Gabapentin', dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' },
             ],
           }),
         ],
       });
-      await say('Add Panadol to John Anderson, Metformin to James Ahmed, and Gabapentin 500 mg twice daily for 30 days to Ethan Anderson');
+      await say('Add Panadol to Liam Martin, Metformin to Harry White, and Gabapentin 500 mg twice daily for 30 days to Lucas Martin');
       await waitUntil(() => pageText().includes('Add Medication (3)'));
       expect(patientTabs()).toEqual(tabsFor(3));
       const all = entriesOf('medication');
       expect(all.map((v) => [whose(v), v.medicationName])).toEqual([
-        ['John Anderson', 'Panadol'],
-        ['James Ahmed', 'Metformin'],
-        ['Ethan Anderson', 'Gabapentin'],
+        ['Liam Martin', 'Panadol'],
+        ['Harry White', 'Metformin'],
+        ['Lucas Martin', 'Gabapentin'],
       ]);
       expect(all[2]).toMatchObject({ dosage: '500 mg', frequency: 'Twice daily', duration: '30 days' });
     }, TIMEOUT);
@@ -567,8 +567,8 @@ describe('the assistant against the real application', () => {
 
   it('a patient name that matches nobody for certain opens nothing — no record falls back to another patient', async () => {
     await renderAppAt('/summary/task');
-    model.then({ calls: [call('add_tasks', { tasks: [{ title: 'BP check', patient: 'James Ahmed' }, { title: 'BP check', patient: 'Zzyzx Qwerty' }] })] });
-    await say('create a task bp check for james ahmed and zzyzx qwerty');
+    model.then({ calls: [call('add_tasks', { tasks: [{ title: 'BP check', patient: 'Harry White' }, { title: 'BP check', patient: 'Zzyzx Qwerty' }] })] });
+    await say('create a task bp check for harry white and zzyzx qwerty');
     expect(model.lastToolResults()[0].message).toMatch(/^Nothing was opened — No patient (matches|is called) "Zzyzx Qwerty"/);
     expect(pageText()).not.toContain('Add Task');
   }, TIMEOUT);
@@ -577,10 +577,10 @@ describe('the assistant against the real application', () => {
     await renderAppAt('/summary/diagnosis');
     await waitUntil(() => !!RecordRegistry.get('diagnosis'));
     const selected = store.getState().patients.currentPatientId;
-    const other = patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Noor Anderson')!;
-    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Migraine', patient: 'Noor Anderson' }] })] });
-    await say('add migraine for noor anderson');
-    await waitUntil(() => pageText().includes('will be saved for Noor Anderson'));
+    const other = patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Lily Martin')!;
+    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Migraine', patient: 'Lily Martin' }] })] });
+    await say('add migraine for lily martin');
+    await waitUntil(() => pageText().includes('will be saved for Lily Martin'));
     expect(other.id).not.toBe(selected);
     model.calls([call('confirm_pending_action')], 'Saved.');
     await say('yes');
@@ -619,16 +619,39 @@ describe('the assistant against the real application', () => {
     expect(store.getState().voice.pendingConfirmation?.formId).toBe('care_plan');
   }, TIMEOUT);
 
+  it('a diagnosis added while the medications form is open turns it into the care plan — the dialog never leaves the screen', async () => {
+    await renderAppAt('/summary/medication');
+    model.then({ calls: [call('add_medications', { medications: [{ medicationName: 'Metformin', dosage: '500 mg', frequency: 'Twice daily' }, { medicationName: 'Panadol', dosage: '500 mg', frequency: 'Twice daily' }] })] });
+    await say('add metformin and panadol 500 mg twice daily');
+    const medications = FormRegistry.get('medication')!;
+    await waitUntil(() => medications.isOpen() && !!document.querySelector('.ant-modal [id$="_medicationName"]'));
+    // The plan must be on screen while the medications form is still open under it — the form closing
+    // first (and the plan zooming in after) is what looks like the dialog closing and reopening.
+    let formOpenWhenPlanCame: boolean | null = null;
+    const watcher = new MutationObserver(() => {
+      if (formOpenWhenPlanCame === null && document.querySelector('.care-plan-modal')) formOpenWhenPlanCame = medications.isOpen();
+    });
+    watcher.observe(document.body, { subtree: true, childList: true });
+    model.then({ calls: [call('add_diagnoses', { diagnoses: [{ description: 'Hypertension' }] })] });
+    await say('add hypertension as a diagnosis');
+    await waitUntil(() => pageText().includes('Care plan (3)'));
+    watcher.disconnect();
+    expect(formOpenWhenPlanCame).toBe(true);
+    expect(medications.isOpen()).toBe(false); // …and then it is gone, behind the plan
+    expect([...document.querySelectorAll('.care-plan-kinds > .ant-tabs-nav .ant-tabs-tab')].map((t) => t.textContent?.trim())).toEqual(['Medication2', 'Diagnosis1']);
+    expect([...document.querySelectorAll<HTMLInputElement>('.care-plan-modal [id$="_medicationName"]')].map((el) => el.value)).toEqual(['Metformin', 'Panadol']);
+  }, TIMEOUT);
+
   it('filters and pages the real patient list by voice', async () => {
     store.dispatch(setCurrentPatient(null));
     await renderAppAt('/patients', () => pageText().includes('Add patient'));
     const rows = () => document.querySelectorAll('.mobile-card, .table-row-clickable').length;
     await waitUntil(() => rows() > 0);
-    model.calls([call('control_list', { filter: 'Gender', value: 'female' })], 'Showing female patients.');
-    await say('show only female patients');
-    const females = patientSelectors.selectAll(store.getState()).filter((p) => p.gender === 'Female').length;
-    await waitUntil(() => pageText().includes(`${females} result`) || pageText().includes(`${females} of`));
-    expect(model.lastToolResults()[0].message).toMatch(new RegExp(`patients list shows ${females} of \\d+ \\(Gender: Female\\), page 1 of`));
+    model.calls([call('control_list', { filter: 'Gender', value: 'male' })], 'Showing male patients.');
+    await say('show only male patients');
+    const males = patientSelectors.selectAll(store.getState()).filter((p) => p.gender === 'Male').length;
+    await waitUntil(() => pageText().includes(`${males} result`) || pageText().includes(`${males} of`));
+    expect(model.lastToolResults()[0].message).toMatch(new RegExp(`patients list shows ${males} of \\d+ \\(Gender: Male\\), page 1 of`));
     model.calls([call('control_list', { page: 'next' })], 'Page 2.');
     await say('next page');
     expect(model.lastToolResults()[0].message).toMatch(/page 2 of/);

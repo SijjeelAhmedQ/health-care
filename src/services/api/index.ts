@@ -54,7 +54,7 @@ export const patientService = {
       .filter((p) => p.fullName.toLowerCase().includes(q) || p.mrn.toLowerCase().includes(q) || p.phone.includes(q) || p.email.toLowerCase().includes(q))
       .slice(0, limit);
   },
-  /** Best-effort resolver for voice commands: "select John Smith" -> patient. */
+  /** Best-effort resolver for voice commands: "select Liam Thompson" -> patient. */
   async resolveByName(name: string): Promise<Patient[]> {
     const q = name.trim().toLowerCase();
     const all = await patientRepo.all();

@@ -14,11 +14,11 @@ const context: AIContext = {
   nextDays: 'Fri 2026-09-25, Sat 2026-09-26',
   laterDates: '1 week 2026-10-01',
   now: '10:30',
-  providerName: 'Dr. Sarah Ahmed',
+  providerName: 'Dr. Lucy White',
   currentPageId: 'summary',
   currentPageTitle: 'Summary',
   currentPatientId: 'pat-1',
-  currentPatientName: 'John Smith',
+  currentPatientName: 'Liam Thompson',
   openForm: null,
   pendingQuestion: null,
   pendingConfirmation: null,
@@ -36,7 +36,7 @@ function makeAgent(llm: ScriptedLLM, overrides: Partial<Record<keyof AppRuntime,
     endTurn: vi.fn(),
     openPage: vi.fn(async (page: string): Promise<ToolResult> => ({ ok: true, message: `Opened ${page}.` })),
     createRecords: vi.fn(async (): Promise<ToolResult> => ({ ok: true, message: 'Medication form ready. Review it, then confirm.', awaitUser: true })),
-    patientSummary: vi.fn((): ToolResult => ({ ok: true, message: 'John Smith, 42.', speak: true })),
+    patientSummary: vi.fn((): ToolResult => ({ ok: true, message: 'Liam Thompson, 42.', speak: true })),
     listRecords: vi.fn(async (): Promise<ToolResult> => ({ ok: true, message: '2 medications.', data: [{ id: 'med-1', label: 'Metformin' }] })),
     ...overrides,
   } as unknown as AppRuntime;
@@ -80,7 +80,7 @@ describe('tool schemas come from the registries', () => {
 
   it('the system prompt is static (cacheable): no dates, names or page state in it', () => {
     expect(SYSTEM_PROMPT).not.toMatch(/\d{4}-\d{2}-\d{2}/);
-    expect(SYSTEM_PROMPT).not.toContain('John Smith');
+    expect(SYSTEM_PROMPT).not.toContain('Liam Thompson');
   });
 });
 
@@ -93,7 +93,7 @@ describe('agent loop', () => {
     expect(outcome.reply).toBe('He takes Metformin.');
     expect(llm.lastToolResults()).toEqual([{ name: 'list_records', ok: true, message: '2 medications.', data: [{ id: 'med-1', label: 'Metformin' }] }]);
     // The model saw the CONTEXT block and the utterance.
-    expect(llm.requests[0].at(-1)?.content).toMatch(/CONTEXT[\s\S]*selected patient: John Smith[\s\S]*SAID: what medications is he on/);
+    expect(llm.requests[0].at(-1)?.content).toMatch(/CONTEXT[\s\S]*selected patient: Liam Thompson[\s\S]*SAID: what medications is he on/);
   });
 
   it('after an action the model decides whether the request has more parts — here it is done', async () => {
@@ -108,16 +108,16 @@ describe('agent loop', () => {
   it('a multi-part request is carried out step by step: page, patient, then the form', async () => {
     const llm = new ScriptedLLM().then(
       { calls: [call('open_page', { page: 'patients' })] },
-      { calls: [call('select_patient', { patient: 'James Ahmed' })] },
+      { calls: [call('select_patient', { patient: 'Harry White' })] },
       { calls: [call('add_tasks', { tasks: [{ title: 'Blood pressure monitoring' }] })] },
     );
     const { agent, runtime } = makeAgent(llm, {
-      selectPatient: vi.fn(async () => ({ ok: true, message: 'James Ahmed is selected; their Summary is open.' })),
+      selectPatient: vi.fn(async () => ({ ok: true, message: 'Harry White is selected; their Summary is open.' })),
       createRecords: vi.fn(async () => ({ ok: true, message: 'The task form is open — confirm to save.', awaitUser: true })),
     });
-    const outcome = await agent.run('go to patients and select james ahmed and create a task for blood pressure monitoring');
+    const outcome = await agent.run('go to patients and select harry white and create a task for blood pressure monitoring');
     expect(runtime.openPage).toHaveBeenCalledWith('patients');
-    expect(runtime.selectPatient).toHaveBeenCalledWith(expect.objectContaining({ patient: 'James Ahmed' }));
+    expect(runtime.selectPatient).toHaveBeenCalledWith(expect.objectContaining({ patient: 'Harry White' }));
     expect(runtime.createRecords).toHaveBeenCalledWith('task', [{ title: 'Blood pressure monitoring' }], undefined); // no for_patients: the selected patient
     expect(llm.requests).toHaveLength(4); // after the form: the model checks the request is complete
     expect(outcome.awaitingUser).toBe(true);
@@ -143,7 +143,7 @@ describe('agent loop', () => {
     const search = call('open_page', { page: 'patients' });
     const llm = new ScriptedLLM().then({ calls: [search] }, { calls: [search] }, { calls: [search] }, { calls: [search] }, { content: 'never reached' });
     const { agent, runtime } = makeAgent(llm);
-    const outcome = await agent.run('find gems ml');
+    const outcome = await agent.run('find hary wt');
     expect(runtime.openPage).toHaveBeenCalledTimes(3);
     expect(llm.requests[2].at(-1)?.content).toMatch(/Same call, same result as before/);
     expect(outcome.reply).toBe('Opened patients.');
@@ -223,8 +223,8 @@ describe('agent loop', () => {
   it('gives the model the second recogniser\'s version when it differs — and not when it says the same', async () => {
     const llm = new ScriptedLLM().then({ content: 'Selected.' }, { content: 'Done.' });
     const { agent } = makeAgent(llm);
-    await agent.run('select patient gems and milk', {}, undefined, 'Select patient James Ahmed.');
-    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: select patient gems and milk\nALSO HEARD: Select patient James Ahmed\.$/);
+    await agent.run('select patient hairy why it', {}, undefined, 'Select patient Harry White.');
+    expect(llm.requests[0].at(-1)?.content).toMatch(/SAID: select patient hairy why it\nALSO HEARD: Select patient Harry White\.$/);
     await agent.run('go to patients', {}, undefined, 'Go to patients.');
     expect(llm.requests[1].at(-1)?.content).toMatch(/SAID: go to patients$/);
   });
@@ -266,8 +266,8 @@ describe('agent loop', () => {
 });
 
 describe('long requests are split into steps first', () => {
-  const LONG = 'Go to patients, select James Ahmed, add metformin 500 mg twice daily, create a task for blood pressure monitoring and book a follow-up next Tuesday';
-  const STEPS = ['Go to patients', 'Select James Ahmed', 'Add metformin 500 mg twice daily', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday'];
+  const LONG = 'Go to patients, select Harry White, add metformin 500 mg twice daily, create a task for blood pressure monitoring and book a follow-up next Tuesday';
+  const STEPS = ['Go to patients', 'Select Harry White', 'Add metformin 500 mg twice daily', 'Create a task for blood pressure monitoring', 'Book a follow-up next Tuesday'];
   const planning = (llm: ScriptedLLM, overrides: Partial<Record<keyof AppRuntime, unknown>> = {}) => {
     const { runtime } = makeAgent(llm, overrides);
     const agent = new Agent(llm, runtime, () => context, 6, true);
@@ -304,7 +304,7 @@ describe('long requests are split into steps first', () => {
   });
 
   it('a plan that lost part of the request is not used — the request runs in one go', async () => {
-    const llm = new ScriptedLLM().then({ calls: [call('plan_steps', { steps: ['Go to patients', 'Select James Ahmed'] })] });
+    const llm = new ScriptedLLM().then({ calls: [call('plan_steps', { steps: ['Go to patients', 'Select Harry White'] })] });
     llm.calls([call('open_page', { page: 'dashboard' })], 'Done in one go.');
     const { agent } = planning(llm);
     const outcome = await agent.run(LONG);

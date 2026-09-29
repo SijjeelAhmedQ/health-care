@@ -13,8 +13,8 @@ import { ListRegistry } from '@/registry/listRegistry';
 import type { SttConfig } from '@/services/ai/sttConfig';
 
 /** Minimal in-memory form controller standing in for a mounted Ant Design form. */
-/** Like the real record dialogs, a new record starts with the selected patient (John Smith). */
-const seedFor = (formId: string): Record<string, FormValue> => (formId === 'patient' ? {} : { patient: 'John Smith (MRN-1)' });
+/** Like the real record dialogs, a new record starts with the selected patient (Liam Thompson). */
+const seedFor = (formId: string): Record<string, FormValue> => (formId === 'patient' ? {} : { patient: 'Liam Thompson (MRN-1)' });
 
 function fakeForm(formId: string) {
   let open = false;
@@ -80,10 +80,10 @@ function fakeList(kind: EntityKind, form: { controller: FormController }, saved:
   return { openCreate, openEdit, setSearch, unregister };
 }
 
-const PATIENT = { id: 'pat-1', fullName: 'John Smith', mrn: 'MRN-1', age: 42, gender: 'Male', phone: '555-0100', dateOfBirth: '1984-01-10' } as Patient;
+const PATIENT = { id: 'pat-1', fullName: 'Liam Thompson', mrn: 'MRN-1', age: 42, gender: 'Male', phone: '555-0100', dateOfBirth: '1984-01-10' } as Patient;
 const TWINS = [
-  { id: 'pat-2', fullName: 'Ahmed Khan', mrn: 'MRN-2', dateOfBirth: '1990-01-01' },
-  { id: 'pat-3', fullName: 'Ahmed Khan', mrn: 'MRN-3', dateOfBirth: '1971-05-05' },
+  { id: 'pat-2', fullName: 'Luke King', mrn: 'MRN-2', dateOfBirth: '1990-01-01' },
+  { id: 'pat-3', fullName: 'Luke King', mrn: 'MRN-3', dateOfBirth: '1971-05-05' },
 ] as Patient[];
 
 const MEDS = [
@@ -91,7 +91,7 @@ const MEDS = [
   { id: 'med-2', patientId: 'pat-1', name: 'Metoprolol', dosage: '25 mg', frequency: 'Once daily', route: 'Oral', status: 'Active', startDate: '2026-02-10' },
 ] as Medication[];
 
-const TASKS = [{ id: 'task-1', patientId: 'pat-1', title: 'Blood pressure monitoring', category: 'Monitoring', status: 'Open', dueDate: '2026-03-01', assignedTo: 'Dr. Sarah Ahmed', priority: 'Normal' }] as Task[];
+const TASKS = [{ id: 'task-1', patientId: 'pat-1', title: 'Blood pressure monitoring', category: 'Monitoring', status: 'Open', dueDate: '2026-03-01', assignedTo: 'Dr. Lucy White', priority: 'Normal' }] as Task[];
 
 const speech: SttConfig = {
   settings: { engine: 'gguf', repo: 'omi-health/omi-med-stt-v1-gguf', gguf_file: 'omi-med-stt-v1-q8_0.gguf', backend: 'cpu', threads: 0, endpoint_ms: 900, partial_ms: 500, record: false },
@@ -116,7 +116,7 @@ function setup(state: Partial<RuntimeState> = {}) {
   const s: RuntimeState = {
     currentPageId: 'summary',
     currentPatientId: 'pat-1',
-    currentPatientName: 'John Smith',
+    currentPatientName: 'Liam Thompson',
     openFormId: null,
     pendingConfirmation: null,
     pendingSlot: null,
@@ -149,9 +149,9 @@ function setup(state: Partial<RuntimeState> = {}) {
     getPatientSearch: () => '',
     getRecords: (kind) => (s.currentPatientId ? data[kind] ?? [] : []),
     deleteEntity: vi.fn(async (kind: EntityKind, id: string) => { deleted.push({ kind, id }); }),
-    describePatient: () => 'John Smith, 42, male. Active problems: hypertension.',
+    describePatient: () => 'Liam Thompson, 42, male. Active problems: hypertension.',
     getWorkload: () => null,
-    providerNames: () => ['Dr. Sarah Ahmed', 'Dr. James Carter'],
+    providerNames: () => ['Dr. Lucy White', 'Dr. Harry Carter'],
     inboxItems: () => [],
     providerAppointments: () => [],
     addInboxComments: vi.fn(),
@@ -332,7 +332,7 @@ describe('AppRuntime — what the tools do', () => {
 
   it('patients: an exact name or MRN selects; two patients with one name are never guessed', async () => {
     const { runtime, state } = setup({ currentPatientId: null, currentPatientName: null });
-    const twins = await runtime.selectPatient({ patient: 'Ahmed Khan' });
+    const twins = await runtime.selectPatient({ patient: 'Luke King' });
     expect(twins.ok).toBe(false);
     expect(twins.data).toHaveLength(2);
     expect(state.currentPatientId).toBeNull();
@@ -344,22 +344,22 @@ describe('AppRuntime — what the tools do', () => {
 
   it('patients: a misheard name selects the one close spelling, and says so; a vague one is asked about', async () => {
     const { runtime, state } = setup({ currentPatientId: null, currentPatientName: null });
-    const heard = await runtime.selectPatient({ patient: 'Jon Smyth' });
+    const heard = await runtime.selectPatient({ patient: 'Leam Tomson' });
     expect(heard.ok).toBe(true);
-    expect(heard.message).toMatch(/No patient is called "Jon Smyth"; the closest name is John Smith/);
+    expect(heard.message).toMatch(/No patient is called "Leam Tomson"; the closest name is Liam Thompson/);
     expect(state.currentPatientId).toBe('pat-1');
-    // "Ahmad Kan" is close to both Ahmed Khans: never guessed.
-    const twins = await runtime.selectPatient({ patient: 'Ahmad Kan' });
+    // "Luc Keng" is close to both Luke Kings: never guessed.
+    const twins = await runtime.selectPatient({ patient: 'Luc Keng' });
     expect(twins.ok).toBe(false);
-    expect(twins.message).toMatch(/closest names are Ahmed Khan, Ahmed Khan/);
+    expect(twins.message).toMatch(/closest names are Luke King, Luke King/);
     expect(state.currentPatientId).toBe('pat-1');
   });
 
   it('patient search: a misheard name searches for the one close spelling and says so', async () => {
     const { runtime, deps } = setup({ currentPatientId: null, currentPatientName: null });
-    const result = await runtime.searchPatients('Jon Smyth');
-    expect(result.message).toMatch(/closest name is John Smith\. 1 patient match "John Smith"/);
-    expect(deps.navigate).toHaveBeenCalledWith(expect.stringContaining('q=John%20Smith'));
+    const result = await runtime.searchPatients('Leam Tomson');
+    expect(result.message).toMatch(/closest name is Liam Thompson\. 1 patient match "Liam Thompson"/);
+    expect(deps.navigate).toHaveBeenCalledWith(expect.stringContaining('q=Liam%20Thompson'));
   });
 
   it('list_records returns the records with ids for the model', async () => {
@@ -386,10 +386,10 @@ describe('AppRuntime — what the tools do', () => {
     const list = fakeList('medication', form);
     const { runtime } = setup();
     await runtime.createRecords('medication', [{ medicationName: 'Aspirin', dosage: '75 mg', frequency: 'Once daily', prescribedBy: 'Dr. Carter' }]);
-    expect(form.items[0].prescribedBy).toBe('Dr. James Carter');
+    expect(form.items[0].prescribedBy).toBe('Dr. Harry Carter');
     const bad = await runtime.fillOpenForm({ prescribedBy: 'Dr. Who' });
     expect(bad.ok).toBe(false);
-    expect(bad.message).toMatch(/prescribedBy must name one provider: Dr. Sarah Ahmed, Dr. James Carter/);
+    expect(bad.message).toMatch(/prescribedBy must name one provider: Dr. Lucy White, Dr. Harry Carter/);
     list.unregister();
     form.unregister();
   });
@@ -481,9 +481,9 @@ describe('AppRuntime — what the tools do', () => {
 });
 
 describe('provider workload', () => {
-  const provider = { id: 'prov-1', fullName: 'Dr. Sarah Ahmed' } as Provider;
+  const provider = { id: 'prov-1', fullName: 'Dr. Lucy White' } as Provider;
   const today = dayjs('2026-09-24T10:00:00');
-  const appt = (id: string, date: string, time: string, status = 'Scheduled', providerId = 'prov-1') => ({ id, patientId: 'pat-1', patientName: 'John Smith', providerId, date, startTime: time, status, type: 'Follow-up' }) as never;
+  const appt = (id: string, date: string, time: string, status = 'Scheduled', providerId = 'prov-1') => ({ id, patientId: 'pat-1', patientName: 'Liam Thompson', providerId, date, startTime: time, status, type: 'Follow-up' }) as never;
 
   it("reports only the signed-in provider's day, week, tasks and panel", () => {
     const w = buildProviderWorkload({
@@ -492,8 +492,8 @@ describe('provider workload', () => {
       patients: [{ id: 'pat-1', primaryProviderId: 'prov-1' }, { id: 'pat-9', primaryProviderId: 'prov-2' }] as Patient[],
       appointments: [appt('a1', '2026-09-24', '09:00', 'Completed'), appt('a2', '2026-09-24', '11:30'), appt('a3', '2026-09-26', '10:00'), appt('a4', '2026-09-24', '12:00', 'Scheduled', 'prov-2'), appt('a5', '2026-10-20', '10:00')],
       tasks: [
-        { id: 't1', assignedTo: 'Dr. Sarah Ahmed', status: 'Open', dueDate: '2026-09-20', priority: 'High' },
-        { id: 't2', assignedTo: 'Dr. Sarah Ahmed', status: 'Completed', dueDate: '2026-09-20', priority: 'High' },
+        { id: 't1', assignedTo: 'Dr. Lucy White', status: 'Open', dueDate: '2026-09-20', priority: 'High' },
+        { id: 't2', assignedTo: 'Dr. Lucy White', status: 'Completed', dueDate: '2026-09-20', priority: 'High' },
         { id: 't3', assignedTo: 'Dr. Other', status: 'Open', dueDate: '2026-09-20', priority: 'High' },
       ] as Task[],
       recalls: [{ id: 'r1', patientId: 'pat-1', status: 'Due', dueDate: '2026-09-01' }, { id: 'r2', patientId: 'pat-9', status: 'Due', dueDate: '2026-09-01' }] as never,

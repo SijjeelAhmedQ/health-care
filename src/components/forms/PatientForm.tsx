@@ -123,7 +123,7 @@ interface Props {
 
 /**
  * Add / update a patient. Registered for voice control under the `patient`
- * form id, so "add patient Bilal Hussain, male, 32 years old" fills this same
+ * form id, so "add patient Henry Green, male, 32 years old" fills this same
  * dialog and waits for the user to confirm before anything is saved.
  */
 export function PatientFormModal({ open, onOpen, onClose, patient, prefill, onSaved }: Props) {

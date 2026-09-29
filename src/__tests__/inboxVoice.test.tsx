@@ -26,25 +26,25 @@ beforeEach(async () => {
   setConfirmFiling(true);
   store.dispatch(voiceActions.resetVoice());
   store.dispatch(inboxActions.markUnreviewed(store.getState().inbox.reviewedIds));
-  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'lwhite', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
   await store.dispatch(fetchInbox()).unwrap();
   model = useScriptedModel();
 });
 
-const john = () => patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'John Smith')!;
+const liam = () => patientSelectors.selectAll(store.getState()).find((p) => p.fullName === 'Liam Thompson')!;
 const inbox = () => InboxVoiceRegistry.get()!;
 const openItemId = () => new URLSearchParams(router.state.location.search).get('item');
 
 describe('patient context and sign-in', () => {
   it('a new sign-in starts with no patient, and signing out clears the selection', async () => {
-    store.dispatch(setCurrentPatient(john().id));
+    store.dispatch(setCurrentPatient(liam().id));
     await store.dispatch(logout()).unwrap();
     expect(store.getState().patients.currentPatientId).toBeNull();
     expect(localStorage.getItem('careflow.selectedPatientId')).toBeNull();
 
-    store.dispatch(setCurrentPatient(john().id));
-    await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
+    store.dispatch(setCurrentPatient(liam().id));
+    await store.dispatch(login({ username: 'lwhite', password: 'demo' })).unwrap();
     expect(store.getState().patients.currentPatientId).toBeNull();
     expect(store.getState().patients.recentPatientIds).toEqual([]);
   }, TIMEOUT);
@@ -59,7 +59,7 @@ describe('patient context and sign-in', () => {
   }, TIMEOUT);
 
   it('signing out ends the assistant and forgets the conversation', async () => {
-    store.dispatch(setCurrentPatient(john().id));
+    store.dispatch(setCurrentPatient(liam().id));
     await renderAppAt('/inbox/all', () => !!InboxVoiceRegistry.get());
     model.calls([call('inbox_open_item', { target: 1 })], 'Opened it.');
     await say('open the first record');
@@ -80,21 +80,21 @@ describe('the Inbox through the assistant', () => {
     expect(store.getState().patients.currentPatientId).toBeNull();
 
     // Patient: search, then select by position in the list on screen.
-    model.calls([call('search_patients', { query: 'John Smith' })], 'Found John Smith.');
-    await say('find John Smith');
+    model.calls([call('search_patients', { query: 'Liam Thompson' })], 'Found Liam Thompson.');
+    await say('find Liam Thompson');
     await waitUntil(() => router.state.location.search.includes('q='));
-    expect((model.lastToolResults()[0].data as Array<{ name: string }>)[0].name).toBe('John Smith');
-    model.calls([call('select_patient', { list_position: 1 })], 'John Smith selected.');
+    expect((model.lastToolResults()[0].data as Array<{ name: string }>)[0].name).toBe('Liam Thompson');
+    model.calls([call('select_patient', { list_position: 1 })], 'Liam Thompson selected.');
     await say('open the first one');
-    await waitUntil(() => store.getState().patients.currentPatientId === john().id);
+    await waitUntil(() => store.getState().patients.currentPatientId === liam().id);
 
     // The Inbox opens on that patient.
     model.calls([call('inbox_show', { category: 'all' })], 'Here is the Inbox.');
     await say('open my inbox');
     await waitUntil(() => !!InboxVoiceRegistry.get() && !inbox().snapshot().loading);
     expect(router.state.location.pathname).toBe('/inbox/all');
-    expect(new URLSearchParams(router.state.location.search).get('patient')).toBe(john().id);
-    expect(inbox().snapshot().items.every((i) => i.patientId === john().id)).toBe(true);
+    expect(new URLSearchParams(router.state.location.search).get('patient')).toBe(liam().id);
+    expect(inbox().snapshot().items.every((i) => i.patientId === liam().id)).toBe(true);
 
     model.calls([call('inbox_show', { category: 'lab' })], 'Showing lab results.');
     await say('show the lab results');
@@ -152,8 +152,8 @@ describe('the Inbox through the assistant', () => {
   }, TIMEOUT);
 
   it('explains a position that is not in the list', async () => {
-    store.dispatch(setCurrentPatient(john().id));
-    await renderAppAt(`/inbox/referral?patient=${john().id}`, () => !!InboxVoiceRegistry.get());
+    store.dispatch(setCurrentPatient(liam().id));
+    await renderAppAt(`/inbox/referral?patient=${liam().id}`, () => !!InboxVoiceRegistry.get());
     await waitUntil(() => !inbox().snapshot().loading);
     const count = inbox().snapshot().items.length;
     model.calls([call('inbox_open_item', { target: count + 1 })], 'There are not that many.');
@@ -178,12 +178,12 @@ describe('the Inbox through the assistant', () => {
     expect(patientIds().size).toBeGreaterThan(1);
 
     // With a patient: on → only theirs, off → everyone again.
-    store.dispatch(setCurrentPatient(john().id));
+    store.dispatch(setCurrentPatient(liam().id));
     await wait(150); // let the page re-render with the selected patient
     toggle().click();
     await waitUntil(() => toggle().getAttribute('aria-pressed') === 'true');
-    expect(toggle().textContent).toContain('John Smith only');
-    expect([...patientIds()]).toEqual([john().id]);
+    expect(toggle().textContent).toContain('Liam Thompson only');
+    expect([...patientIds()]).toEqual([liam().id]);
 
     // Still there with a record open.
     (document.querySelector('.ibx-msg') as HTMLElement).click();
@@ -239,7 +239,7 @@ describe('the Inbox through the assistant', () => {
   }, TIMEOUT);
 
   it('keeps mouse filing exactly as it was', async () => {
-    store.dispatch(setCurrentPatient(john().id));
+    store.dispatch(setCurrentPatient(liam().id));
     await renderAppAt('/inbox/all', () => !!document.querySelector('.ibx-msg'));
     (document.querySelector('.ibx-msg') as HTMLElement).click();
     await waitUntil(() => !!openItemId());

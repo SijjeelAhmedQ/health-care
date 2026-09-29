@@ -58,7 +58,7 @@ beforeEach(async () => {
     }
     return json({}, 404);
   });
-  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'lwhite', password: 'demo' })).unwrap();
 });
 
 afterEach(async () => {

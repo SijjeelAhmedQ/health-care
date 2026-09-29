@@ -1,6 +1,6 @@
 /**
- * Names as speech recognition hears them: "Sara John Sun" for Sarah Johnson, "James Emil" for
- * James Ahmed. When no name matches as written, the closest spellings are the likely ones.
+ * Names as speech recognition hears them: "Loose he Yung" for Lucy Young, "Hary Whyte" for
+ * Harry White. When no name matches as written, the closest spellings are the likely ones.
  */
 
 const letters = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
@@ -20,7 +20,7 @@ function editDistance(a: string, b: string): number {
 }
 
 /**
- * How a name sounds, as its consonants: "James Ahmed" and "gems ml" both start J-M-S-M. Soft c/g,
+ * How a name sounds, as its consonants: "Harry White" and "hary wt" both start H-R-W-T. Soft c/g,
  * voiced and unvoiced pairs (d/t, b/p, v/f, z/s) and silent letters are merged — the confusions
  * speech recognition makes.
  */
@@ -46,8 +46,8 @@ export function soundKey(text: string): string {
 const similarity = (a: string, b: string) => (a && b ? 1 - editDistance(a, b) / Math.max(a.length, b.length) : 0);
 
 /**
- * 1 = the same, 0 = nothing alike: the better of spelling ("John Sun" = "Johnson", spacing and
- * punctuation ignored) and sound ("gems ml" ≈ "James Ahmed").
+ * 1 = the same, 0 = nothing alike: the better of spelling ("Yun g" = "Young", spacing and
+ * punctuation ignored) and sound ("hary wt" ≈ "Harry White").
  */
 export function nameSimilarity(heard: string, name: string): number {
   return Math.max(similarity(letters(heard), letters(name)), similarity(soundKey(heard), soundKey(name)));

@@ -24,7 +24,7 @@ afterEach(unmountApp);
 
 beforeEach(async () => {
   store.dispatch(voiceActions.resetVoice());
-  await store.dispatch(login({ username: 'sahmed', password: 'demo' })).unwrap();
+  await store.dispatch(login({ username: 'lwhite', password: 'demo' })).unwrap();
   await store.dispatch(fetchPatients()).unwrap();
   await store.dispatch(fetchProviders()).unwrap();
   await store.dispatch(appointmentsSlice.fetchAll()).unwrap();
@@ -180,7 +180,7 @@ describe('My Appointments', () => {
     const tabRow = (_a: Appointment) => [...document.querySelectorAll('.record-tab tr, .record-tab .mobile-card')].find((r) => r.textContent?.includes('Blood pressure review') && r.textContent?.includes('Reschedule')) as HTMLElement | undefined;
 
     it('by mouse: Cancel on the row asks for a note; the grid then shows the Cancelled flag, the note, and that the patient was told', async () => {
-      const a = await bookFor(20, dayjs().add(41, 'day').format('YYYY-MM-DD'), '08:10');
+      const a = await bookFor(17, dayjs().add(41, 'day').format('YYYY-MM-DD'), '08:10');
       await renderAppAt('/summary/appointment', () => !!tabRow(a));
       buttonIn(tabRow(a)!, 'Cancel').click();
       await waitUntil(() => !!document.querySelector('#cancellationNote'));
@@ -196,7 +196,7 @@ describe('My Appointments', () => {
     }, TIMEOUT);
 
     it("through the assistant: reschedule the selected patient's appointment with a comment; the tab shows the Rescheduled flag and note", async () => {
-      const a = await bookFor(21, dayjs().add(42, 'day').format('YYYY-MM-DD'), '08:40');
+      const a = await bookFor(18, dayjs().add(42, 'day').format('YYYY-MM-DD'), '08:40');
       await renderAppAt('/summary/appointment', () => !!tabRow(a));
       const to = dayjs().add(44, 'day').format('YYYY-MM-DD');
       model.then({ calls: [call('reschedule_patient_appointment', { appointment: a.id, to_date: to, to_time: '09:20', comment: 'Lab results not back yet' })] });
@@ -214,7 +214,7 @@ describe('My Appointments', () => {
     }, TIMEOUT);
 
     it('an appointment is never moved or cancelled by editing it — the assistant is sent to Reschedule / Cancel, and the edit form locks date, time and status', async () => {
-      const a = await bookFor(22, dayjs().add(43, 'day').format('YYYY-MM-DD'), '10:10');
+      const a = await bookFor(19, dayjs().add(43, 'day').format('YYYY-MM-DD'), '10:10');
       await renderAppAt('/summary/appointment', () => !!tabRow(a));
       model.then({ calls: [call('update_record', { kind: 'appointment', record: a.id, changes: { date: dayjs().add(45, 'day').format('YYYY-MM-DD') } })] }, { content: 'Use reschedule.' });
       await say('change the date of that appointment');

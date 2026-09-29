@@ -35,7 +35,7 @@ export default function PatientModulePage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Patient | undefined>();
 
-  // A voice search ("search patient Ahmed") lands here with ?q= — keep the box in step.
+  // A voice search ("search patient Luke") lands here with ?q= — keep the box in step.
   useEffect(() => {
     const q = params.get('q');
     if (q !== null && q !== search) setSearch(q);

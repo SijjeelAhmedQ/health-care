@@ -154,7 +154,7 @@ function forEachPatient(items: FieldValues[], patients?: string[]): FieldValues[
   return [...names.flatMap((patient) => shared.map((item) => ({ ...item, patient }))), ...own];
 }
 
-/** Say which spoken patient names were taken as a close match ("Noor Andersen" -> Noor Anderson). */
+/** Say which spoken patient names were taken as a close match ("Lilly Martyn" -> Lily Martin). */
 function withHeard(result: ToolResult, heard: string[]): ToolResult {
   return heard.length ? { ...result, message: `${heard.join('; ')}. ${result.message}` } : result;
 }
@@ -319,7 +319,7 @@ export class AppRuntime {
   // -------------------------------------------------------------- patients
 
   async searchPatients(heard: string): Promise<ToolResult> {
-    // A misheard name ("Sara John Sun") finds nothing as written: search for the one close spelling instead.
+    // A misheard name ("Loose he Yung") finds nothing as written: search for the one close spelling instead.
     let query = heard;
     let closest = '';
     if (!this.deps.findPatients(heard).length) {
@@ -371,7 +371,7 @@ export class AppRuntime {
     const pool = exact.length > 1 ? exact : candidates;
     if (exact.length === 0 && match && candidates.length === 1) return { patient: match };
     if (!pool.length) {
-      // Speech recognition often mishears a name ("Sara John Sun"): try the closest spellings.
+      // Speech recognition often mishears a name ("Loose he Yung"): try the closest spellings.
       const { matches, strong } = soundAlikes(patient, all, (p) => p.fullName);
       if (strong) return { patient: strong, heardAs: patient };
       if (matches.length)
@@ -496,7 +496,7 @@ export class AppRuntime {
     items = items.map((item) => FieldRegistry.canonical(kind, item));
     if (kind === 'patient') return this.openRecords(kind, items);
     items = forEachPatient(items, forPatients);
-    // Records named for other patients ("…for John Anderson, James Ahmed and Noor Anderson"): each
+    // Records named for other patients ("…for Liam Martin, Harry White and Lily Martin"): each
     // patient is found first — none guessed; nothing opens while one of them is unclear.
     const named = await this.resolveItemPatients(items);
     if ('ok' in named) return named;
@@ -801,10 +801,13 @@ export class AppRuntime {
     }
     const plan = await waitFor(() => CarePlanRegistry.get(), 4000);
     if (!plan) return fail('The Summary page did not open, so the care plan could not be shown.');
+    // A record form on screen (the medications just added) is replaced by the plan without a gap: the plan
+    // opens over it at once and the form closes behind — never "the dialog vanished and came back".
     const existing = FormRegistry.active();
-    if (existing?.isOpen() && !existing.instanceKey?.startsWith(CARE_PLAN_INSTANCE)) {
-      existing.close();
-      await waitFor(() => !existing.isOpen(), 1500);
+    const replaced = existing?.isOpen() && !existing.instanceKey?.startsWith(CARE_PLAN_INSTANCE) ? existing : null;
+    if (replaced && plan.isOpen()) {
+      replaced.close();
+      await waitFor(() => !replaced.isOpen(), 1500);
     }
     // A record the open plan already holds (every value given matches one of its tabs) is not added
     // twice — the model sometimes sends the whole plan again.
@@ -821,8 +824,12 @@ export class AppRuntime {
     }
     const before = plan.isOpen() ? plan.entries().length : 0;
     if (plan.isOpen()) plan.add(items);
-    else plan.open(items);
+    else plan.open(items, { instant: !!replaced });
     await waitFor(() => plan.isOpen() && plan.entries().length === before + total, 4000);
+    if (replaced?.isOpen()) {
+      replaced.close();
+      await waitFor(() => !replaced.isOpen(), 1500);
+    }
     await sleep(60);
     this.deps.setOpenForm(CARE_PLAN_FORM_ID);
     this.deps.setPendingConfirmation(null);
@@ -876,7 +883,7 @@ export class AppRuntime {
     const all = controller.entries ? controller.entries.getAll() : [controller.getValues()];
     const multi = all.length > 1;
     const primary = primaryField(def);
-    // Records for several patients are told apart by their patient ("the appointment for Noor Anderson").
+    // Records for several patients are told apart by their patient ("the appointment for Lily Martin").
     const severalPatients = new Set(all.map((v) => v.patient).filter(Boolean)).size > 1;
     const nameOf = (values: Record<string, unknown>, i: number) =>
       `${primary && values[primary.name] ? String(values[primary.name]) : `${def.title.toLowerCase()} ${i + 1}`}${severalPatients && values.patient ? ` for ${patientRefName(values.patient)}` : ''}`;

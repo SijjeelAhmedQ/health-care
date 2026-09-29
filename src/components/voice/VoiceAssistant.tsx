@@ -40,7 +40,7 @@ const statusMeta: Record<VoiceStatus, { label: string; color: string }> = {
 };
 
 /** A few things worth trying — shown before the first request, as examples to say, not buttons. */
-const examples = ['Show my dashboard summary', 'Select patient John Smith', 'Add a task to call the lab tomorrow'];
+const examples = ['Show my dashboard summary', 'Select patient Liam Thompson', 'Add a task to call the lab tomorrow'];
 
 /** The panel sits above antd's default tooltip layer (1070), so its tooltips must sit higher still. */
 const TOOLTIP_Z = 1300;

@@ -117,7 +117,7 @@ export function PatientPicker({ open, onClose, onSelected, title = 'Select a pat
       )}
 
       <div className="patient-picker-footer">
-        <span className="muted">Tip: say “select patient Ahmed Khan” to do this by voice.</span>
+        <span className="muted">Tip: say “select patient Luke King” to do this by voice.</span>
         <Button onClick={onClose}>Close</Button>
       </div>
     </AppModal>

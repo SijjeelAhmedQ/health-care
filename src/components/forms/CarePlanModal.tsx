@@ -59,6 +59,8 @@ export function CarePlanHost() {
   const pending = useAppSelector((s) => s.voice.pendingConfirmation);
   const slot = useAppSelector((s) => s.voice.pendingSlot);
   const [open, setOpen] = useState(false);
+  /** Opened in place of a record form on screen: no zoom-in, so the dialog does not seem to close and reopen. */
+  const [instant, setInstant] = useState(false);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [activeKind, setActiveKind] = useState<RecordKind>('medication');
   const [activeEntry, setActiveEntry] = useState<Partial<Record<RecordKind, string>>>({});
@@ -191,8 +193,9 @@ export function CarePlanHost() {
   useEffect(() => {
     const controller: CarePlanController = {
       isOpen: () => live.current.open,
-      open: (items) => {
+      open: (items, options) => {
         const list = makeEntries(items);
+        setInstant(!!options?.instant);
         setEntries(list);
         setLabels({});
         setActiveEntry(Object.fromEntries(RECORD_KINDS.map((k) => [k, list.find((e) => e.kind === k)?.id])));
@@ -338,6 +341,7 @@ export function CarePlanHost() {
       description={patient ? `Every record below is saved for ${planPatients.length > 1 ? `its patient (${planPatients.join(', ')})` : patient.fullName} once you confirm — nothing is saved yet.` : 'Select a patient first.'}
       onClose={requestClose}
       maskClosable={false}
+      {...(instant ? { transitionName: '', maskTransitionName: '' } : {})}
       className="care-plan-modal"
       footerHint={<span className="form-required-hint"><span className="mark">*</span> Required field</span>}
       footer={

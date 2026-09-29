@@ -18,17 +18,17 @@ const MODEL = process.env.EVAL_MODEL ?? 'qwen3.5:4b';
 
 // [what was said, SAID (Omi, live), ALSO HEARD (Whisper base.en + vocabulary, live)]
 const HEARD: Array<[string, string, string]> = [
-  ['Select patient James Ahmed', 'Select patient gems and milk.', 'I see that patient, James Ahmed.'],
-  ['Select patient Fatima Malik', 'Select patient pharma voluntek', 'Select patient for normal look.'],
-  ['Select patient Sarah Johnson', 'Select Patient Sara John Sun', 'Select patient, Sarah Jones, Senator.'],
+  ['Select patient Harry White', 'Select patient hairy why it.', 'I see that patient, Harry White.'],
+  ['Select patient Ella Hall', 'Select patient Elle a hole', 'Select patient hella hall.'],
+  ['Select patient Lucy Young', 'Select Patient Loose he Yung', 'Select patient, Lucy Stewart, Senator.'],
   ['Add metformin 500 mg twice daily for 10 days. Add amlodipine', 'Add matfolmin 500mg twice daily for 10 days. Add amlodepine', 'Admaxone means I want an Mg twice daily for 10 days, and Amlodipine.'],
   ['Add type 2 diabetes mellitus. Add hypertension as a diagnosis', 'Add type 2 diabetes militias add hypertension as a diagnosis.', 'Type 2 diabetes mellitus, and Hypertension as a diagnosis.'],
-  ['Go to patients and select James Ahmed and go to inbox and select first record', 'Go to Patients and select James Ambrose and go to Inbox and select first report.', 'Go to patients and select games and go to indoors and select first report.'],
+  ['Go to patients and select Harry White and go to inbox and select first record', 'Go to Patients and select Harry Wight and go to Inbox and select first report.', 'Go to patients and select hairy and go to indoors and select first report.'],
   ['File this record', 'File this is the code.', 'Find this requirement.'],
   ['Unfile this record', 'unforgiving cord', "And so I'll just record."],
   ['Add hyperlipidemia', 'Add hyperlipidemia', 'And Hyperlipidemia.'],
   ['Add metformin 500 mg twice daily for 10 days', 'Admetsormin Admetsormin Admetsormin 500mg twice daily for 10 days', 'And next week, they have Metformin, and Metformin 500 and G2 is there in four tendings.'],
-  ['Go to patients and select James Ahmed and create a task for blood pressure monitoring', 'Go to patients and select gems animals and create a task force monitoring.', 'Go to patients and select gyms and carry it to 10 hours. Go to patients and carry it to 10 hours. Go to patients and select gyms and carry it to 10 hours.'],
+  ['Go to patients and select Harry White and create a task for blood pressure monitoring', 'Go to patients and select hairy why animals and create a task force monitoring.', 'Go to patients and select hymns and carry it to 10 hours. Go to patients and carry it to 10 hours. Go to patients and select hymns and carry it to 10 hours.'],
   ['Open the inbox', 'Open the inbox', 'Open their inbox.'],
 ];
 
@@ -37,7 +37,7 @@ it('SAID alone vs SAID + ALSO HEARD', async () => {
   llm.dispose();
   const tools = buildTools().map(toToolSchema);
   const t = dayjs();
-  const patient = db.patients.find((p) => p.fullName === 'John Smith')!;
+  const patient = db.patients.find((p) => p.fullName === 'Liam Thompson')!;
   const ctx = (page: string): AIContext => ({
     today: t.format('YYYY-MM-DD (dddd)'), nextDays: '', laterDates: '', now: t.format('HH:mm'), providerName: db.providers[0].fullName,
     currentPageId: page, currentPageTitle: page, currentPatientId: page === 'inbox-lab' ? patient.id : page === 'summary' ? patient.id : null, currentPatientName: page === 'patients' ? null : patient.fullName,
