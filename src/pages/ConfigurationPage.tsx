@@ -3,7 +3,7 @@ import { Alert, Button, Collapse, Input, InputNumber, Radio, Select, Slider, Spa
 import { AudioLines, BrainCircuit, CheckCircle2, CircleAlert, FlaskConical, Loader2, RefreshCw, RotateCcw, Save } from 'lucide-react';
 import { useAppSelector } from '@/store';
 import { PageHeader, SectionCard } from '@/components/common';
-import { aiConfig, bridgeHttpUrl, clearAIOverride, effectiveConfig, getAIOverride, setAIOverride, type AIConfig, type LLMProviderKind } from '@/services/ai/config';
+import { aiConfig, bridgeHttpUrl, clearAIOverride, effectiveConfig, getAIOverride, ONE_GO_MODELS, setAIOverride, type AIConfig, type LLMProviderKind } from '@/services/ai/config';
 import { listModels, testModel, unloadOllamaModel, type ModelInfo, type ModelTestResult } from '@/services/ai/modelCatalog';
 import { getSttConfig, saveSttConfig, type SttConfig, type SttSettings } from '@/services/ai/sttConfig';
 import { getVoiceController } from '@/services/ai/voiceController';
@@ -210,9 +210,11 @@ function LanguageModelSection() {
       <div className="config-field">
         <label htmlFor="llm-plan">Break long requests into steps</label>
         <Space align="start">
-          <Switch id="llm-plan" checked={draft.planSteps !== false} onChange={(on) => set('planSteps', on)} />
+          <Switch id="llm-plan" checked={draft.planSteps !== false && !ONE_GO_MODELS.has(draft.model)} disabled={ONE_GO_MODELS.has(draft.model)} onChange={(on) => set('planSteps', on)} />
           <span className="config-hint" style={{ marginTop: 0 }}>
-            A long request (“go to patients, select James, add metformin, a task, a recall and an appointment”) is first split into its actions, which are then done one by one — the assistant panel shows the steps. Short requests are not affected. Takes one extra model call.
+            {ONE_GO_MODELS.has(draft.model)
+              ? `${draft.model} does a long request in one go: split into steps it took about twice as long and got less of it right.`
+              : 'A long request (“go to patients, select James, add metformin, a task, a recall and an appointment”) is first split into its actions, which are then done one by one — the assistant panel shows the steps. Short requests are not affected. Takes one extra model call.'}
           </span>
         </Space>
       </div>

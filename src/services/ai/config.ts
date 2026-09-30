@@ -40,6 +40,17 @@ const env = import.meta.env;
 const bool = (v: string | undefined, fallback: boolean) => (v === undefined ? fallback : v === 'true' || v === '1');
 const num = (v: string | undefined, fallback: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : fallback);
 
+/**
+ * Models that carry out a long request better in one go than split into steps first. Measured with the
+ * care-plan benchmark (src/services/ai/__evals__/carePlanBench.eval.ts) on the Kaggle GPU: qwen3.5:9b took
+ * 111–173 s and 19–21 model calls with steps, 47–62 s and 6–8 calls without — and got more of it right.
+ * (qwen3.5:4b did not: it gets doses wrong without steps.) Every other model plans as before.
+ */
+export const ONE_GO_MODELS: ReadonlySet<string> = new Set(['qwen3.5:9b']);
+
+/** Whether a long request is split into steps first, for this model and setting. */
+export const plansLongRequests = (llm: Pick<AIConfig['llm'], 'model' | 'planSteps'>) => llm.planSteps !== false && !ONE_GO_MODELS.has(llm.model);
+
 /** The defaults, from the environment. */
 export const aiConfig: AIConfig = {
   stt: {

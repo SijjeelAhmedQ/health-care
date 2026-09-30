@@ -276,6 +276,30 @@ describe('long requests are split into steps first', () => {
   };
   const said = (messages: { role: string; content?: string }[]) => String(messages.at(-1)?.content ?? '');
 
+  it('done in one go (a model that does not plan), a long request still shows its steps — from its tools, no extra call', async () => {
+    const llm = new ScriptedLLM()
+      .then({ calls: [call('open_page', { page: 'dashboard' })] })
+      .then({ calls: [call('add_medications', { medications: [{ medicationName: 'Metformin' }] }), call('open_page', { page: 'no-such-page' })] })
+      .then({ content: 'Ready to confirm.' });
+    const { agent } = makeAgent(llm); // planning off
+    const shown: Array<Array<{ text: string; status: string }>> = [];
+    await agent.run(LONG, { onPlan: (steps) => shown.push(steps) });
+    expect(llm.requests.some((m) => said(m).includes('TASK: PLAN'))).toBe(false);
+    // Each call a step in its tool's words; the refused call (an unknown page) is not one.
+    expect(shown.at(-1)).toEqual([
+      { text: 'Opening Dashboard', status: 'done' },
+      { text: 'Opening the medication form', status: 'waiting' },
+    ]);
+  });
+
+  it('a short request done in one go shows no steps', async () => {
+    const llm = new ScriptedLLM().calls([call('open_page', { page: 'dashboard' })], 'Opened.');
+    const { agent } = makeAgent(llm);
+    const shown: unknown[] = [];
+    await agent.run('open the dashboard', { onPlan: (steps) => shown.push(steps) });
+    expect(shown).toEqual([]);
+  });
+
   it('a short request goes straight to the tools — no planning call', async () => {
     const llm = new ScriptedLLM().calls([call('open_page', { page: 'dashboard' })], 'Opened.');
     const { agent } = planning(llm);

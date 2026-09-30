@@ -55,7 +55,17 @@ export function toToolSchema(tool: Tool): ToolSchema {
 function compact(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(compact);
   if (node && typeof node === 'object') {
-    return Object.fromEntries(Object.entries(node as Record<string, unknown>).filter(([k, v]) => !(k === 'additionalProperties' && v === false)).map(([k, v]) => [k, compact(v)]));
+    const out = Object.fromEntries(Object.entries(node as Record<string, unknown>).filter(([k, v]) => !(k === 'additionalProperties' && v === false)).map(([k, v]) => [k, compact(v)]));
+    // OpenAPI 3 writes a strict bound as `minimum: 0, exclusiveMinimum: true`; OpenAI (and JSON Schema
+    // today) want the bound itself — `exclusiveMinimum: 0` — and refuse every request otherwise.
+    for (const [flag, bound] of [['exclusiveMinimum', 'minimum'], ['exclusiveMaximum', 'maximum']] as const) {
+      if (typeof out[flag] !== 'boolean') continue;
+      if (out[flag] && typeof out[bound] === 'number') {
+        out[flag] = out[bound];
+        delete out[bound];
+      } else delete out[flag];
+    }
+    return out;
   }
   return node;
 }

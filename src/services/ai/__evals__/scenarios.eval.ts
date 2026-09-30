@@ -6,6 +6,7 @@
  *
  *   npm run eval:llm -- scenarios
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { store } from '@/store';
 import { login } from '@/store/slices/authSlice';
@@ -22,7 +23,17 @@ import { installBrowserStubs, pageText, renderAppAt, unmountApp, wait, waitUntil
 const MODEL = process.env.EVAL_MODEL ?? 'qwen3.5:4b';
 /** GPU layers: 99 = all; EVAL_NUM_GPU=auto lets Ollama fit what it can (a model bigger than the GPU). */
 const NUM_GPU = process.env.EVAL_NUM_GPU === 'auto' ? (undefined as unknown as number) : Number(process.env.EVAL_NUM_GPU ?? 99);
-const llm = new OllamaChat({ provider: 'ollama', apiUrl: process.env.EVAL_LLM_URL ?? 'http://127.0.0.1:11434', model: MODEL, timeoutMs: 900000, numGpu: NUM_GPU, numCtx: 12288, maxSteps: 8 });
+// EVAL_PROVIDER=kaggle: Ollama on the Kaggle GPU the bridge has saved (address and key from python/compute_settings.json).
+let apiUrl = process.env.EVAL_LLM_URL ?? 'http://127.0.0.1:11434';
+if (process.env.EVAL_PROVIDER === 'kaggle') {
+  const saved = JSON.parse(readFileSync(`${process.cwd()}/python/compute_settings.json`, 'utf-8')) as { remote_url: string; remote_key: string };
+  const kaggle = saved.remote_url.replace(/\/$/, '');
+  apiUrl = `${kaggle}/ollama`;
+  const base = globalThis.fetch;
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).startsWith(kaggle) ? base(input, { ...init, headers: { ...(init?.headers as Record<string, string>), 'X-CareFlow-Key': saved.remote_key } }) : base(input, init);
+}
+const llm = new OllamaChat({ provider: 'ollama', apiUrl, model: MODEL, timeoutMs: 900000, numGpu: NUM_GPU, numCtx: 12288, maxSteps: 8 });
 
 // Log what each model call cost: prompt tokens processed vs. reused from the cache, and time.
 const chat = llm.chat.bind(llm);

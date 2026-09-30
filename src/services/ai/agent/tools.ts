@@ -152,7 +152,9 @@ export function buildTools(): Tool[] {
       parameters: z.object({
         patient: z.string().optional().describe('Patient id, full name or MRN'),
         list_position: z.number().int().positive().optional().describe('Position in the patient search results on screen (1 = first)'),
-        open_tab: z.enum(summaryTabs).optional().describe('Summary tab to open after selecting'),
+        // "summary" (the Summary itself) is what selecting opens anyway — taken as no tab rather than
+        // refused (qwen3.5:9b sent it every time and had to call again). The schema shown is unchanged.
+        open_tab: z.preprocess((v) => (v === 'summary' ? undefined : v), z.enum(summaryTabs).optional()).describe('Summary tab to open after selecting'),
       }),
       progress: ({ patient }) => `Selecting ${patient ?? 'the patient'}…`,
       run: ({ patient, list_position, open_tab }, { runtime }) => runtime.selectPatient({ patient, position: list_position, page: open_tab }),
@@ -198,7 +200,7 @@ export function buildTools(): Tool[] {
     defineTool({
       name: 'add_care_plan',
       description:
-        'Add records of SEVERAL kinds at once — e.g. medications plus a diagnosis, a task, a recall and an appointment said in one request. Opens the Care Plan on the Summary: one tab per kind, one tab per record, all filled with what was said, saved together after one confirmation. Give patient to select that patient first. Each list uses the same fields as the matching add_* tool; a dose, frequency or duration said once for several drugs applies to each of them.',
+        'Add records of SEVERAL kinds at once — e.g. medications plus a diagnosis, a task, a recall and an appointment said in one request. Opens the Care Plan on the Summary: one tab per kind, one tab per record, all filled with what was said, saved together after one confirmation. Give patient to select that patient first. Each list uses the same fields as the matching add_* tool; a dose, frequency or duration said once after a list of drugs applies to each drug of the list (each medication gets its own copy), unless a drug was said with its own.',
       parameters: z.object({
         patient: z.string().optional().describe('Patient full name, id or MRN when the provider names one; omit for the selected patient'),
         for_patients: forPatients,
@@ -534,7 +536,12 @@ export function buildTools(): Tool[] {
       name: 'plan_steps',
       description: 'ONLY when the message says TASK: PLAN. Split what the provider said into the separate actions it asks for, in the order said. Never use it for a spoken command.',
       parameters: z.object({
-        steps: z.array(z.string()).min(1).describe('One action per step, as a short instruction keeping every detail that belongs to it (names, drugs, doses, dates, times)'),
+        steps: z
+          .array(z.string())
+          .min(1)
+          .describe(
+            'One action per step, as a short instruction keeping every detail that belongs to it (names, drugs, doses, dates, times). Going to a page and selecting a patient is one step. Every record added for the same patient — medications, diagnoses, tasks, recalls, appointments, of one kind or several — is ONE step (they go into one care plan together); never a step per kind.',
+          ),
       }),
       run: async () => ({ ok: false, message: 'plan_steps is only for planning. Carry out the request with the other tools.' }),
     }),

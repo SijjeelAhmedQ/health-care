@@ -175,7 +175,7 @@ export const forms: FormDefinition[] = [
     sensitiveDescription: 'Add this recall to the patient record',
     fields: [
       patientField,
-      { name: 'reason', label: 'Reason', type: 'text', required: true },
+      { name: 'reason', label: 'Reason', type: 'text', required: true, hint: 'Only why the provider said this recall is for, in their words; not said → leave out (the app asks). Never a word said for another record' },
       { name: 'type', label: 'Recall Type', type: 'select', options: RECALL_TYPE_OPTIONS },
       { name: 'dueDate', label: 'Due Date', type: 'date', required: true },
       { name: 'priority', label: 'Priority', type: 'select', options: ['Normal', 'High'] },
@@ -195,7 +195,7 @@ export const forms: FormDefinition[] = [
       { name: 'startTime', label: 'Time', type: 'time', required: true },
       { name: 'durationMinutes', label: 'Duration (minutes)', type: 'number', hint: 'Defaults to 30' },
       { name: 'type', label: 'Appointment Type', type: 'select', options: APPOINTMENT_TYPE_OPTIONS },
-      { name: 'reason', label: 'Reason for Visit', type: 'text', required: true },
+      { name: 'reason', label: 'Reason for Visit', type: 'text', required: true, hint: 'The kind of visit the provider named ("a follow-up appointment" → "Follow-up"), in their words; not said → leave out (the app asks)' },
       { name: 'locationName', label: 'Location', type: 'select', options: LOCATION_OPTIONS },
       { name: 'status', label: 'Status', type: 'select', options: APPOINTMENT_STATUS_OPTIONS },
       { name: 'priority', label: 'Priority', type: 'select', options: PRIORITY_OPTIONS },

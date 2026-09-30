@@ -167,7 +167,10 @@ export class Agent {
     try {
       const steps = this.planSteps && Agent.worthPlanning(said) ? await this.plan(said, ctx, alsoHeard, hooks, signal) : null;
       if (!steps) {
-        await this.act([...this.prefix(ctx), { role: 'user', content: this.contextBlock(said, ctx, alsoHeard) }], hooks, signal, outcome, false);
+        // A long request done in one go (the model does not plan, or planning is off) still shows its steps:
+        // the tools as they are carried out — no extra model call.
+        const shown = !this.planSteps && Agent.worthPlanning(said) ? this.stepsFromTools(hooks) : hooks;
+        await this.act([...this.prefix(ctx), { role: 'user', content: this.contextBlock(said, ctx, alsoHeard) }], shown, signal, outcome, false);
       } else {
         await this.actInSteps(steps, hooks, signal, outcome);
       }
@@ -181,6 +184,43 @@ export class Agent {
       }
       if (reprime) void this.warmUp();
     }
+  }
+
+  /**
+   * The steps of an unplanned request, as its tools run: each call a step in its own words ("Selecting Tom
+   * Baker"), done when it succeeds, 'waiting' when it left a question or a confirmation. A refused call is
+   * dropped — the model's corrected call takes its place.
+   */
+  private stepsFromTools(hooks: AgentHooks): AgentHooks {
+    const steps: Array<PlanStep & { id: string }> = [];
+    const show = () => hooks.onPlan?.(steps.map(({ text, status }) => ({ text, status })));
+    return {
+      ...hooks,
+      onStep: (step) => {
+        hooks.onStep?.(step);
+        if (step.type !== 'tool') return;
+        const at = steps.findIndex((s) => s.id === step.id);
+        if (!step.finishedAt) {
+          if (at < 0) steps.push({ id: step.id, text: this.stepLabel(step.call), status: 'running' });
+        } else if (at >= 0) {
+          if (step.result?.ok) steps[at].status = step.result.awaitUser ? 'waiting' : 'done';
+          else steps.splice(at, 1);
+        }
+        show();
+      },
+    };
+  }
+
+  /** A tool call in the words its tool uses while it runs, without the trailing "…". */
+  private stepLabel(call: ToolCall): string {
+    const tool = this.byName.get(call.name);
+    let text: string | undefined;
+    try {
+      text = tool?.progress?.(call.arguments);
+    } catch {
+      text = undefined;
+    }
+    return (text ?? call.name.replace(/_/g, ' ')).replace(/…$/, '').replace(/^./, (c) => c.toUpperCase());
   }
 
   /** Long enough to hold several actions. Shorter requests go straight to the tools, as always. */

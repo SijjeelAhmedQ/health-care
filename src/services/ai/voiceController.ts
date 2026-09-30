@@ -31,7 +31,7 @@ import { logout } from '@/store/slices/authSlice';
 import { ListRegistry } from '@/registry/listRegistry';
 import { AiSummaryRegistry } from '@/registry/aiSummaryRegistry';
 import { CarePlanRegistry } from '@/registry/carePlanRegistry';
-import { bridgeHttpUrl, effectiveConfig, getAIOverride, setAIOverride, type AIConfig } from './config';
+import { bridgeHttpUrl, effectiveConfig, getAIOverride, plansLongRequests, setAIOverride, type AIConfig } from './config';
 import { listModels, unloadOllamaModel } from './modelCatalog';
 import { getSttConfig, postDiagnosticTrace, saveSttConfig } from './sttConfig';
 import { createChatLLM, ModelUnavailableError, type ChatLLM } from './providers/llm';
@@ -54,7 +54,7 @@ function patientRecords(state: RootState, kind: RecordKind): AnyRecord[] {
 type ProviderOverrides = { stt?: MicrophoneRecognizer; llm?: ChatLLM; planSteps?: boolean };
 
 /** A scripted model answers only what its script says, so it plans only when a test asks for it. */
-const planning = (config: AIConfig, overrides?: ProviderOverrides) => overrides?.planSteps ?? (overrides?.llm ? false : config.llm.planSteps !== false);
+const planning = (config: AIConfig, overrides?: ProviderOverrides) => overrides?.planSteps ?? (overrides?.llm ? false : plansLongRequests(config.llm));
 
 export class VoiceController {
   private llm: ChatLLM;
